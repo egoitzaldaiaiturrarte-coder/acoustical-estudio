@@ -1,0 +1,8 @@
+{
+  "id": "8gy4u732mdrgm8u29scev",
+  "role": "user",
+  "content": "Quiero crear una aplicación para móvil la cual analice el espectro de audio que envía y lo compare con lo que los micrófonos del móvil o externos reciben, los compare y corrija automáticamente con un ecualizador de bandas dinámico. Para adaptar el audio a cada lugar. Y lo haga en segundo plano constantemente pudiendo regular la frecuencia para controlar recursos y permita hacerlo hasta en 96000 hercios. Pudiendo regular este parámetro también. Y que tenga una sección de calibración para cuando encuentres el punto deseado de presión sonora",
+  "attachments": [],
+  "sourceAttachments": [],
+  "userId": "2909d4d9-bfd4-4c01-a6fb-0dd7db3c3342"
+}

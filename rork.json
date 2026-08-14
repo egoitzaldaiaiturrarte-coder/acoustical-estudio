@@ -1,0 +1,10 @@
+{
+  "apps": [
+    {
+      "name": "AcoustiCal",
+      "path": "android-acoustical",
+      "framework": "kotlin"
+    }
+  ],
+  "$schema": "https://rork.com/schema/rork.json"
+}
