@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +26,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.rork.acoustical.MainActivity
 import com.rork.acoustical.ui.screens.CalibrationScreen
+import com.rork.acoustical.ui.screens.ConsoleScreen
 import com.rork.acoustical.ui.screens.DashboardScreen
 import com.rork.acoustical.ui.screens.EqualizerScreen
 import com.rork.acoustical.ui.screens.SettingsScreen
@@ -60,6 +62,7 @@ fun AppNavigation(
     val items = listOf(
         BottomNavItem("dashboard", "Inicio", Icons.Filled.GraphicEq),
         BottomNavItem("equalizer", "EQ", Icons.Filled.Equalizer),
+        BottomNavItem("console", "Consola", Icons.Filled.Hub),
         BottomNavItem("calibration", "Calibrar", Icons.Filled.Tune),
         BottomNavItem("settings", "Ajustes", Icons.Filled.Tune)
     )
@@ -109,6 +112,9 @@ fun AppNavigation(
             }
             composable("equalizer") {
                 EqualizerScreen(navController = navController, viewModel = viewModel)
+            }
+            composable("console") {
+                ConsoleScreen(navController = navController, viewModel = viewModel)
             }
             composable("calibration") {
                 CalibrationScreen(navController = navController, viewModel = viewModel)

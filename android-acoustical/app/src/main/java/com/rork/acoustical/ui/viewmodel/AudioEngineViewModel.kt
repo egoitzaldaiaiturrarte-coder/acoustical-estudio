@@ -5,6 +5,16 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rork.acoustical.domain.audio.AudioEngine
+import com.rork.acoustical.domain.console.ConsoleChannel
+import com.rork.acoustical.domain.console.ConsoleConfig
+import com.rork.acoustical.domain.console.ConsoleConnectionState
+import com.rork.acoustical.domain.console.ConsoleManager
+import com.rork.acoustical.domain.console.ConsoleProtocol
+import com.rork.acoustical.domain.console.ConsoleSyncStatus
+import com.rork.acoustical.domain.console.ConsoleType
+import com.rork.acoustical.domain.console.MeshNetworkManager
+import com.rork.acoustical.domain.console.MeshPeer
+import com.rork.acoustical.domain.console.UsbAudioSource
 import com.rork.acoustical.domain.model.AudioConfig
 import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.EqBand
@@ -25,7 +35,8 @@ import kotlinx.coroutines.launch
 
 /**
  * Central ViewModel shared across all screens.
- * Manages the audio engine lifecycle, configuration, and UI state.
+ * Manages the audio engine lifecycle, configuration, console integration,
+ * mesh networking, and UI state.
  */
 class AudioEngineViewModel(
     application: Application
@@ -54,7 +65,16 @@ class AudioEngineViewModel(
         val noiseCaptureProgress: Float = 0f,
         val hasNoiseProfile: Boolean = false,
         val noiseSpectrum: SpectrumFrame? = null,
-        val noiseSubtractionEnabled: Boolean = true
+        val noiseSubtractionEnabled: Boolean = true,
+        // Console integration
+        val consoleConfig: ConsoleConfig = ConsoleConfig.Default,
+        val consoleConnectionState: ConsoleConnectionState = ConsoleConnectionState.DISCONNECTED,
+        val consoleSyncStatus: ConsoleSyncStatus? = null,
+        val usbAudioDevices: List<UsbAudioSource.UsbDeviceInfo> = emptyList(),
+        // Mesh network
+        val meshIsRunning: Boolean = false,
+        val meshIsMaster: Boolean = false,
+        val meshPeers: List<MeshPeer> = emptyList()
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -62,6 +82,9 @@ class AudioEngineViewModel(
 
     private var engine: AudioEngine? = null
     private var notificationUpdateJob: Job? = null
+    private var consoleManager: ConsoleManager? = null
+    private var meshManager: MeshNetworkManager? = null
+    private var usbAudioSource: UsbAudioSource? = null
 
     init {
         engine = AudioEngine().also { eng ->
@@ -83,6 +106,11 @@ class AudioEngineViewModel(
                         hasNoiseProfile = result.noiseSpectrum != null
                     )
                 }
+                // Push corrections to console if connected
+                consoleManager?.updateCorrections(result.bands)
+                // Update mesh with local SPL
+                meshManager?.updateLocalSpl(result.spl)
+                meshManager?.updateLocalCorrections(result.bands.map { it.gainDb })
             }
             eng.onNoiseCaptureProgress = { progress ->
                 _uiState.update { it.copy(noiseCaptureProgress = progress) }
@@ -97,11 +125,39 @@ class AudioEngineViewModel(
                 }
             }
         }
+
+        // Initialize console manager
+        consoleManager = ConsoleManager().also { cm ->
+            cm.onConnectionStateChanged = { state ->
+                _uiState.update { it.copy(consoleConnectionState = state) }
+            }
+            cm.onSyncStatus = { status ->
+                _uiState.update { it.copy(consoleSyncStatus = status) }
+            }
+        }
+
+        // Initialize mesh network manager
+        meshManager = MeshNetworkManager(application).also { mesh ->
+            mesh.onPeersChanged = { peers ->
+                _uiState.update { it.copy(meshPeers = peers) }
+            }
+            mesh.onAggregateReceived = { aggregate ->
+                // If we're a listener and receive aggregate from master, update our display
+                _uiState.update {
+                    it.copy(
+                        meshPeers = aggregate.peers.filter { peer -> peer.id != mesh.deviceId }
+                    )
+                }
+            }
+        }
+
+        // Initialize USB audio source
+        usbAudioSource = UsbAudioSource(application)
+        refreshUsbDevices()
     }
 
-    /**
-     * Start the audio analysis engine (foreground service for background operation).
-     */
+    // === Engine Control ===
+
     fun startEngine() {
         val context = getApplication<Application>()
         val intent = Intent(context, AudioAnalysisService::class.java).apply {
@@ -115,13 +171,9 @@ class AudioEngineViewModel(
 
         engine?.start()
         _uiState.update { it.copy(isRunning = true) }
-
         startNotificationUpdates()
     }
 
-    /**
-     * Stop the engine and foreground service.
-     */
     fun stopEngine() {
         val context = getApplication<Application>()
         val intent = Intent(context, AudioAnalysisService::class.java).apply {
@@ -149,23 +201,16 @@ class AudioEngineViewModel(
         if (_uiState.value.isRunning) stopEngine() else startEngine()
     }
 
-    /**
-     * Update a single configuration parameter and reconfigure the engine.
-     */
+    // === Audio Config ===
+
     fun updateConfig(transform: (AudioConfig) -> AudioConfig) {
         val newConfig = transform(_uiState.value.config)
         _uiState.update { it.copy(config = newConfig) }
 
         val wasRunning = _uiState.value.isRunning
-        if (wasRunning) {
-            engine?.stop()
-        }
-
+        if (wasRunning) engine?.stop()
         engine?.configure(newConfig)
-
-        if (wasRunning) {
-            engine?.start()
-        }
+        if (wasRunning) engine?.start()
     }
 
     fun setSampleRate(rate: SampleRate) = updateConfig { it.copy(sampleRate = rate) }
@@ -183,9 +228,8 @@ class AudioEngineViewModel(
         _uiState.update { state -> state.copy(noiseSubtractionEnabled = enabled) }
     }
 
-    /**
-     * Capture the current measured spectrum as the reference signature.
-     */
+    // === Reference & EQ ===
+
     fun captureReference() {
         engine?.captureReference()
         _uiState.update { it.copy(isReferenceCaptured = true) }
@@ -196,9 +240,6 @@ class AudioEngineViewModel(
         _uiState.update { it.copy(isReferenceCaptured = false) }
     }
 
-    /**
-     * Manually set a band's gain.
-     */
     fun setBandGain(index: Int, gainDb: Float) {
         engine?.setBandGain(index, gainDb)
         _uiState.update { state ->
@@ -210,9 +251,6 @@ class AudioEngineViewModel(
         }
     }
 
-    /**
-     * Reset all EQ bands to 0 dB.
-     */
     fun resetBands() {
         engine?.resetBands()
         _uiState.update { state ->
@@ -220,9 +258,8 @@ class AudioEngineViewModel(
         }
     }
 
-    /**
-     * Start the SPL calibration process.
-     */
+    // === Calibration ===
+
     fun startCalibration() {
         _uiState.update { it.copy(isCalibrating = true, calibrationProgress = 0f) }
         viewModelScope.launch(Dispatchers.Default) {
@@ -250,10 +287,8 @@ class AudioEngineViewModel(
         }
     }
 
-    /**
-     * Start capturing a background noise profile.
-     * The user should be silent while ambient noise is recorded.
-     */
+    // === Noise Profiler ===
+
     fun startNoiseCapture() {
         if (!_uiState.value.isRunning) return
         engine?.startNoiseCapture()
@@ -266,9 +301,6 @@ class AudioEngineViewModel(
         }
     }
 
-    /**
-     * Cancel an ongoing noise capture.
-     */
     fun cancelNoiseCapture() {
         engine?.cancelNoiseCapture()
         _uiState.update {
@@ -279,9 +311,6 @@ class AudioEngineViewModel(
         }
     }
 
-    /**
-     * Clear the stored noise profile.
-     */
     fun clearNoiseProfile() {
         engine?.clearNoiseProfile()
         _uiState.update {
@@ -293,9 +322,8 @@ class AudioEngineViewModel(
         }
     }
 
-    /**
-     * Save the current room profile.
-     */
+    // === Room Profiles ===
+
     fun saveProfile(name: String, description: String) {
         val profile = RoomProfile(
             name = name,
@@ -313,9 +341,6 @@ class AudioEngineViewModel(
         }
     }
 
-    /**
-     * Load a saved room profile.
-     */
     fun loadProfile(profile: RoomProfile) {
         val bands = _uiState.value.bands.toMutableList()
         for (i in bands.indices) {
@@ -334,6 +359,125 @@ class AudioEngineViewModel(
             )
         }
     }
+
+    // === Console Integration ===
+
+    fun connectConsole() {
+        val config = _uiState.value.consoleConfig
+        consoleManager?.connect(config)
+    }
+
+    fun disconnectConsole() {
+        consoleManager?.disconnect()
+    }
+
+    fun resetConsoleEq() {
+        consoleManager?.resetConsoleEq()
+    }
+
+    fun setConsoleProtocol(protocol: ConsoleProtocol) {
+        _uiState.update { it.copy(consoleConfig = it.consoleConfig.copy(protocol = protocol)) }
+    }
+
+    fun setConsoleType(type: ConsoleType) {
+        _uiState.update { it.copy(consoleConfig = it.consoleConfig.copy(type = type)) }
+    }
+
+    fun setConsoleIp(ip: String) {
+        _uiState.update { it.copy(consoleConfig = it.consoleConfig.copy(ipAddress = ip)) }
+    }
+
+    fun setConsolePort(port: Int) {
+        _uiState.update { it.copy(consoleConfig = it.consoleConfig.copy(oscPort = port)) }
+    }
+
+    fun setConsoleChannel(bus: Int) {
+        _uiState.update {
+            it.copy(consoleConfig = it.consoleConfig.copy(
+                channel = it.consoleConfig.channel.copy(bus = bus)
+            ))
+        }
+    }
+
+    fun setConsoleChannelType(type: ConsoleChannel.ChannelType) {
+        _uiState.update {
+            it.copy(consoleConfig = it.consoleConfig.copy(
+                channel = it.consoleConfig.channel.copy(channelType = type)
+            ))
+        }
+    }
+
+    fun setAutoCorrectEnabled(enabled: Boolean) {
+        _uiState.update {
+            it.copy(consoleConfig = it.consoleConfig.copy(autoCorrectEnabled = enabled))
+        }
+        // Reconnect if currently connected to apply the new setting
+        if (_uiState.value.consoleConnectionState == ConsoleConnectionState.CONNECTED) {
+            val config = _uiState.value.consoleConfig
+            consoleManager?.disconnect()
+            consoleManager?.connect(config)
+        }
+    }
+
+    fun setPushGainsEnabled(enabled: Boolean) {
+        _uiState.update {
+            it.copy(consoleConfig = it.consoleConfig.copy(pushGainsToConsole = enabled))
+        }
+    }
+
+    fun setPullGainsEnabled(enabled: Boolean) {
+        _uiState.update {
+            it.copy(consoleConfig = it.consoleConfig.copy(pullGainsFromConsole = enabled))
+        }
+    }
+
+    fun setMaxCorrectionDb(db: Float) {
+        _uiState.update {
+            it.copy(consoleConfig = it.consoleConfig.copy(maxCorrectionDb = db))
+        }
+    }
+
+    fun setCorrectionInterval(ms: Long) {
+        _uiState.update {
+            it.copy(consoleConfig = it.consoleConfig.copy(correctionIntervalMs = ms))
+        }
+    }
+
+    // === USB Audio ===
+
+    fun refreshUsbDevices() {
+        val devices = usbAudioSource?.scanForAudioDevices() ?: emptyList()
+        _uiState.update { it.copy(usbAudioDevices = devices) }
+    }
+
+    // === Mesh Network ===
+
+    fun startMeshMaster() {
+        meshManager?.startAsMaster()
+        _uiState.update {
+            it.copy(meshIsRunning = true, meshIsMaster = true)
+        }
+    }
+
+    fun startMeshListener() {
+        meshManager?.startAsListener()
+        _uiState.update {
+            it.copy(meshIsRunning = true, meshIsMaster = false)
+        }
+    }
+
+    fun stopMesh() {
+        meshManager?.stop()
+        _uiState.update {
+            it.copy(
+                meshIsRunning = false,
+                meshIsMaster = false,
+                meshPeers = emptyList()
+            )
+        }
+    }
+
+    // === Internal ===
 
     private fun startNotificationUpdates() {
         notificationUpdateJob?.cancel()
@@ -354,5 +498,11 @@ class AudioEngineViewModel(
         super.onCleared()
         engine?.stop()
         engine = null
+        consoleManager?.disconnect()
+        consoleManager = null
+        meshManager?.stop()
+        meshManager = null
+        usbAudioSource?.disconnect()
+        usbAudioSource = null
     }
 }
