@@ -5,7 +5,6 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rork.acoustical.domain.audio.AudioEngine
-import com.rork.acoustical.domain.audio.SplMeter
 import com.rork.acoustical.domain.model.AudioConfig
 import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.EqBand
@@ -50,7 +49,12 @@ class AudioEngineViewModel(
         val activeProfile: RoomProfile? = null,
         val isCalibrating: Boolean = false,
         val calibrationProgress: Float = 0f,
-        val targetSplReached: Boolean = false
+        val targetSplReached: Boolean = false,
+        val isNoiseCapturing: Boolean = false,
+        val noiseCaptureProgress: Float = 0f,
+        val hasNoiseProfile: Boolean = false,
+        val noiseSpectrum: SpectrumFrame? = null,
+        val noiseSubtractionEnabled: Boolean = true
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -60,7 +64,6 @@ class AudioEngineViewModel(
     private var notificationUpdateJob: Job? = null
 
     init {
-        // Initialize engine with default config
         engine = AudioEngine().also { eng ->
             eng.configure(_uiState.value.config)
             eng.onAnalysisUpdate = { result ->
@@ -75,7 +78,21 @@ class AudioEngineViewModel(
                         correctionIntensity = result.correctionIntensity,
                         framesAnalyzed = result.framesAnalyzed,
                         isCorrecting = result.correctionIntensity > 0.01f,
-                        targetSplReached = result.spl >= state.config.targetSpl
+                        targetSplReached = result.spl >= state.config.targetSpl,
+                        noiseSpectrum = result.noiseSpectrum,
+                        hasNoiseProfile = result.noiseSpectrum != null
+                    )
+                }
+            }
+            eng.onNoiseCaptureProgress = { progress ->
+                _uiState.update { it.copy(noiseCaptureProgress = progress) }
+            }
+            eng.onNoiseCaptureComplete = {
+                _uiState.update {
+                    it.copy(
+                        isNoiseCapturing = false,
+                        noiseCaptureProgress = 1f,
+                        hasNoiseProfile = true
                     )
                 }
             }
@@ -96,7 +113,6 @@ class AudioEngineViewModel(
             context.startService(intent)
         }
 
-        // Also start local engine for immediate UI feedback
         engine?.start()
         _uiState.update { it.copy(isRunning = true) }
 
@@ -121,7 +137,9 @@ class AudioEngineViewModel(
                 currentSpl = 0f,
                 measuredSpectrum = null,
                 correctedSpectrum = null,
-                correctionIntensity = 0f
+                correctionIntensity = 0f,
+                isNoiseCapturing = false,
+                noiseCaptureProgress = 0f
             )
         }
         notificationUpdateJob?.cancel()
@@ -159,6 +177,11 @@ class AudioEngineViewModel(
     fun setSmoothingFactor(factor: Float) = updateConfig { it.copy(smoothingFactor = factor) }
     fun setNoiseFloorDb(db: Float) = updateConfig { it.copy(noiseFloorDb = db) }
     fun setCorrectionEnabled(enabled: Boolean) = updateConfig { it.copy(correctionEnabled = enabled) }
+    fun setNoiseSubtractionEnabled(enabled: Boolean) = updateConfig {
+        it.copy(noiseSubtractionEnabled = enabled)
+    }.also {
+        _uiState.update { state -> state.copy(noiseSubtractionEnabled = enabled) }
+    }
 
     /**
      * Capture the current measured spectrum as the reference signature.
@@ -199,7 +222,6 @@ class AudioEngineViewModel(
 
     /**
      * Start the SPL calibration process.
-     * Plays a reference tone at known SPL and measures the microphone response.
      */
     fun startCalibration() {
         _uiState.update { it.copy(isCalibrating = true, calibrationProgress = 0f) }
@@ -210,7 +232,6 @@ class AudioEngineViewModel(
                 delay(30)
                 _uiState.update { it.copy(calibrationProgress = i / steps.toFloat()) }
             }
-            // After calibration sweep, compute the offset
             val currentSpl = _uiState.value.currentSpl
             val targetRef = _uiState.value.config.targetSpl
             val newCalibration = SplCalibration(
@@ -226,6 +247,49 @@ class AudioEngineViewModel(
                     splCalibration = newCalibration
                 )
             }
+        }
+    }
+
+    /**
+     * Start capturing a background noise profile.
+     * The user should be silent while ambient noise is recorded.
+     */
+    fun startNoiseCapture() {
+        if (!_uiState.value.isRunning) return
+        engine?.startNoiseCapture()
+        _uiState.update {
+            it.copy(
+                isNoiseCapturing = true,
+                noiseCaptureProgress = 0f,
+                hasNoiseProfile = false
+            )
+        }
+    }
+
+    /**
+     * Cancel an ongoing noise capture.
+     */
+    fun cancelNoiseCapture() {
+        engine?.cancelNoiseCapture()
+        _uiState.update {
+            it.copy(
+                isNoiseCapturing = false,
+                noiseCaptureProgress = 0f
+            )
+        }
+    }
+
+    /**
+     * Clear the stored noise profile.
+     */
+    fun clearNoiseProfile() {
+        engine?.clearNoiseProfile()
+        _uiState.update {
+            it.copy(
+                hasNoiseProfile = false,
+                noiseSpectrum = null,
+                noiseCaptureProgress = 0f
+            )
         }
     }
 
@@ -278,8 +342,8 @@ class AudioEngineViewModel(
                 delay(1000)
                 val state = _uiState.value
                 if (state.isRunning) {
-                    AudioAnalysisService.engine?.let { eng ->
-                        // Update via service if running
+                    AudioAnalysisService.engine?.let { _ ->
+                        // Service notification updates could go here
                     }
                 }
             }

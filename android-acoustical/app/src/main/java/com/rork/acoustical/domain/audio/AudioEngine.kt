@@ -47,6 +47,7 @@ class AudioEngine {
     private var fftProcessor: FftProcessor? = null
     private var roomCorrector: RoomCorrector? = null
     private var splMeter: SplMeter? = null
+    private var noiseProfiler: NoiseProfiler? = null
 
     private var config: AudioConfig = AudioConfig.Default
     private var bandFrequencies: FloatArray = StandardFrequencies.tenBand
@@ -58,6 +59,8 @@ class AudioEngine {
 
     // Callback for UI updates
     var onAnalysisUpdate: ((AnalysisResult) -> Unit)? = null
+    var onNoiseCaptureProgress: ((Float) -> Unit)? = null
+    var onNoiseCaptureComplete: (() -> Unit)? = null
 
     private var framesAnalyzed: Long = 0L
     private var isRunning: Boolean = false
@@ -74,7 +77,8 @@ class AudioEngine {
         val averageSpl: Float,
         val correctionIntensity: Float,
         val cpuLoadPercent: Float,
-        val framesAnalyzed: Long
+        val framesAnalyzed: Long,
+        val noiseSpectrum: SpectrumFrame? = null
     )
 
     /**
@@ -93,6 +97,11 @@ class AudioEngine {
             noiseFloorDb = newConfig.noiseFloorDb
         )
         splMeter = SplMeter(calibrationOffset = 120f)
+        noiseProfiler = NoiseProfiler(
+            binCount = newConfig.fftSize.binCount,
+            maxCaptureFrames = 50,
+            gateRange = 6f
+        )
         bands = bandFrequencies.mapIndexed { i, freq ->
             EqBand(index = i, centerFreq = freq, gainDb = 0f, targetGainDb = 0f)
         }.toMutableList()
@@ -266,8 +275,35 @@ class AudioEngine {
         val spl = meter.computeSpl(samples)
 
         // Compute frequency spectrum
-        val magnitudesDb = fft.computeMagnitudesDb(samples, sampleRate)
+        val rawMagnitudesDb = fft.computeMagnitudesDb(samples, sampleRate)
         val binFreqs = fft.getBinFrequencies(sampleRate)
+
+        // Subtract noise profile if enabled and available
+        val profiler = noiseProfiler
+        val magnitudesDb = if (config.noiseSubtractionEnabled && profiler != null && profiler.hasProfile()) {
+            profiler.subtractNoise(rawMagnitudesDb)
+        } else {
+            rawMagnitudesDb
+        }
+
+        // Feed noise profiler if capturing
+        if (profiler != null && profiler.isCapturing()) {
+            val captureDone = profiler.feedFrame(rawMagnitudesDb)
+            onNoiseCaptureProgress?.invoke(profiler.getCaptureProgress())
+            if (captureDone) {
+                onNoiseCaptureComplete?.invoke()
+            }
+        }
+
+        // Build noise spectrum for display
+        val noiseSpectrum: SpectrumFrame? = if (profiler != null && profiler.hasProfile()) {
+            SpectrumFrame(
+                magnitudesDb = profiler.getNoiseProfile()!!,
+                frequencies = binFreqs,
+                timestampMs = System.currentTimeMillis()
+            )
+        } else null
+
         val spectrum = SpectrumFrame(
             magnitudesDb = magnitudesDb,
             frequencies = binFreqs,
@@ -308,11 +344,40 @@ class AudioEngine {
             averageSpl = meter.getAverageSpl(),
             correctionIntensity = correctionIntensity,
             cpuLoadPercent = 0f,
-            framesAnalyzed = framesAnalyzed
+            framesAnalyzed = framesAnalyzed,
+            noiseSpectrum = noiseSpectrum
         )
     }
 
     fun isRunning(): Boolean = isRunning
 
     fun getConfig(): AudioConfig = config
+
+    /**
+     * Start a noise capture session. The user should be silent while ambient
+     * noise is recorded for [maxCaptureFrames] analysis cycles.
+     */
+    fun startNoiseCapture() {
+        noiseProfiler?.startCapture()
+    }
+
+    /**
+     * Cancel an ongoing noise capture.
+     */
+    fun cancelNoiseCapture() {
+        noiseProfiler?.cancelCapture()
+    }
+
+    /**
+     * Clear the stored noise profile.
+     */
+    fun clearNoiseProfile() {
+        noiseProfiler?.clearProfile()
+    }
+
+    fun hasNoiseProfile(): Boolean = noiseProfiler?.hasProfile() ?: false
+
+    fun isNoiseCapturing(): Boolean = noiseProfiler?.isCapturing() ?: false
+
+    fun getNoiseCaptureProgress(): Float = noiseProfiler?.getCaptureProgress() ?: 0f
 }

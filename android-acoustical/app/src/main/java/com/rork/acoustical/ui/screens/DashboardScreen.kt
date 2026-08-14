@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.NoiseAware
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
@@ -257,6 +258,92 @@ fun DashboardScreen(
                     progress = state.correctionIntensity,
                     barColor = CyanGlow
                 )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Noise profile card
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Filled.NoiseAware,
+                            contentDescription = null,
+                            tint = if (state.hasNoiseProfile) LimeActive else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Ruido de fondo",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    if (state.hasNoiseProfile) {
+                        StatusPill(text = "Activo", color = LimeActive)
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Captura el ruido ambiente para excluirlo de la corrección.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (state.isNoiseCapturing) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Capturando ruido... %.0f%%".format(state.noiseCaptureProgress * 100),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = CyanGlow
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    ProgressIndicator(
+                        progress = state.noiseCaptureProgress,
+                        barColor = LimeActive
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.cancelNoiseCapture() },
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cancelar", color = MaterialTheme.colorScheme.error)
+                    }
+                } else {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { viewModel.startNoiseCapture() },
+                            modifier = Modifier.weight(1f).height(44.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            enabled = state.isRunning
+                        ) {
+                            Text(
+                                if (state.hasNoiseProfile) "Recapturar" else "Capturar ruido",
+                                color = CyanPrimary
+                            )
+                        }
+                        if (state.hasNoiseProfile) {
+                            OutlinedButton(
+                                onClick = { viewModel.clearNoiseProfile() },
+                                modifier = Modifier.weight(1f).height(44.dp),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("Limpiar", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
             }
         }
 
