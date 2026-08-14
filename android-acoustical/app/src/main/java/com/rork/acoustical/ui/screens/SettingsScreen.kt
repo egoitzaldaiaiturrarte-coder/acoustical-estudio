@@ -317,6 +317,49 @@ fun SettingsScreen(
                 }
             }
 
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Noise Subtraction
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Sustracción de ruido",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Resta el perfil de ruido capturado del espectro medido antes de corregir.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Activar sustracción",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        androidx.compose.material3.Switch(
+                            checked = config.noiseSubtractionEnabled,
+                            onCheckedChange = { viewModel.setNoiseSubtractionEnabled(it) }
+                        )
+                    }
+                    if (!state.hasNoiseProfile) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Captura un perfil de ruido desde Inicio para activar esta función.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
         }
     }

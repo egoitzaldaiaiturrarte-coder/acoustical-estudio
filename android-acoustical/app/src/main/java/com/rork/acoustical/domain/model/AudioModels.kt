@@ -68,7 +68,8 @@ data class AudioConfig(
     val maxGainDb: Float = 12f,
     val targetSpl: Float = 75f,
     val smoothingFactor: Float = 0.3f,
-    val noiseFloorDb: Float = -80f
+    val noiseFloorDb: Float = -80f,
+    val noiseSubtractionEnabled: Boolean = true
 ) {
     companion object {
         val Default = AudioConfig()

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_start_short">Iniciar</string>
+    <string name="shortcut_start_long">Iniciar análisis</string>
+    <string name="shortcut_stop_short">Detener</string>
+    <string name="shortcut_stop_long">Detener análisis</string>
+</resources>

@@ -12,21 +12,25 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.rork.acoustical.MainActivity
 import com.rork.acoustical.ui.screens.CalibrationScreen
 import com.rork.acoustical.ui.screens.DashboardScreen
 import com.rork.acoustical.ui.screens.EqualizerScreen
 import com.rork.acoustical.ui.screens.SettingsScreen
 import com.rork.acoustical.ui.theme.CyanGlow
 import com.rork.acoustical.ui.theme.CyanPrimary
+import com.rork.acoustical.ui.viewmodel.AudioEngineViewModel
 
 data class BottomNavItem(
     val route: String,
@@ -35,8 +39,23 @@ data class BottomNavItem(
 )
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(
+    pendingShortcutAction: String? = null,
+    onShortcutConsumed: () -> Unit = {}
+) {
     val navController = rememberNavController()
+    val viewModel: AudioEngineViewModel = viewModel()
+
+    // Handle shortcut actions from app icon
+    LaunchedEffect(pendingShortcutAction) {
+        when (pendingShortcutAction) {
+            MainActivity.ACTION_START_ENGINE -> viewModel.startEngine()
+            MainActivity.ACTION_STOP_ENGINE -> viewModel.stopEngine()
+        }
+        if (pendingShortcutAction != null) {
+            onShortcutConsumed()
+        }
+    }
 
     val items = listOf(
         BottomNavItem("dashboard", "Inicio", Icons.Filled.GraphicEq),
@@ -86,16 +105,16 @@ fun AppNavigation() {
             modifier = Modifier.padding(innerPadding)
         ) {
             composable("dashboard") {
-                DashboardScreen(navController = navController)
+                DashboardScreen(navController = navController, viewModel = viewModel)
             }
             composable("equalizer") {
-                EqualizerScreen(navController = navController)
+                EqualizerScreen(navController = navController, viewModel = viewModel)
             }
             composable("calibration") {
-                CalibrationScreen(navController = navController)
+                CalibrationScreen(navController = navController, viewModel = viewModel)
             }
             composable("settings") {
-                SettingsScreen(navController = navController)
+                SettingsScreen(navController = navController, viewModel = viewModel)
             }
         }
     }
