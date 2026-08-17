@@ -5,6 +5,8 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rork.acoustical.domain.audio.AudioEngine
+import com.rork.acoustical.domain.audio.LocationProvider
+import com.rork.acoustical.domain.audio.Rt60Estimator
 import com.rork.acoustical.domain.console.ConsoleChannel
 import com.rork.acoustical.domain.console.ConsoleConfig
 import com.rork.acoustical.domain.console.ConsoleConnectionState
@@ -20,6 +22,7 @@ import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.EqBand
 import com.rork.acoustical.domain.model.RoomProfile
 import com.rork.acoustical.domain.model.SampleRate
+import com.rork.acoustical.domain.model.ScenarioPreset
 import com.rork.acoustical.domain.model.SpectrumFrame
 import com.rork.acoustical.domain.model.SplCalibration
 import com.rork.acoustical.service.AudioAnalysisService
@@ -74,7 +77,14 @@ class AudioEngineViewModel(
         // Mesh network
         val meshIsRunning: Boolean = false,
         val meshIsMaster: Boolean = false,
-        val meshPeers: List<MeshPeer> = emptyList()
+        val meshPeers: List<MeshPeer> = emptyList(),
+        // Audio delay & geo
+        val audioDelayMs: Float = 25f,
+        val geoAutoAdjust: Boolean = false,
+        val geoInfo: LocationProvider.GeoAcousticInfo = LocationProvider.GeoAcousticInfo(),
+        val geoAdjustmentApplied: Float = 0f,
+        val rt60Ms: Float = 0f,
+        val scenarioPreset: String = "CUSTOM"
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -85,11 +95,16 @@ class AudioEngineViewModel(
     private var consoleManager: ConsoleManager? = null
     private var meshManager: MeshNetworkManager? = null
     private var usbAudioSource: UsbAudioSource? = null
+    private var locationProvider: LocationProvider? = null
+    private var rt60Estimator: Rt60Estimator? = null
+    private var geoJob: Job? = null
 
     init {
         engine = AudioEngine().also { eng ->
             eng.configure(_uiState.value.config)
             eng.onAnalysisUpdate = { result ->
+                val rt60 = rt60Estimator
+                rt60?.feedFrame(result.measuredSpectrum.magnitudesDb)
                 _uiState.update { state ->
                     state.copy(
                         currentSpl = result.spl,
@@ -103,7 +118,8 @@ class AudioEngineViewModel(
                         isCorrecting = result.correctionIntensity > 0.01f,
                         targetSplReached = result.spl >= state.config.targetSpl,
                         noiseSpectrum = result.noiseSpectrum,
-                        hasNoiseProfile = result.noiseSpectrum != null
+                        hasNoiseProfile = result.noiseSpectrum != null,
+                        rt60Ms = rt60?.currentRt60Ms ?: 0f
                     )
                 }
                 // Push corrections to console if connected
@@ -154,6 +170,16 @@ class AudioEngineViewModel(
         // Initialize USB audio source
         usbAudioSource = UsbAudioSource(application)
         refreshUsbDevices()
+
+        // Initialize location provider
+        locationProvider = LocationProvider(application)
+
+        // Initialize RT60 estimator
+        rt60Estimator = Rt60Estimator(
+            bandCount = 8,
+            historySize = 64,
+            sampleIntervalMs = _uiState.value.config.analysisInterval.ms
+        )
     }
 
     // === Engine Control ===
@@ -222,10 +248,73 @@ class AudioEngineViewModel(
     fun setSmoothingFactor(factor: Float) = updateConfig { it.copy(smoothingFactor = factor) }
     fun setNoiseFloorDb(db: Float) = updateConfig { it.copy(noiseFloorDb = db) }
     fun setCorrectionEnabled(enabled: Boolean) = updateConfig { it.copy(correctionEnabled = enabled) }
+    fun setAudioDelayMs(delayMs: Float) = updateConfig { it.copy(audioDelayMs = delayMs) }
     fun setNoiseSubtractionEnabled(enabled: Boolean) = updateConfig {
         it.copy(noiseSubtractionEnabled = enabled)
     }.also {
         _uiState.update { state -> state.copy(noiseSubtractionEnabled = enabled) }
+    }
+
+    // === Scenario Presets ===
+
+    fun applyScenarioPreset(preset: ScenarioPreset) {
+        updateConfig { cfg ->
+            cfg.copy(
+                targetSpl = preset.targetSpl,
+                maxGainDb = preset.maxGainDb,
+                bandCount = preset.bandCount,
+                smoothingFactor = preset.smoothingFactor,
+                noiseSubtractionEnabled = preset.noiseSubtractionEnabled,
+                analysisInterval = preset.analysisInterval,
+                audioDelayMs = preset.recommendedDelayMs,
+                scenarioPreset = preset.id
+            )
+        }
+        _uiState.update {
+            it.copy(
+                audioDelayMs = preset.recommendedDelayMs,
+                scenarioPreset = preset.id
+            )
+        }
+        rt60Estimator = Rt60Estimator(
+            bandCount = 8,
+            historySize = 64,
+            sampleIntervalMs = preset.analysisInterval.ms
+        )
+    }
+
+    // === Geolocation Auto-Adjust ===
+
+    fun setGeoAutoAdjust(enabled: Boolean) {
+        _uiState.update { it.copy(geoAutoAdjust = enabled) }
+        updateConfig { it.copy(geoAutoAdjust = enabled) }
+        if (enabled) {
+            refreshGeoLocation()
+        }
+    }
+
+    fun refreshGeoLocation() {
+        geoJob?.cancel()
+        geoJob = viewModelScope.launch(Dispatchers.IO) {
+            val info = locationProvider?.getCurrentLocation() ?: return@launch
+            _uiState.update {
+                it.copy(
+                    geoInfo = info,
+                    geoAdjustmentApplied = info.altitudeCorrectionDb
+                )
+            }
+            if (_uiState.value.geoAutoAdjust) {
+                updateConfig { cfg ->
+                    cfg.copy(
+                        targetSpl = info.recommendedSpl,
+                        audioDelayMs = info.recommendedDelayMs
+                    )
+                }
+                _uiState.update {
+                    it.copy(audioDelayMs = info.recommendedDelayMs)
+                }
+            }
+        }
     }
 
     // === Reference & EQ ===
@@ -504,5 +593,8 @@ class AudioEngineViewModel(
         meshManager = null
         usbAudioSource?.disconnect()
         usbAudioSource = null
+        geoJob?.cancel()
+        locationProvider = null
+        rt60Estimator = null
     }
 }

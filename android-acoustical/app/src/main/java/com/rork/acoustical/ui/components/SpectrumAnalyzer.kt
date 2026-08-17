@@ -58,7 +58,7 @@ fun SpectrumAnalyzer(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(220.dp)
+            .height(260.dp)
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width

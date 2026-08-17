@@ -37,7 +37,7 @@ fun GlassCard(
 ) {
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
@@ -50,9 +50,9 @@ fun GlassCard(
     ) {
         Box(
             modifier = Modifier
-                .clip(RoundedCornerShape(19.dp))
+                .clip(RoundedCornerShape(15.dp))
                 .background(SurfaceTeal.copy(alpha = 0.6f))
-                .padding(16.dp)
+                .padding(12.dp)
         ) {
             content()
         }
