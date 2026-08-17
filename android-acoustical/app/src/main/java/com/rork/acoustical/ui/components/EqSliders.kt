@@ -86,8 +86,8 @@ fun EqVerticalSlider(
 
         Box(
             modifier = Modifier
-                .width(36.dp)
-                .height(160.dp)
+                .width(32.dp)
+                .height(200.dp)
                 .pointerInput(maxGain) {
                     detectDragGestures { change, dragAmount ->
                         change.consume()
@@ -111,7 +111,7 @@ fun EqVerticalSlider(
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(160.dp)
+                    .height(200.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(SurfaceTeal)
                     .pointerInput(Unit) {

@@ -69,7 +69,10 @@ data class AudioConfig(
     val targetSpl: Float = 75f,
     val smoothingFactor: Float = 0.3f,
     val noiseFloorDb: Float = -80f,
-    val noiseSubtractionEnabled: Boolean = true
+    val noiseSubtractionEnabled: Boolean = true,
+    val audioDelayMs: Float = 25f,
+    val geoAutoAdjust: Boolean = false,
+    val scenarioPreset: String = "CUSTOM"
 ) {
     companion object {
         val Default = AudioConfig()
@@ -177,5 +180,8 @@ data class EngineState(
     val bands: List<EqBand> = emptyList(),
     val correctionActive: Float = 0f,
     val cpuLoadPercent: Float = 0f,
-    val framesAnalyzed: Long = 0L
+    val framesAnalyzed: Long = 0L,
+    val rt60Ms: Float = 0f,
+    val geoLocationLabel: String = "",
+    val geoAdjustmentApplied: Float = 0f
 )

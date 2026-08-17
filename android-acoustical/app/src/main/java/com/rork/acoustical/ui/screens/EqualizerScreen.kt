@@ -29,7 +29,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -42,9 +41,6 @@ import com.rork.acoustical.ui.theme.CyanPrimary
 import com.rork.acoustical.ui.theme.LimeActive
 import com.rork.acoustical.ui.viewmodel.AudioEngineViewModel
 
-/**
- * Equalizer screen — shows all EQ band sliders with manual and auto correction controls.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EqualizerScreen(
@@ -86,9 +82,9 @@ fun EqualizerScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 12.dp)
         ) {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Correction toggle
             GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -97,7 +93,7 @@ fun EqualizerScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Corrección automática",
                             style = MaterialTheme.typography.titleMedium,
@@ -116,7 +112,7 @@ fun EqualizerScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Band info
             Row(
@@ -125,7 +121,7 @@ fun EqualizerScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${state.config.bandCount.label} · ${state.config.maxGainDb.toInt()} dB max",
+                    text = "${state.config.bandCount.label} · ${state.config.maxGainDb.toInt()} dB max · %.1fms".format(state.config.audioDelayMs),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -134,9 +130,9 @@ fun EqualizerScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // EQ Sliders
+            // EQ Sliders — taller for better visibility
             GlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -155,13 +151,13 @@ fun EqualizerScreen(
                             text = "Inicia el análisis para ver las bandas",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(vertical = 32.dp)
+                            modifier = Modifier.padding(vertical = 24.dp)
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Reference capture
             GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -171,41 +167,75 @@ fun EqualizerScreen(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = "Captura la firma acústica del source para comparar con la sala",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(
                             onClick = { viewModel.captureReference() },
-                            modifier = Modifier.weight(1f).height(48.dp),
-                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f).height(42.dp),
+                            shape = RoundedCornerShape(10.dp),
                             enabled = state.isRunning
                         ) {
                             Text("Capturar ref", color = CyanPrimary)
                         }
                         OutlinedButton(
                             onClick = { viewModel.clearReference() },
-                            modifier = Modifier.weight(1f).height(48.dp),
-                            shape = RoundedCornerShape(12.dp)
+                            modifier = Modifier.weight(1f).height(42.dp),
+                            shape = RoundedCornerShape(10.dp)
                         ) {
                             Text("Limpiar", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     if (state.isReferenceCaptured) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         StatusPill(text = "Referencia activa", color = LimeActive)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            // RT60 per band display
+            if (state.rt60Ms > 0f) {
+                Spacer(modifier = Modifier.height(8.dp))
+                GlassCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Reverberación (RT60)",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "%.2f s".format(state.rt60Ms / 1000f),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = CyanGlow,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (state.rt60Ms < 300f) "Sala seca (poco reverberante)"
+                                   else if (state.rt60Ms < 800f) "Sala equilibrada"
+                                   else if (state.rt60Ms < 1500f) "Sala reverberante"
+                                   else "Sala muy reverberante (catedral)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }

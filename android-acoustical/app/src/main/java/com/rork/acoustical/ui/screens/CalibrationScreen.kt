@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -23,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -50,9 +53,6 @@ import com.rork.acoustical.ui.theme.CyanPrimary
 import com.rork.acoustical.ui.theme.LimeActive
 import com.rork.acoustical.ui.viewmodel.AudioEngineViewModel
 
-/**
- * Calibration screen — SPL calibration, reference capture, room profile management.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CalibrationScreen(
@@ -87,9 +87,9 @@ fun CalibrationScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 12.dp)
         ) {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // SPL Gauge
             GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -98,16 +98,16 @@ fun CalibrationScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "Medición de presión sonora",
+                        text = "Presión Sonora",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     SplGauge(
                         spl = state.currentSpl,
                         targetSpl = state.config.targetSpl
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly
@@ -131,9 +131,9 @@ fun CalibrationScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Calibration process
+            // SPL Calibration process
             GlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -150,26 +150,26 @@ fun CalibrationScreen(
                     )
 
                     if (state.isCalibrating) {
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = "Calibrando... %.0f%%".format(state.calibrationProgress * 100),
                             style = MaterialTheme.typography.bodyMedium,
                             color = CyanGlow
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         ProgressIndicator(progress = state.calibrationProgress)
                     }
 
                     if (state.splCalibration.isCalibrated && !state.isCalibrating) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         StatusPill(text = "Calibrado", color = LimeActive)
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Button(
                         onClick = { viewModel.startCalibration() },
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        shape = RoundedCornerShape(10.dp),
                         enabled = !state.isCalibrating && state.isRunning,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = CyanPrimary,
@@ -181,9 +181,9 @@ fun CalibrationScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Target SPL control
+            // Target SPL slider — up to 97
             GlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -193,21 +193,34 @@ fun CalibrationScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Punto de presión sonora deseado para la calibración",
+                        text = "Ajusta el nivel de presión sonora deseado (hasta 97 dB).",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        listOf(65f, 70f, 75f, 80f, 85f).forEach { target ->
+                        Text("30 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("%.0f dB".format(state.config.targetSpl), style = MaterialTheme.typography.titleMedium, color = CyanGlow, fontWeight = FontWeight.Bold)
+                        Text("97 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Slider(
+                        value = state.config.targetSpl,
+                        onValueChange = { viewModel.setTargetSpl(it) },
+                        valueRange = 30f..97f
+                    )
+                    // Quick presets
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(65f, 75f, 85f, 97f).forEach { target ->
                             OutlinedButton(
                                 onClick = { viewModel.setTargetSpl(target) },
-                                modifier = Modifier.height(40.dp),
-                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                shape = RoundedCornerShape(8.dp),
                                 colors = if (state.config.targetSpl == target) {
                                     ButtonDefaults.outlinedButtonColors(
                                         containerColor = CyanPrimary.copy(alpha = 0.2f),
@@ -219,18 +232,156 @@ fun CalibrationScreen(
                                     )
                                 }
                             ) {
-                                Text("%.0f".format(target), style = MaterialTheme.typography.labelMedium)
+                                Text("%.0f".format(target), style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
                     if (state.targetSplReached && state.isRunning) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         StatusPill(text = "Objetivo alcanzado", color = LimeActive)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Audio delay control with decimals
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Retardo de audio",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Sincroniza varios móviles, altavoces o dispositivos. Ajuste con precisión decimal.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("25.0 ms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("%.1f ms".format(state.config.audioDelayMs), style = MaterialTheme.typography.titleMedium, color = AmberAccent, fontWeight = FontWeight.Bold)
+                        Text("2000.0 ms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Slider(
+                        value = state.config.audioDelayMs,
+                        onValueChange = { viewModel.setAudioDelayMs(it) },
+                        valueRange = 25f..2000f
+                    )
+                    // Delay presets for common scenarios
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(25f, 50f, 100f, 250f, 500f).forEach { delay ->
+                            OutlinedButton(
+                                onClick = { viewModel.setAudioDelayMs(delay) },
+                                modifier = Modifier.weight(1f).height(34.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = if (state.config.audioDelayMs == delay) {
+                                    ButtonDefaults.outlinedButtonColors(
+                                        containerColor = CyanPrimary.copy(alpha = 0.2f),
+                                        contentColor = CyanGlow
+                                    )
+                                } else {
+                                    ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            ) {
+                                Text("%.0fms".format(delay), style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                    // Show distance equivalent
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Equivale a %.1f m de distancia".format(state.config.audioDelayMs * 0.343f),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CyanGlow
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Geolocation auto-adjust
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Ajuste por geolocalización",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Ajusta SPL y retardo según tu ubicación GPS",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = state.geoAutoAdjust,
+                            onCheckedChange = { viewModel.setGeoAutoAdjust(it) }
+                        )
+                    }
+                    if (state.geoInfo.hasFix) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Ubicación", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(state.geoInfo.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface)
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Altitud", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("%.0f m".format(state.geoInfo.altitude), style = MaterialTheme.typography.labelSmall, color = AmberAccent)
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("SPL recomendado", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("%.0f dB".format(state.geoInfo.recommendedSpl), style = MaterialTheme.typography.labelSmall, color = CyanGlow)
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Retardo recomendado", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("%.1f ms".format(state.geoInfo.recommendedDelayMs), style = MaterialTheme.typography.labelSmall, color = CyanGlow)
+                        }
+                    } else if (state.geoAutoAdjust) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.refreshGeoLocation() },
+                            modifier = Modifier.fillMaxWidth().height(38.dp),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Obtener ubicación", color = CyanPrimary)
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Save profile
             GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -240,25 +391,25 @@ fun CalibrationScreen(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = profileName,
                         onValueChange = { profileName = it },
                         label = { Text("Nombre") },
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         singleLine = true
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     OutlinedTextField(
                         value = profileDesc,
                         onValueChange = { profileDesc = it },
                         label = { Text("Descripción (opcional)") },
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         maxLines = 2
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Button(
                         onClick = {
                             if (profileName.isNotBlank()) {
@@ -267,30 +418,30 @@ fun CalibrationScreen(
                                 profileDesc = ""
                             }
                         },
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        shape = RoundedCornerShape(10.dp),
                         enabled = profileName.isNotBlank() && state.bands.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = CyanPrimary,
                             contentColor = Color.Black
                         )
                     ) {
-                        Icon(imageVector = Icons.Filled.Save, contentDescription = null)
-                        Spacer(modifier = Modifier.padding(4.dp))
+                        Icon(imageVector = Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text("Guardar perfil", fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Saved profiles
             if (state.savedProfiles.isNotEmpty()) {
                 Text(
                     text = "Perfiles guardados",
-                    style = MaterialTheme.typography.titleSmall,
+                    style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 8.dp)
+                    modifier = Modifier.padding(vertical = 4.dp)
                 )
                 state.savedProfiles.forEach { profile ->
                     GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -320,17 +471,17 @@ fun CalibrationScreen(
                             }
                             OutlinedButton(
                                 onClick = { viewModel.loadProfile(profile) },
-                                shape = RoundedCornerShape(10.dp)
+                                shape = RoundedCornerShape(8.dp)
                             ) {
                                 Text("Cargar", color = CyanPrimary)
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
