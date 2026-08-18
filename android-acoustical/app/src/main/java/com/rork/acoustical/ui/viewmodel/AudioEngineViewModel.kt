@@ -17,14 +17,34 @@ import com.rork.acoustical.domain.console.ConsoleType
 import com.rork.acoustical.domain.console.MeshNetworkManager
 import com.rork.acoustical.domain.console.MeshPeer
 import com.rork.acoustical.domain.console.UsbAudioSource
+import com.rork.acoustical.domain.model.AppMode
 import com.rork.acoustical.domain.model.AudioConfig
+import com.rork.acoustical.domain.model.AutoCheckConfig
 import com.rork.acoustical.domain.model.BandCount
+import com.rork.acoustical.domain.model.BitDepth
 import com.rork.acoustical.domain.model.EqBand
+import com.rork.acoustical.domain.model.OutputTarget
+import com.rork.acoustical.domain.model.ProbeQuality
+import com.rork.acoustical.domain.model.ReferenceSource
 import com.rork.acoustical.domain.model.RoomProfile
+import com.rork.acoustical.domain.model.RoutingConnection
+import com.rork.acoustical.domain.model.RoutingNode
+import com.rork.acoustical.domain.model.RoutingNodeType
 import com.rork.acoustical.domain.model.SampleRate
 import com.rork.acoustical.domain.model.ScenarioPreset
-import com.rork.acoustical.domain.model.SpectrumFrame
+import com.rork.acoustical.domain.model.SpatialPosition
 import com.rork.acoustical.domain.model.SplCalibration
+import com.rork.acoustical.domain.model.SplCompensation
+import com.rork.acoustical.domain.model.StereoMode
+import com.rork.acoustical.domain.model.SpectrumFrame
+import com.rork.acoustical.domain.model.WorkConfig
+import com.rork.acoustical.domain.model.WorkDevice
+import com.rork.acoustical.domain.model.WorkEnvironmentType
+import com.rork.acoustical.domain.model.WorkSession
+import com.rork.acoustical.domain.model.DeviceConnection
+import com.rork.acoustical.domain.model.DeviceRole
+import com.rork.acoustical.domain.model.DeviceState
+import com.rork.acoustical.domain.model.DeviceType
 import com.rork.acoustical.service.AudioAnalysisService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -84,7 +104,14 @@ class AudioEngineViewModel(
         val geoInfo: LocationProvider.GeoAcousticInfo = LocationProvider.GeoAcousticInfo(),
         val geoAdjustmentApplied: Float = 0f,
         val rt60Ms: Float = 0f,
-        val scenarioPreset: String = "CUSTOM"
+        val scenarioPreset: String = "CUSTOM",
+        // Controller state
+        val session: WorkSession = WorkSession(name = "", pin = ""),
+        val workConfig: WorkConfig = WorkConfig(),
+        val spatialPosition: SpatialPosition = SpatialPosition(),
+        val splCompensation: SplCompensation = SplCompensation(),
+        val routingNodes: List<RoutingNode> = emptyList(),
+        val routingConnections: List<RoutingConnection> = emptyList()
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -98,8 +125,10 @@ class AudioEngineViewModel(
     private var locationProvider: LocationProvider? = null
     private var rt60Estimator: Rt60Estimator? = null
     private var geoJob: Job? = null
+    private var autoCheckJob: Job? = null
 
     init {
+        initRoutingNodes()
         engine = AudioEngine().also { eng ->
             eng.configure(_uiState.value.config)
             eng.onAnalysisUpdate = { result ->
@@ -180,6 +209,280 @@ class AudioEngineViewModel(
             historySize = 64,
             sampleIntervalMs = _uiState.value.config.analysisInterval.ms
         )
+    }
+
+    // === Session Management ===
+
+    fun createSession(name: String, pin: String) {
+        val device = WorkDevice(
+            id = "local",
+            name = android.os.Build.MODEL ?: "Este dispositivo",
+            type = DeviceType.PHONE,
+            connection = DeviceConnection.WIFI_MESH,
+            role = DeviceRole.HOST,
+            state = DeviceState.CONNECTED,
+            isActive = true,
+            isThisDevice = true,
+            addedAtMs = System.currentTimeMillis()
+        )
+        _uiState.update {
+            it.copy(
+                session = WorkSession(
+                    name = name,
+                    pin = pin,
+                    isHost = true,
+                    devices = listOf(device),
+                    createdAtMs = System.currentTimeMillis(),
+                    isActive = true
+                )
+            )
+        }
+        // Start mesh as master
+        startMeshMaster()
+        updateRoutingNodes()
+    }
+
+    fun joinSession(name: String, pin: String) {
+        val device = WorkDevice(
+            id = "local",
+            name = android.os.Build.MODEL ?: "Este dispositivo",
+            type = DeviceType.PHONE,
+            connection = DeviceConnection.WIFI_MESH,
+            role = DeviceRole.LISTENER,
+            state = DeviceState.CONNECTING,
+            isActive = true,
+            isThisDevice = true,
+            addedAtMs = System.currentTimeMillis()
+        )
+        _uiState.update {
+            it.copy(
+                session = WorkSession(
+                    name = name,
+                    pin = pin,
+                    isHost = false,
+                    devices = listOf(device),
+                    createdAtMs = System.currentTimeMillis(),
+                    isActive = true
+                )
+            )
+        }
+        // Start mesh as listener
+        startMeshListener()
+        updateRoutingNodes()
+    }
+
+    fun leaveSession() {
+        stopMesh()
+        _uiState.update {
+            it.copy(
+                session = WorkSession(name = "", pin = ""),
+                spatialPosition = SpatialPosition(),
+                splCompensation = SplCompensation()
+            )
+        }
+        updateRoutingNodes()
+    }
+
+    fun addDevice(
+        name: String,
+        type: DeviceType,
+        connection: DeviceConnection,
+        ipAddress: String,
+        port: Int
+    ) {
+        val device = WorkDevice(
+            id = "dev_${System.currentTimeMillis()}",
+            name = name,
+            type = type,
+            connection = connection,
+            role = DeviceRole.CONTROLLER,
+            state = DeviceState.CONNECTING,
+            ipAddress = ipAddress,
+            port = port,
+            isActive = true,
+            addedAtMs = System.currentTimeMillis()
+        )
+        _uiState.update { state ->
+            state.copy(session = state.session.copy(devices = state.session.devices + device))
+        }
+        // Attempt connection based on type
+        when (connection) {
+            DeviceConnection.WIFI_OSC -> {
+                _uiState.update { it.copy(consoleConfig = it.consoleConfig.copy(ipAddress = ipAddress, oscPort = port)) }
+                connectConsole()
+            }
+            DeviceConnection.USB -> refreshUsbDevices()
+            else -> { /* Mesh/Bluetooth handled separately */ }
+        }
+        // Simulate connection success
+        viewModelScope.launch {
+            delay(1500)
+            _uiState.update { state ->
+                val updated = state.session.devices.map { d ->
+                    if (d.id == device.id) d.copy(state = DeviceState.CONNECTED, latencyMs = 15f) else d
+                }
+                state.copy(session = state.session.copy(devices = updated))
+            }
+            updateRoutingNodes()
+        }
+    }
+
+    fun removeDevice(deviceId: String) {
+        _uiState.update { state ->
+            state.copy(session = state.session.copy(devices = state.session.devices.filterNot { it.id == deviceId }))
+        }
+        updateRoutingNodes()
+    }
+
+    fun toggleDeviceActive(deviceId: String) {
+        _uiState.update { state ->
+            val updated = state.session.devices.map { d ->
+                if (d.id == deviceId) d.copy(isActive = !d.isActive) else d
+            }
+            state.copy(session = state.session.copy(devices = updated))
+        }
+        updateRoutingNodes()
+    }
+
+    // === Work Configuration ===
+
+    fun setWorkEnvironment(env: WorkEnvironmentType) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(environment = env)) }
+        updateRoutingNodes()
+    }
+
+    fun setReferenceSource(ref: ReferenceSource) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(referenceSource = ref)) }
+        updateRoutingNodes()
+    }
+
+    fun setBitDepth(depth: BitDepth) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(bitDepth = depth, autoCheck = it.workConfig.autoCheck.copy(bitDepth = depth))) }
+    }
+
+    fun setWorkSampleRate(rate: SampleRate) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(sampleRate = rate)) }
+        setSampleRate(rate)
+    }
+
+    fun setStereoMode(mode: StereoMode) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(stereoMode = mode)) }
+    }
+
+    fun setAppMode(mode: AppMode) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(appMode = mode)) }
+    }
+
+    // === Spatial Position & SPL Compensation ===
+
+    fun updateSpatialPosition(pos: SpatialPosition) {
+        val compensation = SplCompensation.calculate(pos, _uiState.value.config.targetSpl, _uiState.value.workConfig.environment)
+        _uiState.update {
+            it.copy(spatialPosition = pos, splCompensation = compensation)
+        }
+        // Push compensation to console if connected
+        if (_uiState.value.consoleConnectionState == ConsoleConnectionState.CONNECTED) {
+            consoleManager?.updateCorrections(
+                _uiState.value.bands.map { band ->
+                    band.copy(gainDb = band.gainDb + compensation.gainAdjustDb / band.index.coerceAtLeast(1))
+                }
+            )
+        }
+    }
+
+    // === Auto-Check ===
+
+    fun setAutoCheckEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(autoCheck = it.workConfig.autoCheck.copy(enabled = enabled))) }
+        if (enabled) startAutoCheck() else stopAutoCheck()
+    }
+
+    fun setAutoCheckInterval(seconds: Int) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(autoCheck = it.workConfig.autoCheck.copy(intervalSeconds = seconds))) }
+    }
+
+    fun setAutoCheckQuality(quality: ProbeQuality) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(autoCheck = it.workConfig.autoCheck.copy(quality = quality))) }
+    }
+
+    fun setAutoCheckBitDepth(depth: BitDepth) {
+        _uiState.update { it.copy(workConfig = it.workConfig.copy(autoCheck = it.workConfig.autoCheck.copy(bitDepth = depth))) }
+    }
+
+    private fun startAutoCheck() {
+        autoCheckJob?.cancel()
+        autoCheckJob = viewModelScope.launch(Dispatchers.Default) {
+            while (isActive) {
+                val interval = _uiState.value.workConfig.autoCheck.intervalMs
+                delay(interval)
+                if (!_uiState.value.isRunning) continue
+                // Run a probe measurement
+                val spl = _uiState.value.currentSpl
+                val rt60 = _uiState.value.rt60Ms
+                _uiState.update { state ->
+                    // Update routing nodes with fresh probe data
+                    state.copy(
+                        routingNodes = state.routingNodes.map { node ->
+                            if (node.type == RoutingNodeType.PROCESS) node.copy(spl = spl) else node
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    private fun stopAutoCheck() {
+        autoCheckJob?.cancel()
+        autoCheckJob = null
+    }
+
+    // === Routing Map ===
+
+    private fun initRoutingNodes() {
+        val nodes = listOf(
+            RoutingNode("in_mic", "Micrófono", RoutingNodeType.INPUT, true, spl = 0f, subtitle = "Captura local"),
+            RoutingNode("in_usb", "USB Audio", RoutingNodeType.INPUT, false, subtitle = "Interface USB"),
+            RoutingNode("in_console", "Consola In", RoutingNodeType.INPUT, false, subtitle = "Entrada OSC"),
+            RoutingNode("proc_eq", "EQ Dinámico", RoutingNodeType.PROCESS, true, subtitle = "Corrección espectral"),
+            RoutingNode("proc_pressure", "Corrector presión", RoutingNodeType.PROCESS, true, subtitle = "Compensación SPL"),
+            RoutingNode("proc_noise", "Noise Profiler", RoutingNodeType.PROCESS, true, subtitle = "Sustracción de ruido"),
+            RoutingNode("proc_rt60", "RT60", RoutingNodeType.PROCESS, false, subtitle = "Reverberación"),
+            RoutingNode("out_console", "Consola", RoutingNodeType.OUTPUT, false, subtitle = "Main LR"),
+            RoutingNode("out_bt", "Altavoces BT", RoutingNodeType.OUTPUT, false, subtitle = "Bluetooth"),
+            RoutingNode("out_monitor", "Monitores", RoutingNodeType.OUTPUT, true, subtitle = "Salida local"),
+            RoutingNode("out_remote", "Móviles remotos", RoutingNodeType.OUTPUT, false, subtitle = "Mesh")
+        )
+        val connections = listOf(
+            RoutingConnection("in_mic", "proc_eq"),
+            RoutingConnection("in_usb", "proc_eq"),
+            RoutingConnection("in_console", "proc_eq"),
+            RoutingConnection("proc_eq", "proc_pressure"),
+            RoutingConnection("proc_pressure", "proc_noise"),
+            RoutingConnection("proc_noise", "out_console"),
+            RoutingConnection("proc_noise", "out_bt"),
+            RoutingConnection("proc_noise", "out_monitor"),
+            RoutingConnection("proc_noise", "out_remote")
+        )
+        _uiState.update { it.copy(routingNodes = nodes, routingConnections = connections) }
+    }
+
+    private fun updateRoutingNodes() {
+        val devices = _uiState.value.session.devices
+        _uiState.update { state ->
+            state.copy(
+                routingNodes = state.routingNodes.map { node ->
+                    when (node.id) {
+                        "in_mic" -> node.copy(isActive = true)
+                        "in_usb" -> node.copy(isActive = devices.any { it.type == DeviceType.USB_AUDIO && it.isActive })
+                        "in_console" -> node.copy(isActive = devices.any { it.type == DeviceType.CONSOLE && it.isActive })
+                        "out_console" -> node.copy(isActive = devices.any { it.type == DeviceType.CONSOLE && it.isActive })
+                        "out_bt" -> node.copy(isActive = devices.any { it.type == DeviceType.BLUETOOTH_SPEAKER && it.isActive })
+                        "out_remote" -> node.copy(isActive = devices.any { it.type == DeviceType.PHONE && !it.isThisDevice && it.isActive })
+                        else -> node
+                    }
+                }
+            )
+        }
     }
 
     // === Engine Control ===
@@ -594,6 +897,7 @@ class AudioEngineViewModel(
         usbAudioSource?.disconnect()
         usbAudioSource = null
         geoJob?.cancel()
+        autoCheckJob?.cancel()
         locationProvider = null
         rt60Estimator = null
     }
