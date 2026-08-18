@@ -1,0 +1,15 @@
+{
+  "id": "bw6gsrt8ds330lzlfkdnq",
+  "role": "assistant",
+  "preferredModelName": "auto",
+  "resolvedModelName": "rork-fast-v1",
+  "createdAt": 1787042332771,
+  "responseMessageContents": [],
+  "snapshotId": "bw6gsrt8ds330lzlfkdnq",
+  "finishStats": {
+    "contextTokens": 0,
+    "maxInputTokens": 968000,
+    "maxOutputTokens": 64000
+  },
+  "stopped": true
+}
