@@ -6,6 +6,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rork.acoustical.domain.audio.AudioEngine
 import com.rork.acoustical.domain.audio.LocationProvider
+import com.rork.acoustical.domain.audio.AudioOutputInfo
+import com.rork.acoustical.domain.audio.BluetoothAudioManager
 import com.rork.acoustical.domain.audio.Rt60Estimator
 import com.rork.acoustical.domain.console.ConsoleChannel
 import com.rork.acoustical.domain.console.ConsoleConfig
@@ -23,6 +25,7 @@ import com.rork.acoustical.domain.model.AutoCheckConfig
 import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.BitDepth
 import com.rork.acoustical.domain.model.EqBand
+import com.rork.acoustical.domain.model.MusicianState
 import com.rork.acoustical.domain.model.OutputTarget
 import com.rork.acoustical.domain.model.ProbeQuality
 import com.rork.acoustical.domain.model.ReferenceSource
@@ -111,7 +114,14 @@ class AudioEngineViewModel(
         val spatialPosition: SpatialPosition = SpatialPosition(),
         val splCompensation: SplCompensation = SplCompensation(),
         val routingNodes: List<RoutingNode> = emptyList(),
-        val routingConnections: List<RoutingConnection> = emptyList()
+        val routingConnections: List<RoutingConnection> = emptyList(),
+        val outputs: List<OutputTarget> = emptyList(),
+        val bluetoothDevices: List<BluetoothAudioManager.BtDevice> = emptyList(),
+        val isBtScanning: Boolean = false,
+        val isBluetoothEnabled: Boolean = false,
+        val isBluetoothAvailable: Boolean = false,
+        val audioOutputDevices: List<AudioOutputInfo> = emptyList(),
+        val musicianState: MusicianState = MusicianState()
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -126,6 +136,8 @@ class AudioEngineViewModel(
     private var rt60Estimator: Rt60Estimator? = null
     private var geoJob: Job? = null
     private var autoCheckJob: Job? = null
+    private var btAudioManager: BluetoothAudioManager? = null
+    private var musicianTrackingJob: Job? = null
 
     init {
         initRoutingNodes()
@@ -148,7 +160,10 @@ class AudioEngineViewModel(
                         targetSplReached = result.spl >= state.config.targetSpl,
                         noiseSpectrum = result.noiseSpectrum,
                         hasNoiseProfile = result.noiseSpectrum != null,
-                        rt60Ms = rt60?.currentRt60Ms ?: 0f
+                        rt60Ms = rt60?.currentRt60Ms ?: 0f,
+                        musicianState = state.musicianState.copy(
+                            isOverLimit = result.spl >= state.musicianState.safeSplLimit
+                        )
                     )
                 }
                 // Push corrections to console if connected
@@ -209,6 +224,42 @@ class AudioEngineViewModel(
             historySize = 64,
             sampleIntervalMs = _uiState.value.config.analysisInterval.ms
         )
+
+        // Initialize Bluetooth audio manager
+        btAudioManager = BluetoothAudioManager(application).also { btManager ->
+            viewModelScope.launch {
+                btManager.devices.collect { devices ->
+                    _uiState.update { it.copy(bluetoothDevices = devices) }
+                }
+            }
+            viewModelScope.launch {
+                btManager.isScanning.collect { scanning ->
+                    _uiState.update { it.copy(isBtScanning = scanning) }
+                }
+            }
+            viewModelScope.launch {
+                btManager.isBluetoothEnabled.collect { enabled ->
+                    _uiState.update { it.copy(isBluetoothEnabled = enabled) }
+                }
+            }
+            viewModelScope.launch {
+                btManager.isBluetoothAvailable.collect { available ->
+                    _uiState.update { it.copy(isBluetoothAvailable = available) }
+                }
+            }
+        }
+        _uiState.update {
+            it.copy(
+                isBluetoothEnabled = btAudioManager?.isBluetoothEnabled?.value == true,
+                isBluetoothAvailable = btAudioManager?.isBluetoothAvailable?.value == true
+            )
+        }
+
+        // Initialize outputs with local device
+        initLocalOutput()
+
+        // Refresh system audio outputs
+        refreshAudioOutputs()
     }
 
     // === Session Management ===
@@ -468,6 +519,7 @@ class AudioEngineViewModel(
 
     private fun updateRoutingNodes() {
         val devices = _uiState.value.session.devices
+        val outputs = _uiState.value.outputs
         _uiState.update { state ->
             state.copy(
                 routingNodes = state.routingNodes.map { node ->
@@ -475,14 +527,184 @@ class AudioEngineViewModel(
                         "in_mic" -> node.copy(isActive = true)
                         "in_usb" -> node.copy(isActive = devices.any { it.type == DeviceType.USB_AUDIO && it.isActive })
                         "in_console" -> node.copy(isActive = devices.any { it.type == DeviceType.CONSOLE && it.isActive })
-                        "out_console" -> node.copy(isActive = devices.any { it.type == DeviceType.CONSOLE && it.isActive })
-                        "out_bt" -> node.copy(isActive = devices.any { it.type == DeviceType.BLUETOOTH_SPEAKER && it.isActive })
+                        "out_console" -> node.copy(isActive = devices.any { it.type == DeviceType.CONSOLE && it.isActive } || outputs.any { it.deviceType == DeviceType.CONSOLE && it.isActive })
+                        "out_bt" -> node.copy(isActive = devices.any { it.type == DeviceType.BLUETOOTH_SPEAKER && it.isActive } || outputs.any { it.deviceType == DeviceType.BLUETOOTH_SPEAKER && it.isActive })
+                        "out_monitor" -> node.copy(isActive = outputs.any { it.isLocalDevice && it.isActive })
                         "out_remote" -> node.copy(isActive = devices.any { it.type == DeviceType.PHONE && !it.isThisDevice && it.isActive })
                         else -> node
                     }
                 }
             )
         }
+    }
+
+    // === Output Management ===
+
+    private fun initLocalOutput() {
+        val localOutput = OutputTarget(
+            id = "local_speaker",
+            name = android.os.Build.MODEL ?: "Altavoz del movil",
+            deviceType = DeviceType.PHONE,
+            channel = "Altavoz interno",
+            isActive = true,
+            volume = 0.75f,
+            connectionState = DeviceState.CONNECTED,
+            isLocalDevice = true
+        )
+        _uiState.update { it.copy(outputs = listOf(localOutput)) }
+    }
+
+    fun addLocalOutput() {
+        if (_uiState.value.outputs.any { it.isLocalDevice }) return
+        initLocalOutput()
+        updateRoutingNodes()
+    }
+
+    fun addBluetoothOutput(address: String) {
+        val btDevice = _uiState.value.bluetoothDevices.find { it.address == address } ?: return
+        val output = OutputTarget(
+            id = "bt_$address",
+            name = btDevice.name,
+            deviceType = DeviceType.BLUETOOTH_SPEAKER,
+            channel = "A2DP",
+            isActive = true,
+            volume = 0.7f,
+            connectionState = if (btDevice.isConnected) DeviceState.CONNECTED else DeviceState.CONNECTING,
+            bluetoothAddress = address
+        )
+        _uiState.update { it.copy(outputs = it.outputs + output) }
+        if (btDevice.isConnected) {
+            btAudioManager?.setStreamVolume(output.volume)
+        }
+        updateRoutingNodes()
+    }
+
+    fun removeOutput(id: String) {
+        _uiState.update { it.copy(outputs = it.outputs.filterNot { o -> o.id == id }) }
+        updateRoutingNodes()
+    }
+
+    fun setOutputVolume(id: String, volume: Float) {
+        val vol = volume.coerceIn(0f, 1f)
+        val output = _uiState.value.outputs.find { it.id == id }
+        if (output != null && (output.isLocalDevice || output.connectionState == DeviceState.CONNECTED)) {
+            btAudioManager?.setStreamVolume(vol)
+        }
+        _uiState.update { state ->
+            state.copy(outputs = state.outputs.map { o ->
+                if (o.id == id) o.copy(volume = vol) else o
+            })
+        }
+    }
+
+    fun toggleOutputMute(id: String) {
+        _uiState.update { state ->
+            state.copy(outputs = state.outputs.map { o ->
+                if (o.id == id) o.copy(isMuted = !o.isMuted) else o
+            })
+        }
+    }
+
+    fun toggleOutputSolo(id: String) {
+        _uiState.update { state ->
+            state.copy(outputs = state.outputs.map { o ->
+                if (o.id == id) o.copy(isSolo = !o.isSolo) else o
+            })
+        }
+    }
+
+    // === Bluetooth Management ===
+
+    fun startBluetoothScan() {
+        btAudioManager?.startScan()
+    }
+
+    fun stopBluetoothScan() {
+        btAudioManager?.stopScan()
+    }
+
+    fun pairBluetoothDevice(address: String) {
+        btAudioManager?.pairDevice(address)
+    }
+
+    fun refreshAudioOutputs() {
+        val outputs = btAudioManager?.getAudioOutputDevices() ?: emptyList()
+        _uiState.update { it.copy(audioOutputDevices = outputs) }
+    }
+
+    // === Musician Mode ===
+
+    fun setMusicianMode(enabled: Boolean) {
+        _uiState.update { it.copy(musicianState = it.musicianState.copy(isActive = enabled)) }
+        if (enabled) {
+            setAppMode(AppMode.MUSICIAN)
+            startMusicianTracking()
+        } else {
+            setAppMode(AppMode.CONTROLLER)
+            stopMusicianTracking()
+        }
+    }
+
+    fun moreMe() {
+        _uiState.update { state ->
+            val newVol = (state.musicianState.personalVolume + 0.05f).coerceIn(0f, 1f)
+            val newGain = state.musicianState.personalGainDb + 1.5f
+            state.copy(musicianState = state.musicianState.copy(
+                personalVolume = newVol,
+                personalGainDb = newGain
+            ))
+        }
+        btAudioManager?.setStreamVolume(_uiState.value.musicianState.personalVolume)
+    }
+
+    fun lessMe() {
+        _uiState.update { state ->
+            val newVol = (state.musicianState.personalVolume - 0.05f).coerceIn(0f, 1f)
+            val newGain = state.musicianState.personalGainDb - 1.5f
+            state.copy(musicianState = state.musicianState.copy(
+                personalVolume = newVol,
+                personalGainDb = newGain
+            ))
+        }
+        btAudioManager?.setStreamVolume(_uiState.value.musicianState.personalVolume)
+    }
+
+    fun setPersonalVolume(volume: Float) {
+        val vol = volume.coerceIn(0f, 1f)
+        _uiState.update { it.copy(musicianState = it.musicianState.copy(personalVolume = vol)) }
+        btAudioManager?.setStreamVolume(vol)
+    }
+
+    fun startMusicianTracking() {
+        musicianTrackingJob?.cancel()
+        musicianTrackingJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(5000)
+                val info = locationProvider?.getCurrentLocation() ?: continue
+                val distance = 5f
+                val recommendedDelay = (distance / info.speedOfSound) * 1000f
+                val isOverLimit = _uiState.value.currentSpl > _uiState.value.musicianState.safeSplLimit
+                _uiState.update {
+                    it.copy(
+                        musicianState = it.musicianState.copy(
+                            latitude = info.latitude,
+                            longitude = info.longitude,
+                            altitude = info.altitude,
+                            locationLabel = info.label,
+                            hasGpsFix = info.hasFix,
+                            distanceToPaM = distance,
+                            recommendedDelayMs = recommendedDelay,
+                            isOverLimit = isOverLimit
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun stopMusicianTracking() {
+        musicianTrackingJob?.cancel()
+        musicianTrackingJob = null
     }
 
     // === Engine Control ===
@@ -898,6 +1120,9 @@ class AudioEngineViewModel(
         usbAudioSource = null
         geoJob?.cancel()
         autoCheckJob?.cancel()
+        musicianTrackingJob?.cancel()
+        btAudioManager?.cleanup()
+        btAudioManager = null
         locationProvider = null
         rt60Estimator = null
     }
