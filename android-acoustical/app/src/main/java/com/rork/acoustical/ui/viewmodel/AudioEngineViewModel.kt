@@ -121,7 +121,9 @@ class AudioEngineViewModel(
         val isBluetoothEnabled: Boolean = false,
         val isBluetoothAvailable: Boolean = false,
         val audioOutputDevices: List<AudioOutputInfo> = emptyList(),
-        val musicianState: MusicianState = MusicianState()
+        val musicianState: MusicianState = MusicianState(),
+        val splHistoryMeasured: List<Float> = emptyList(),
+        val splHistoryCorrected: List<Float> = emptyList()
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -147,6 +149,11 @@ class AudioEngineViewModel(
                 val rt60 = rt60Estimator
                 rt60?.feedFrame(result.measuredSpectrum.magnitudesDb)
                 _uiState.update { state ->
+                    val maxHistorySize = (30000L / state.config.analysisInterval.ms).toInt().coerceAtLeast(30)
+                    val avgBandGain = if (result.bands.isNotEmpty()) {
+                        result.bands.map { it.gainDb }.average().toFloat()
+                    } else 0f
+                    val correctedSpl = result.spl + avgBandGain
                     state.copy(
                         currentSpl = result.spl,
                         peakSpl = result.peakSpl,
@@ -163,7 +170,9 @@ class AudioEngineViewModel(
                         rt60Ms = rt60?.currentRt60Ms ?: 0f,
                         musicianState = state.musicianState.copy(
                             isOverLimit = result.spl >= state.musicianState.safeSplLimit
-                        )
+                        ),
+                        splHistoryMeasured = (state.splHistoryMeasured + result.spl).takeLast(maxHistorySize),
+                        splHistoryCorrected = (state.splHistoryCorrected + correctedSpl).takeLast(maxHistorySize)
                     )
                 }
                 // Push corrections to console if connected
@@ -742,7 +751,9 @@ class AudioEngineViewModel(
                 correctedSpectrum = null,
                 correctionIntensity = 0f,
                 isNoiseCapturing = false,
-                noiseCaptureProgress = 0f
+                noiseCaptureProgress = 0f,
+                splHistoryMeasured = emptyList(),
+                splHistoryCorrected = emptyList()
             )
         }
         notificationUpdateJob?.cancel()
