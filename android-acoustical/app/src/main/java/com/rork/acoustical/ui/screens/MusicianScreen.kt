@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -44,6 +45,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
@@ -234,6 +236,63 @@ fun MusicianScreen(
                         StatusPill(text = "Sobre limite", color = CoralAlert)
                     } else if (spl > 0f) {
                         StatusPill(text = "Seguro", color = LimeActive)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // SPL History Chart - Antes y Después
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Historial SPL · 30s",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            LegendDot(color = CyanDim, label = "Antes")
+                            LegendDot(color = LimeActive, label = "Después")
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(140.dp)
+                    ) {
+                        SplHistoryChart(
+                            measured = state.splHistoryMeasured,
+                            corrected = state.splHistoryCorrected,
+                            safeLimit = musician.safeSplLimit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .align(Alignment.BottomCenter),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "-30s",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            Text(
+                                "Ahora",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = CyanGlow
+                            )
+                        }
                     }
                 }
             }
@@ -510,5 +569,164 @@ private fun StageCanvas(
             center = Offset(musicianX, musicianY),
             style = Stroke(width = 2f)
         )
+    }
+}
+
+@Composable
+private fun LegendDot(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(color, CircleShape)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun SplHistoryChart(
+    measured: List<Float>,
+    corrected: List<Float>,
+    safeLimit: Float,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val padTop = 6f
+        val padBottom = 16f
+        val padLeft = 4f
+        val padRight = 4f
+        val chartW = w - padLeft - padRight
+        val chartH = h - padTop - padBottom
+
+        // Compute data range from both series + safe limit
+        val allValues = measured + corrected
+        val dataMin = allValues.minOrNull() ?: 40f
+        val dataMax = allValues.maxOrNull() ?: 90f
+        val minVal = (dataMin - 5f).coerceAtLeast(0f)
+        val maxVal = (dataMax + 5f).coerceAtMost(130f)
+        val range = (maxVal - minVal).coerceAtLeast(10f)
+
+        // Horizontal grid lines
+        val gridCount = 4
+        for (i in 0..gridCount) {
+            val y = padTop + chartH * i / gridCount
+            drawLine(
+                color = SurfaceElevated.copy(alpha = 0.25f),
+                start = Offset(padLeft, y),
+                end = Offset(w - padRight, y),
+                strokeWidth = 1f
+            )
+        }
+
+        // Safe limit dashed line
+        val safeNormalized = ((safeLimit - minVal) / range).coerceIn(0f, 1f)
+        val safeY = padTop + chartH * (1f - safeNormalized)
+        drawLine(
+            color = AmberAccent.copy(alpha = 0.4f),
+            start = Offset(padLeft, safeY),
+            end = Offset(w - padRight, safeY),
+            strokeWidth = 1.5f,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f))
+        )
+
+        // Value -> Y mapping
+        fun mapY(value: Float): Float {
+            val normalized = ((value - minVal) / range).coerceIn(0f, 1f)
+            return padTop + chartH * (1f - normalized)
+        }
+
+        // Measured line (Antes) -- cyan
+        if (measured.size >= 2) {
+            val path = Path()
+            val fillPath = Path()
+            val stepX = chartW / (measured.size - 1)
+
+            path.moveTo(padLeft, mapY(measured[0]))
+            fillPath.moveTo(padLeft, padTop + chartH)
+            fillPath.lineTo(padLeft, mapY(measured[0]))
+
+            for (i in 1 until measured.size) {
+                val x = padLeft + stepX * i
+                val y = mapY(measured[i])
+                path.lineTo(x, y)
+                fillPath.lineTo(x, y)
+            }
+
+            fillPath.lineTo(padLeft + stepX * (measured.size - 1), padTop + chartH)
+            fillPath.close()
+
+            drawPath(
+                path = fillPath,
+                brush = Brush.verticalGradient(
+                    colors = listOf(CyanDim.copy(alpha = 0.15f), Color.Transparent),
+                    startY = padTop,
+                    endY = padTop + chartH
+                )
+            )
+            drawPath(
+                path = path,
+                color = CyanDim,
+                style = Stroke(width = 2f)
+            )
+        }
+
+        // Corrected line (Después) -- lime
+        if (corrected.size >= 2) {
+            val path = Path()
+            val fillPath = Path()
+            val stepX = chartW / (corrected.size - 1)
+
+            path.moveTo(padLeft, mapY(corrected[0]))
+            fillPath.moveTo(padLeft, padTop + chartH)
+            fillPath.lineTo(padLeft, mapY(corrected[0]))
+
+            for (i in 1 until corrected.size) {
+                val x = padLeft + stepX * i
+                val y = mapY(corrected[i])
+                path.lineTo(x, y)
+                fillPath.lineTo(x, y)
+            }
+
+            fillPath.lineTo(padLeft + stepX * (corrected.size - 1), padTop + chartH)
+            fillPath.close()
+
+            drawPath(
+                path = fillPath,
+                brush = Brush.verticalGradient(
+                    colors = listOf(LimeActive.copy(alpha = 0.12f), Color.Transparent),
+                    startY = padTop,
+                    endY = padTop + chartH
+                )
+            )
+            drawPath(
+                path = path,
+                color = LimeActive,
+                style = Stroke(width = 2.5f)
+            )
+        }
+
+        // Current value markers at right edge
+        if (measured.isNotEmpty()) {
+            drawCircle(
+                color = CyanDim,
+                radius = 3f,
+                center = Offset(padLeft + chartW, mapY(measured.last()))
+            )
+        }
+        if (corrected.isNotEmpty()) {
+            drawCircle(
+                color = LimeActive,
+                radius = 3f,
+                center = Offset(padLeft + chartW, mapY(corrected.last()))
+            )
+        }
     }
 }

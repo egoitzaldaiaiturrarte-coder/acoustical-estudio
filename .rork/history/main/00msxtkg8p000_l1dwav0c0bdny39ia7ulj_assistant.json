@@ -130,7 +130,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\": \"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/SettingsScreen.kt\"}",
       "createdAt": 1787005824516,
-      "completedAt": 1787005825354
+      "completedAt": 1787005825354,
+      "compactedAt": 1787099288815
     },
     {
       "type": "tool",
@@ -147,7 +148,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\": \"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/EqualizerScreen.kt\"}",
       "createdAt": 1787005824725,
-      "completedAt": 1787005825355
+      "completedAt": 1787005825355,
+      "compactedAt": 1787099288815
     },
     {
       "type": "tool",
@@ -164,7 +166,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\": \"android-acoustical/app/src/main/java/com/rork/acoustical/ui/components/EqSliders.kt\"}",
       "createdAt": 1787005825055,
-      "completedAt": 1787005825358
+      "completedAt": 1787005825358,
+      "compactedAt": 1787099288815
     },
     {
       "type": "reasoning",
@@ -189,7 +192,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\": \"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/CalibrationScreen.kt\"}",
       "createdAt": 1787005846197,
-      "completedAt": 1787005847466
+      "completedAt": 1787005847466,
+      "compactedAt": 1787099288815
     },
     {
       "type": "tool",
@@ -206,7 +210,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\": \"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/ConsoleScreen.kt\"}",
       "createdAt": 1787005846589,
-      "completedAt": 1787005847471
+      "completedAt": 1787005847471,
+      "compactedAt": 1787099288815
     },
     {
       "type": "tool",
