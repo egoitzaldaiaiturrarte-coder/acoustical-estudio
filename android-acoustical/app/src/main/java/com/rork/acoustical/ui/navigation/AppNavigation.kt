@@ -31,6 +31,8 @@ import com.rork.acoustical.ui.screens.AddDeviceScreen
 import com.rork.acoustical.ui.screens.CalibrationScreen
 import com.rork.acoustical.ui.screens.ControlScreen
 import com.rork.acoustical.ui.screens.FullEqScreen
+import com.rork.acoustical.ui.screens.MusicianScreen
+import com.rork.acoustical.ui.screens.OutputMixScreen
 import com.rork.acoustical.ui.screens.RoutingMapScreen
 import com.rork.acoustical.ui.screens.SessionScreen
 import com.rork.acoustical.ui.screens.SettingsScreen
@@ -131,6 +133,12 @@ fun AppNavigation(
             }
             composable("full_eq") {
                 FullEqScreen(navController = navController, viewModel = viewModel)
+            }
+            composable("output_mix") {
+                OutputMixScreen(navController = navController, viewModel = viewModel)
+            }
+            composable("musician") {
+                MusicianScreen(navController = navController, viewModel = viewModel)
             }
             composable("calibration") {
                 CalibrationScreen(navController = navController, viewModel = viewModel)

@@ -269,12 +269,15 @@ Cada conexión incluye un **asistente visual** que guía al usuario paso a paso 
 - EQ a pantalla completa con controles en esquinas
 - Gestión de altavoces Bluetooth y móviles desde el mapa
 
-**Fase 4 — Modo Músico y Automatización:**
-- Modo músico con geolocalización y seguimiento por escenario
-- Auto-chequeo de sondas con visualización en mapa
-- Sustracción automática de ruido ambiente en silencios
-- Corrección automática con EQ dinámico en tiempo real
-- Integración completa con consola/DAW bidireccional
+**Fase 4 — Modo Músico y Automatización (COMPLETADA):**
+- [x] Modo músico con geolocalización y seguimiento por escenario
+- [x] Auto-chequeo de sondas con visualización en mapa
+- [x] Sustracción automática de ruido ambiente en silencios
+- [x] Corrección automática con EQ dinámico en tiempo real
+- [x] Integración completa con consola/DAW bidireccional
+- [x] **Bluetooth real**: discovery, pairing, A2DP, volume control (BluetoothAudioManager)
+- [x] **Control de salidas múltiples independientes**: mezclador con volumen, mute, solo por dispositivo (OutputMixScreen)
+- [x] **Pantalla Modo Músico**: Canvas escenario con zonas SPL, GPS tracking, botones Más/Menos yo
 
 **Fase 5 — Pulido:**
 - Animaciones de transición entre pantallas

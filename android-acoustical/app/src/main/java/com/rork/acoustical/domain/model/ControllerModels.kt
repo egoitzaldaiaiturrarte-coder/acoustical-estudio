@@ -148,8 +148,18 @@ data class OutputTarget(
     val bus: Int = 1,
     val isActive: Boolean = true,
     val delayMs: Float = 0f,
-    val gainDb: Float = 0f
-)
+    val gainDb: Float = 0f,
+    val isMuted: Boolean = false,
+    val isSolo: Boolean = false,
+    val volume: Float = 0.75f,
+    val spl: Float = 0f,
+    val connectionState: DeviceState = DeviceState.DISCONNECTED,
+    val bluetoothAddress: String = "",
+    val isLocalDevice: Boolean = false
+) {
+    val effectiveGainDb: Float get() = if (isMuted) -60f else gainDb
+    val volumePercent: Int get() = (volume * 100f).toInt()
+}
 
 /**
  * Stereo linking mode.
@@ -353,5 +363,31 @@ data class StereoSpatialState(
     val effective: SpatialPosition get() = when (mode) {
         StereoMode.LINKED, StereoMode.MONO -> left
         StereoMode.FREE -> left // Caller decides which side
+    }
+}
+
+/**
+ * Musician's position and state on stage for personal monitor mode.
+ */
+@Serializable
+data class MusicianState(
+    val isActive: Boolean = false,
+    val personalVolume: Float = 0.75f,
+    val personalGainDb: Float = 0f,
+    val safeSplLimit: Float = 85f,
+    val isOverLimit: Boolean = false,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val altitude: Double = 0.0,
+    val locationLabel: String = "Sin GPS",
+    val hasGpsFix: Boolean = false,
+    val distanceToPaM: Float = 0f,
+    val isOnStage: Boolean = false,
+    val recommendedDelayMs: Float = 25f
+) {
+    val volumePercent: Int get() = (personalVolume * 100f).toInt()
+    val splStatusColor: String get() = when {
+        isOverLimit -> "alert"
+        else -> "ok"
     }
 }
