@@ -1,6 +1,7 @@
 package com.rork.acoustical.domain.model
 
 import kotlinx.serialization.Serializable
+import kotlin.math.roundToInt
 
 /**
  * Audio bit depth options for capture and processing.
@@ -24,7 +25,8 @@ enum class DeviceType(val label: String, val icon: String) {
     USB_AUDIO("Interface USB", "usb"),
     COMPUTER("Ordenador", "computer"),
     PA_SYSTEM("Sistema PA", "pa"),
-    MONITOR("Monitor", "monitor")
+    MONITOR("Monitor", "monitor"),
+    IN_EARS("In-Ear", "inear")
 }
 
 /**
@@ -363,6 +365,190 @@ data class StereoSpatialState(
     val effective: SpatialPosition get() = when (mode) {
         StereoMode.LINKED, StereoMode.MONO -> left
         StereoMode.FREE -> left // Caller decides which side
+    }
+}
+
+/**
+ * Operating mode of the engineer agent.
+ * OFF keeps only critical protections; protection rules always run.
+ */
+@Serializable
+enum class AgentMode(val label: String, val description: String) {
+    OFF("Apagado", "Solo protecciones críticas"),
+    ON_DEMAND("Consulta", "Lo enciendes cuando quieres consultar"),
+    ASSISTANT("Asistente", "Orienta y protege en todo momento"),
+    MASTER("Maestro", "Modo estudio: explica el porqué de cada ajuste")
+}
+
+/**
+ * Severity of an agent advice.
+ */
+enum class AgentSeverity(val label: String) {
+    INFO("Info"),
+    WARN("Aviso"),
+    BLOCK("Bloqueo")
+}
+
+/**
+ * A single recommendation or protection from the engineer agent.
+ */
+data class AgentAdvice(
+    val severity: AgentSeverity,
+    val title: String,
+    val message: String,
+    val suggestion: String = "",
+    val explanation: String = ""
+)
+
+/**
+ * Zones of the linked pan matrix L / Mid / R / Lados.
+ * All four are really one send: adjusting one auto-corrects the others.
+ */
+@Serializable
+enum class PanZone(val label: String, val short: String) {
+    LEFT("Izquierda", "L"),
+    MID("Centro", "Mid"),
+    RIGHT("Derecha", "R"),
+    SIDES("Lados", "Lados")
+}
+
+/**
+ * Linked pan matrix: four zones that always sum to 1.
+ * Raising one zone lowers the others proportionally,
+ * so reverbs can go to the sides without leaving the center (or vice versa).
+ */
+@Serializable
+data class PanMatrix(
+    val left: Float = 0f,
+    val mid: Float = 1f,
+    val right: Float = 0f,
+    val sides: Float = 0f
+) {
+    fun weight(zone: PanZone): Float = when (zone) {
+        PanZone.LEFT -> left
+        PanZone.MID -> mid
+        PanZone.RIGHT -> right
+        PanZone.SIDES -> sides
+    }
+
+    val total: Float get() = left + mid + right + sides
+    val isCentered: Boolean get() = mid >= 0.98f && left < 0.02f && right < 0.02f && sides < 0.02f
+
+    /**
+     * Adjust one zone by [delta]; the other zones absorb the change
+     * proportionally to their current weights, keeping the sum at 1.
+     */
+    fun adjust(zone: PanZone, delta: Float): PanMatrix {
+        val current = weight(zone)
+        val target = (current + delta).coerceIn(0f, 1f)
+        val diff = target - current
+        if (kotlin.math.abs(diff) < 0.0005f) return this
+
+        val others = PanZone.entries.filter { it != zone }
+        val othersSum = (1f - current).coerceAtLeast(0f)
+
+        var newLeft = left
+        var newMid = mid
+        var newRight = right
+        var newSides = sides
+
+        others.forEach { other ->
+            val share = if (othersSum > 0.0001f) weight(other) / othersSum else 1f / others.size
+            val reduction = diff * share
+            when (other) {
+                PanZone.LEFT -> newLeft = (left - reduction).coerceIn(0f, 1f)
+                PanZone.MID -> newMid = (mid - reduction).coerceIn(0f, 1f)
+                PanZone.RIGHT -> newRight = (right - reduction).coerceIn(0f, 1f)
+                PanZone.SIDES -> newSides = (sides - reduction).coerceIn(0f, 1f)
+            }
+        }
+        when (zone) {
+            PanZone.LEFT -> newLeft = target
+            PanZone.MID -> newMid = target
+            PanZone.RIGHT -> newRight = target
+            PanZone.SIDES -> newSides = target
+        }
+
+        // Final normalization pass to keep the sum exactly 1
+        val matrix = PanMatrix(newLeft, newMid, newRight, newSides)
+        val sum = matrix.total
+        return if (sum > 0.0001f) {
+            matrix.copy(
+                left = matrix.left / sum,
+                mid = matrix.mid / sum,
+                right = matrix.right / sum,
+                sides = matrix.sides / sum
+            )
+        } else Centered
+    }
+
+    fun percent(zone: PanZone): Int = (weight(zone) * 100f).roundToInt()
+
+    companion object {
+        val Centered = PanMatrix(mid = 1f)
+    }
+}
+
+/**
+ * A captured GPS point for distance measurement.
+ */
+@Serializable
+data class GpsPoint(
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val altitude: Double = 0.0,
+    val label: String = ""
+)
+
+/**
+ * Step of the emitter→receiver distance measurement flow.
+ */
+enum class DistanceStep(val label: String) {
+    EMITTER("Toca para capturar el EMISOR"),
+    RECEIVER("Toca para capturar el RECEPTOR / punto de chequeo"),
+    DONE("Medición completa")
+}
+
+/**
+ * Emitter→receiver distance measurement with GPS and decimal precision.
+ */
+@Serializable
+data class DistanceMeasurement(
+    val step: DistanceStep = DistanceStep.EMITTER,
+    val emitter: GpsPoint? = null,
+    val receiver: GpsPoint? = null,
+    val manualDistanceM: Float? = null,
+    val speedOfSound: Float = 343f
+) {
+    /** GPS-derived distance in meters (null until both points are captured). */
+    val gpsDistanceM: Float?
+        get() {
+            val e = emitter ?: return null
+            val r = receiver ?: return null
+            return haversineMeters(e, r).toFloat()
+        }
+
+    /** Effective distance: manual adjustment wins over raw GPS. */
+    val effectiveDistanceM: Float? get() = manualDistanceM ?: gpsDistanceM
+
+    val delayMs: Float? get() = effectiveDistanceM?.let { (it / speedOfSound) * 1000f }
+
+    val gainCompensationDb: Float?
+        get() = effectiveDistanceM?.let { if (it > 0.1f) 20f * kotlin.math.log10(it) else 0f }
+
+    companion object {
+        /** Haversine great-circle distance in meters. */
+        fun haversineMeters(a: GpsPoint, b: GpsPoint): Double {
+            val r = 6_371_000.0
+            val dLat = Math.toRadians(b.latitude - a.latitude)
+            val dLon = Math.toRadians(b.longitude - a.longitude)
+            val la = Math.toRadians(a.latitude)
+            val lb = Math.toRadians(b.latitude)
+            val h = kotlin.math.sin(dLat / 2) * kotlin.math.sin(dLat / 2) +
+                kotlin.math.cos(la) * kotlin.math.cos(lb) *
+                kotlin.math.sin(dLon / 2) * kotlin.math.sin(dLon / 2)
+            return 2 * r * kotlin.math.asin(kotlin.math.sqrt(h))
+        }
     }
 }
 

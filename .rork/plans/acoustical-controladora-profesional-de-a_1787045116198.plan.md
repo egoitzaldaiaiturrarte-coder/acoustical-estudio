@@ -279,8 +279,21 @@ Cada conexión incluye un **asistente visual** que guía al usuario paso a paso 
 - [x] **Control de salidas múltiples independientes**: mezclador con volumen, mute, solo por dispositivo (OutputMixScreen)
 - [x] **Pantalla Modo Músico**: Canvas escenario con zonas SPL, GPS tracking, botones Más/Menos yo
 
-**Fase 5 — Pulido:**
+**Fase 5 — Agente, Control Total y Walkie (COMPLETADA):**
+- [x] **Permisos arreglados**: banner persistente con re-solicitud de un toque, re-check en onResume, permisos BT solo en Android 12+
+- [x] **Centro de Control en Ruteos**: volumen máster global, Mute todo / Activar todo, fila por salida (volumen, mute, delay, ganancia), nodos de salida tocables desde el mapa
+- [x] **Agente ingeniero (4 modos)**: Apagado (solo protecciones críticas), Consulta, Asistente (orienta y protege siempre), Maestro (explica el porqué). Pre-flight "va a sonar" antes de des-silenciar cualquier salida
+- [x] **Joystick circular sustituido** por pad direccional de 4 botones tipo teclado con auto-repetición al mantener
+- [x] **Dos botones de barrido** (rápido ×4 / fino ×0.1) que afectan a todas las acciones del dispositivo
+- [x] **Matriz de paneo L · Mid · R · Lados**: un solo envío auto-corregido, lo que sube en una zona baja en las otras
+- [x] **Medidor de distancias GPS emisor→receptor**: dos toques capturan puntos GPS (Haversine), botón ESCALA mantenido = ajuste grande (0.5m), suelto = fino (0.01m), automatización de delay/ganancia con decimales
+- [x] **Modo concierto**: No Molestar (DND) con acceso concedido por el usuario + acceso directo al panel de modo avión del sistema
+- [x] **Walkie del flujo**: pulsa-y-habla con micrófono real (16 kHz, chunks de 20ms) transmitido por TCP mesh a los compañeros elegidos, que lo reproducen (WalkieTalkieManager + MSG_WALKIE en MeshNetworkManager)
+- [x] Nuevo tipo de salida **In-Ear** en el mapa de ruteos
+
+**Fase 6 — Pulido:**
 - Animaciones de transición entre pantallas
-- Micro-interacciones en joystick y faders (haptics, glow)
+- Micro-interacciones en pad, faders y paneo (haptics, glow)
 - Optimización de rendimiento para tiempo real
 - Refinamiento visual Deep Ocean
+- Envío de paneo/d-pad a consola vía OSC en tiempo real
