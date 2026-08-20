@@ -71,6 +71,9 @@ class MeshNetworkManager(private val context: Context) {
     var onPeerConnected: ((MeshPeer) -> Unit)? = null
     var onPeerDisconnected: ((String) -> Unit)? = null
 
+    /** Walkie-talkie: called when a voice chunk arrives from a peer. */
+    var onWalkieAudio: ((senderId: String, chunk: ShortArray) -> Unit)? = null
+
     /**
      * Start the mesh network as master (aggregates measurements from all listeners).
      * The master also pushes corrections to the console.
@@ -101,6 +104,9 @@ class MeshNetworkManager(private val context: Context) {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         startDiscovery()
         startHeartbeat()
+        // Listeners also run a TCP server so they can receive walkie-talkie
+        // audio and future push messages from peers/master.
+        startTcpServer()
 
         Log.i(TAG, "Mesh started as LISTENER ($deviceName)")
     }
@@ -366,6 +372,18 @@ class MeshNetworkManager(private val context: Context) {
                         onPeersChanged?.invoke(peers)
                         break
                     }
+
+                    MSG_WALKIE -> {
+                        val senderId = input.readUTF()
+                        val count = input.readInt()
+                        if (count in 1..8000) {
+                            val chunk = ShortArray(count)
+                            for (i in 0 until count) {
+                                chunk[i] = input.readShort()
+                            }
+                            onWalkieAudio?.invoke(senderId, chunk)
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -494,6 +512,36 @@ class MeshNetworkManager(private val context: Context) {
         )
     }
 
+    /**
+     * Broadcast a walkie-talkie voice chunk to the selected peers over TCP.
+     * Called on a background thread while the talk button is held.
+     */
+    fun broadcastWalkieAudio(senderId: String, chunk: ShortArray, targetIds: Set<String>) {
+        if (!isRunning || chunk.isEmpty() || targetIds.isEmpty()) return
+
+        val targets = _peers.values.filter {
+            it.id in targetIds && it.ipAddress.isNotEmpty()
+        }
+
+        for (peer in targets) {
+            try {
+                Socket().use { sock ->
+                    sock.connect(java.net.InetSocketAddress(peer.ipAddress, MESH_PORT), 500)
+                    val output = DataOutputStream(sock.getOutputStream())
+                    output.writeByte(MSG_WALKIE)
+                    output.writeUTF(senderId)
+                    output.writeInt(chunk.size)
+                    for (s in chunk) {
+                        output.writeShort(s.toInt())
+                    }
+                    output.flush()
+                }
+            } catch (e: Exception) {
+                // Peer temporarily unreachable — skip this chunk
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "MeshNetwork"
         private const val SERVICE_TYPE = "_acoustical._tcp."
@@ -505,5 +553,6 @@ class MeshNetworkManager(private val context: Context) {
         private const val MSG_AGGREGATE = 2
         private const val MSG_REQUEST_AGGREGATE = 3
         private const val MSG_DISCONNECT = 4
+        private const val MSG_WALKIE = 5
     }
 }

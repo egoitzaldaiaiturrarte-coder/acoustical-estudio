@@ -8,6 +8,9 @@ import com.rork.acoustical.domain.audio.AudioEngine
 import com.rork.acoustical.domain.audio.LocationProvider
 import com.rork.acoustical.domain.audio.AudioOutputInfo
 import com.rork.acoustical.domain.audio.BluetoothAudioManager
+import com.rork.acoustical.domain.audio.EngineerAgent
+import com.rork.acoustical.domain.audio.FocusModeManager
+import com.rork.acoustical.domain.audio.WalkieTalkieManager
 import com.rork.acoustical.domain.audio.Rt60Estimator
 import com.rork.acoustical.domain.console.ConsoleChannel
 import com.rork.acoustical.domain.console.ConsoleConfig
@@ -20,6 +23,9 @@ import com.rork.acoustical.domain.console.MeshNetworkManager
 import com.rork.acoustical.domain.console.MeshPeer
 import com.rork.acoustical.domain.console.UsbAudioSource
 import com.rork.acoustical.domain.model.AppMode
+import com.rork.acoustical.domain.model.AgentAdvice
+import com.rork.acoustical.domain.model.AgentMode
+import com.rork.acoustical.domain.model.AgentSeverity
 import com.rork.acoustical.domain.model.AudioConfig
 import com.rork.acoustical.domain.model.AutoCheckConfig
 import com.rork.acoustical.domain.model.BandCount
@@ -27,6 +33,8 @@ import com.rork.acoustical.domain.model.BitDepth
 import com.rork.acoustical.domain.model.EqBand
 import com.rork.acoustical.domain.model.MusicianState
 import com.rork.acoustical.domain.model.OutputTarget
+import com.rork.acoustical.domain.model.PanMatrix
+import com.rork.acoustical.domain.model.PanZone
 import com.rork.acoustical.domain.model.ProbeQuality
 import com.rork.acoustical.domain.model.ReferenceSource
 import com.rork.acoustical.domain.model.RoomProfile
@@ -48,6 +56,9 @@ import com.rork.acoustical.domain.model.DeviceConnection
 import com.rork.acoustical.domain.model.DeviceRole
 import com.rork.acoustical.domain.model.DeviceState
 import com.rork.acoustical.domain.model.DeviceType
+import com.rork.acoustical.domain.model.DistanceMeasurement
+import com.rork.acoustical.domain.model.DistanceStep
+import com.rork.acoustical.domain.model.GpsPoint
 import com.rork.acoustical.service.AudioAnalysisService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -123,8 +134,36 @@ class AudioEngineViewModel(
         val audioOutputDevices: List<AudioOutputInfo> = emptyList(),
         val musicianState: MusicianState = MusicianState(),
         val splHistoryMeasured: List<Float> = emptyList(),
-        val splHistoryCorrected: List<Float> = emptyList()
-    )
+        val splHistoryCorrected: List<Float> = emptyList(),
+        // Engineer agent
+        val agentMode: AgentMode = AgentMode.ASSISTANT,
+        val agentAdvices: List<AgentAdvice> = emptyList(),
+        // Sweep modifiers affecting every action
+        val isFastSweep: Boolean = false,
+        val isFineSweep: Boolean = false,
+        // Linked pan matrix L/Mid/R/Lados
+        val panMatrix: PanMatrix = PanMatrix.Centered,
+        // Emitter→receiver distance measurement
+        val distanceMeasure: DistanceMeasurement = DistanceMeasurement(),
+        // Focus (concert) mode & walkie-talkie
+        val focusModeActive: Boolean = false,
+        val walkieActive: Boolean = false,
+        val walkieTargets: Set<String> = emptySet()
+    ) {
+        val sweepFactor: Float
+            get() = when {
+                isFineSweep -> 0.1f
+                isFastSweep -> 4f
+                else -> 1f
+            }
+
+        val sweepLabel: String
+            get() = when {
+                isFineSweep -> "Ajuste fino ×0.1"
+                isFastSweep -> "Barrido rápido ×4"
+                else -> "Paso normal"
+            }
+    }
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -140,6 +179,9 @@ class AudioEngineViewModel(
     private var autoCheckJob: Job? = null
     private var btAudioManager: BluetoothAudioManager? = null
     private var musicianTrackingJob: Job? = null
+    private val engineerAgent = EngineerAgent()
+    private var focusModeManager: FocusModeManager? = null
+    private var walkieManager: WalkieTalkieManager? = null
 
     init {
         initRoutingNodes()
@@ -263,6 +305,18 @@ class AudioEngineViewModel(
                 isBluetoothAvailable = btAudioManager?.isBluetoothAvailable?.value == true
             )
         }
+
+        // Initialize focus mode + walkie-talkie link
+        focusModeManager = FocusModeManager(application)
+        walkieManager = WalkieTalkieManager(application).also { wm ->
+            wm.onAudioChunk = { chunk ->
+                val mesh = meshManager
+                if (mesh != null) {
+                    mesh.broadcastWalkieAudio(mesh.deviceId, chunk, _uiState.value.walkieTargets)
+                }
+            }
+        }
+        meshManager?.onWalkieAudio = { _, chunk -> walkieManager?.playChunk(chunk) }
 
         // Initialize outputs with local device
         initLocalOutput()
@@ -476,6 +530,7 @@ class AudioEngineViewModel(
                 val interval = _uiState.value.workConfig.autoCheck.intervalMs
                 delay(interval)
                 if (!_uiState.value.isRunning) continue
+                if (_uiState.value.agentMode != AgentMode.OFF) refreshAgentAdvices()
                 // Run a probe measurement
                 val spl = _uiState.value.currentSpl
                 val rt60 = _uiState.value.rt60Ms
@@ -509,6 +564,8 @@ class AudioEngineViewModel(
             RoutingNode("proc_rt60", "RT60", RoutingNodeType.PROCESS, false, subtitle = "Reverberación"),
             RoutingNode("out_console", "Consola", RoutingNodeType.OUTPUT, false, subtitle = "Main LR"),
             RoutingNode("out_bt", "Altavoces BT", RoutingNodeType.OUTPUT, false, subtitle = "Bluetooth"),
+            RoutingNode("out_pa", "PA Escenario", RoutingNodeType.OUTPUT, false, subtitle = "P.A."),
+            RoutingNode("out_inear", "In-Ears", RoutingNodeType.OUTPUT, false, subtitle = "Monitores de oído"),
             RoutingNode("out_monitor", "Monitores", RoutingNodeType.OUTPUT, true, subtitle = "Salida local"),
             RoutingNode("out_remote", "Móviles remotos", RoutingNodeType.OUTPUT, false, subtitle = "Mesh")
         )
@@ -520,6 +577,8 @@ class AudioEngineViewModel(
             RoutingConnection("proc_pressure", "proc_noise"),
             RoutingConnection("proc_noise", "out_console"),
             RoutingConnection("proc_noise", "out_bt"),
+            RoutingConnection("proc_noise", "out_pa"),
+            RoutingConnection("proc_noise", "out_inear"),
             RoutingConnection("proc_noise", "out_monitor"),
             RoutingConnection("proc_noise", "out_remote")
         )
@@ -538,6 +597,8 @@ class AudioEngineViewModel(
                         "in_console" -> node.copy(isActive = devices.any { it.type == DeviceType.CONSOLE && it.isActive })
                         "out_console" -> node.copy(isActive = devices.any { it.type == DeviceType.CONSOLE && it.isActive } || outputs.any { it.deviceType == DeviceType.CONSOLE && it.isActive })
                         "out_bt" -> node.copy(isActive = devices.any { it.type == DeviceType.BLUETOOTH_SPEAKER && it.isActive } || outputs.any { it.deviceType == DeviceType.BLUETOOTH_SPEAKER && it.isActive })
+                        "out_pa" -> node.copy(isActive = outputs.any { it.deviceType == DeviceType.PA_SYSTEM && it.isActive })
+                        "out_inear" -> node.copy(isActive = outputs.any { it.deviceType == DeviceType.IN_EARS && it.isActive })
                         "out_monitor" -> node.copy(isActive = outputs.any { it.isLocalDevice && it.isActive })
                         "out_remote" -> node.copy(isActive = devices.any { it.type == DeviceType.PHONE && !it.isThisDevice && it.isActive })
                         else -> node
@@ -607,6 +668,15 @@ class AudioEngineViewModel(
     }
 
     fun toggleOutputMute(id: String) {
+        val output = _uiState.value.outputs.find { it.id == id } ?: return
+        if (output.isMuted) {
+            // Pre-flight: the agent verifies the output will actually sound
+            val advice = engineerAgent.preFlightUnmute(output)
+            if (advice != null) {
+                _uiState.update { it.copy(agentAdvices = (listOf(advice) + it.agentAdvices).take(6)) }
+                if (advice.severity == AgentSeverity.BLOCK) return
+            }
+        }
         _uiState.update { state ->
             state.copy(outputs = state.outputs.map { o ->
                 if (o.id == id) o.copy(isMuted = !o.isMuted) else o
@@ -714,6 +784,265 @@ class AudioEngineViewModel(
     private fun stopMusicianTracking() {
         musicianTrackingJob?.cancel()
         musicianTrackingJob = null
+    }
+
+    // === Engineer Agent ===
+
+    fun setAgentMode(mode: AgentMode) {
+        _uiState.update { it.copy(agentMode = mode) }
+        if (mode == AgentMode.OFF) {
+            _uiState.update { it.copy(agentAdvices = emptyList()) }
+        } else {
+            refreshAgentAdvices()
+        }
+    }
+
+    fun consultAgent() = refreshAgentAdvices()
+
+    fun clearAgentAdvices() {
+        _uiState.update { it.copy(agentAdvices = emptyList()) }
+    }
+
+    private fun refreshAgentAdvices() {
+        val s = _uiState.value
+        val snapshot = EngineerAgent.Snapshot(
+            isRunning = s.isRunning,
+            currentSpl = s.currentSpl,
+            safeSplLimit = s.musicianState.safeSplLimit,
+            targetSpl = s.config.targetSpl,
+            rt60Ms = s.rt60Ms,
+            outputs = s.outputs,
+            currentDelayMs = s.config.audioDelayMs,
+            recommendedDelayMs = s.distanceMeasure.delayMs ?: s.geoInfo.recommendedDelayMs,
+            panIsCentered = s.panMatrix.isCentered
+        )
+        val advices = engineerAgent.advise(snapshot, s.agentMode)
+        _uiState.update { it.copy(agentAdvices = advices) }
+    }
+
+    // === Sweep Modifiers (afectan a todas las acciones) ===
+
+    fun setFastSweep(active: Boolean) {
+        _uiState.update { it.copy(isFastSweep = active, isFineSweep = if (active) false else it.isFineSweep) }
+    }
+
+    fun setFineSweep(active: Boolean) {
+        _uiState.update { it.copy(isFineSweep = active, isFastSweep = if (active) false else it.isFastSweep) }
+    }
+
+    // === Spatial D-Pad ===
+
+    /**
+     * Move the element in the bidimensional plane.
+     * [dxSteps]/[dySteps] are -1, 0 or 1; the sweep factor scales the step.
+     */
+    fun nudgeSpatial(dxSteps: Int, dySteps: Int) {
+        val step = 0.1f * _uiState.value.sweepFactor
+        val pos = _uiState.value.spatialPosition
+        updateSpatialPosition(
+            pos.copy(
+                x = (pos.x + dxSteps * step).coerceIn(-1f, 1f),
+                y = (pos.y + dySteps * step).coerceIn(-1f, 1f)
+            )
+        )
+    }
+
+    // === Pan Matrix (L/Mid/R/Lados auto-corregidos) ===
+
+    fun adjustPanZone(zone: PanZone, up: Boolean) {
+        val delta = 0.05f * _uiState.value.sweepFactor * if (up) 1f else -1f
+        _uiState.update { it.copy(panMatrix = it.panMatrix.adjust(zone, delta)) }
+    }
+
+    fun resetPan() {
+        _uiState.update { it.copy(panMatrix = PanMatrix.Centered) }
+    }
+
+    // === Distance Measurement (emisor → receptor con GPS) ===
+
+    /**
+     * Capture the current GPS point: first tap = emitter,
+     * second tap = receiver / check point.
+     */
+    fun captureDistancePoint() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val info = locationProvider?.getCurrentLocation() ?: return@launch
+            if (!info.hasFix) return@launch
+            val point = GpsPoint(info.latitude, info.longitude, info.altitude, info.label)
+            _uiState.update { state ->
+                val dm = state.distanceMeasure
+                when (dm.step) {
+                    DistanceStep.EMITTER -> state.copy(
+                        distanceMeasure = dm.copy(emitter = point, step = DistanceStep.RECEIVER)
+                    )
+                    DistanceStep.RECEIVER -> state.copy(
+                        distanceMeasure = dm.copy(
+                            receiver = point,
+                            step = DistanceStep.DONE,
+                            speedOfSound = info.speedOfSound
+                        )
+                    )
+                    DistanceStep.DONE -> state.copy(
+                        distanceMeasure = DistanceMeasurement(
+                            emitter = point,
+                            step = DistanceStep.EMITTER,
+                            speedOfSound = info.speedOfSound
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun resetDistanceMeasure() {
+        _uiState.update { it.copy(distanceMeasure = DistanceMeasurement()) }
+    }
+
+    /**
+     * Adjust the measured distance with decimal precision.
+     * Coarse (scale button held) moves 0.5 m; fine moves 0.01 m.
+     */
+    fun adjustMeasuredDistance(coarse: Boolean, up: Boolean) {
+        val step = if (coarse) 0.5f else 0.01f
+        _uiState.update { s ->
+            val base = s.distanceMeasure.effectiveDistanceM ?: 0f
+            val adjusted = (base + if (up) step else -step).coerceAtLeast(0f)
+            s.copy(distanceMeasure = s.distanceMeasure.copy(manualDistanceM = adjusted))
+        }
+    }
+
+    /**
+     * Apply GPS-derived automation: delay (d / speedOfSound) and gain
+     * compensation with decimals across PA / console / BT outputs.
+     */
+    fun applyDistanceAutomation() {
+        val dm = _uiState.value.distanceMeasure
+        val delay = dm.delayMs ?: return
+        updateConfig { it.copy(audioDelayMs = delay) }
+        _uiState.update { state ->
+            state.copy(
+                audioDelayMs = delay,
+                splCompensation = state.splCompensation.copy(
+                    delayAdjustMs = delay,
+                    gainAdjustDb = state.splCompensation.gainAdjustDb + (dm.gainCompensationDb ?: 0f)
+                ),
+                outputs = state.outputs.map { o ->
+                    if (o.deviceType == DeviceType.PA_SYSTEM ||
+                        o.deviceType == DeviceType.CONSOLE ||
+                        o.deviceType == DeviceType.BLUETOOTH_SPEAKER
+                    ) o.copy(delayMs = delay) else o
+                }
+            )
+        }
+        if (_uiState.value.agentMode != AgentMode.OFF) refreshAgentAdvices()
+    }
+
+    // === Output Master Controls (Centro de Control) ===
+
+    /** Set the same volume on every output at once. */
+    fun setMasterVolume(volume: Float) {
+        val vol = volume.coerceIn(0f, 1f)
+        _uiState.update { state ->
+            state.copy(outputs = state.outputs.map { it.copy(volume = vol) })
+        }
+        val audible = _uiState.value.outputs.any { it.isLocalDevice || it.connectionState == DeviceState.CONNECTED }
+        if (audible) btAudioManager?.setStreamVolume(vol)
+    }
+
+    fun muteAllOutputs() {
+        _uiState.update { it.copy(outputs = it.outputs.map { o -> o.copy(isMuted = true) }) }
+    }
+
+    /**
+     * Unmute all outputs — the agent pre-checks each one:
+     * anything that would not sound (disconnected) stays muted and reports why.
+     */
+    fun unmuteAllOutputs() {
+        val current = _uiState.value.outputs
+        val blockedIds = current.filter { o ->
+            val advice = engineerAgent.preFlightUnmute(o)
+            advice != null && advice.severity == AgentSeverity.BLOCK
+        }.map { it.id }.toSet()
+        _uiState.update { state ->
+            state.copy(outputs = state.outputs.map { o ->
+                if (o.id !in blockedIds) o.copy(isMuted = false) else o
+            })
+        }
+        if (_uiState.value.agentMode != AgentMode.OFF || blockedIds.isNotEmpty()) refreshAgentAdvices()
+    }
+
+    fun setOutputGainDb(id: String, gainDb: Float) {
+        val clamped = gainDb.coerceIn(-12f, 12f)
+        val output = _uiState.value.outputs.find { it.id == id }
+        if (output != null && _uiState.value.agentMode != AgentMode.OFF) {
+            val advice = engineerAgent.preFlightGainChange(
+                output, clamped, _uiState.value.currentSpl, _uiState.value.musicianState.safeSplLimit
+            )
+            if (advice != null) {
+                _uiState.update { it.copy(agentAdvices = (listOf(advice) + it.agentAdvices).take(6)) }
+            }
+        }
+        _uiState.update { state ->
+            state.copy(outputs = state.outputs.map { if (it.id == id) it.copy(gainDb = clamped) else it })
+        }
+    }
+
+    fun setOutputDelayMs(id: String, delayMs: Float) {
+        val clamped = delayMs.coerceIn(0f, 2000f)
+        _uiState.update { state ->
+            state.copy(outputs = state.outputs.map { if (it.id == id) it.copy(delayMs = clamped) else it })
+        }
+    }
+
+    // === Focus (Concert) Mode ===
+
+    /** Whether the user granted Do-Not-Disturb access to the app. */
+    fun hasFocusAccess(): Boolean = focusModeManager?.hasPolicyAccess() ?: false
+
+    fun toggleFocusMode() {
+        val manager = focusModeManager ?: return
+        val target = !_uiState.value.focusModeActive
+        if (target) {
+            val applied = manager.applyFocus(true)
+            _uiState.update { it.copy(focusModeActive = applied) }
+        } else {
+            manager.applyFocus(false)
+            _uiState.update { it.copy(focusModeActive = false) }
+        }
+    }
+
+    // === Walkie-Talkie ===
+
+    /** Choose which peers of the workflow can hear the operator. */
+    fun toggleWalkieTarget(peerId: String) {
+        _uiState.update { state ->
+            val targets = if (peerId in state.walkieTargets) {
+                state.walkieTargets - peerId
+            } else {
+                state.walkieTargets + peerId
+            }
+            state.copy(walkieTargets = targets)
+        }
+    }
+
+    fun setWalkieActive(active: Boolean) {
+        val wm = walkieManager ?: return
+        if (active) {
+            val started = wm.start()
+            _uiState.update { it.copy(walkieActive = started) }
+            if (!started) {
+                val advice = AgentAdvice(
+                    severity = AgentSeverity.WARN,
+                    title = "Walkie sin micrófono",
+                    message = "No se puede hablar sin permiso de micrófono.",
+                    suggestion = "Concede el permiso desde el banner de permisos pendientes."
+                )
+                _uiState.update { it.copy(agentAdvices = (listOf(advice) + it.agentAdvices).take(6)) }
+            }
+        } else {
+            wm.stop()
+            _uiState.update { it.copy(walkieActive = false) }
+        }
     }
 
     // === Engine Control ===
@@ -1132,6 +1461,9 @@ class AudioEngineViewModel(
         geoJob?.cancel()
         autoCheckJob?.cancel()
         musicianTrackingJob?.cancel()
+        walkieManager?.stop()
+        walkieManager = null
+        focusModeManager = null
         btAudioManager?.cleanup()
         btAudioManager = null
         locationProvider = null

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Star
@@ -602,4 +603,5 @@ private fun deviceIcon(type: DeviceType): ImageVector = when (type) {
     DeviceType.COMPUTER -> Icons.Filled.Computer
     DeviceType.PA_SYSTEM -> Icons.Filled.GraphicEq
     DeviceType.MONITOR -> Icons.Filled.Speaker
+    DeviceType.IN_EARS -> Icons.Filled.Headphones
 }

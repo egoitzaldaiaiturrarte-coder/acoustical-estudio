@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Speaker
@@ -397,4 +398,5 @@ private fun deviceTypeIcon(type: DeviceType): ImageVector = when (type) {
     DeviceType.COMPUTER -> Icons.Filled.Computer
     DeviceType.PA_SYSTEM -> Icons.Filled.Speaker
     DeviceType.MONITOR -> Icons.Filled.AudioFile
+    DeviceType.IN_EARS -> Icons.Filled.Headphones
 }
