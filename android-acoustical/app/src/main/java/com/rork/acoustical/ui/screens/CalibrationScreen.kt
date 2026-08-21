@@ -16,6 +16,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Save
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -27,6 +31,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -38,10 +43,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.rork.acoustical.domain.model.RoomProfile
 import com.rork.acoustical.ui.components.GlassCard
 import com.rork.acoustical.ui.components.ProgressIndicator
 import com.rork.acoustical.ui.components.SplGauge
@@ -62,6 +69,19 @@ fun CalibrationScreen(
     val state by viewModel.uiState.collectAsState()
     var profileName by remember { mutableStateOf("") }
     var profileDesc by remember { mutableStateOf("") }
+    var profileToDelete by remember { mutableStateOf<RoomProfile?>(null) }
+    val context = LocalContext.current
+
+    // Import a profile shared as JSON from any app (file manager, WhatsApp...)
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()?.let { raw -> viewModel.importProfileJson(raw) }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -436,49 +456,116 @@ fun CalibrationScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             // Saved profiles
-            if (state.savedProfiles.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = "Perfiles guardados",
+                    text = "Perfiles guardados (%d)".format(state.savedProfiles.size),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
-                state.savedProfiles.forEach { profile ->
-                    GlassCard(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                TextButton(onClick = { importLauncher.launch("*/*") }) {
+                    Text("Importar", color = CyanPrimary, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            if (state.savedProfiles.isEmpty()) {
+                Text(
+                    text = "Ninguno todavía. Los que guardes quedarán en el dispositivo aunque cierres la app.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            state.savedProfiles.forEach { profile ->
+                GlassCard(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = profile.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (state.activeProfile == profile) CyanGlow
+                                        else MaterialTheme.colorScheme.onSurface
+                            )
+                            if (profile.description.isNotBlank()) {
                                 Text(
-                                    text = profile.name,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                if (profile.description.isNotBlank()) {
-                                    Text(
-                                        text = profile.description,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Text(
-                                    text = "SPL: %.1f dB · %d bandas".format(profile.calibratedSpl, profile.measuredGains.size),
-                                    style = MaterialTheme.typography.labelSmall,
+                                    text = profile.description,
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            OutlinedButton(
-                                onClick = { viewModel.loadProfile(profile) },
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text("Cargar", color = CyanPrimary)
-                            }
+                            Text(
+                                text = "SPL: %.1f dB · %d bandas".format(profile.calibratedSpl, profile.measuredGains.size),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { viewModel.loadProfile(profile) },
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Cargar", color = CyanPrimary)
                         }
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                val json = viewModel.exportProfileJson(profile)
+                                if (json != null) {
+                                    val send = Intent(Intent.ACTION_SEND).apply {
+                                        type = "application/json"
+                                        putExtra(Intent.EXTRA_TEXT, json)
+                                        putExtra(
+                                            Intent.EXTRA_TITLE,
+                                            "acoustical_perfil_${profile.name}.json"
+                                        )
+                                    }
+                                    context.startActivity(Intent.createChooser(send, "Compartir perfil"))
+                                }
+                            }
+                        ) {
+                            Text("Exportar", color = CyanPrimary, style = MaterialTheme.typography.labelMedium)
+                        }
+                        TextButton(
+                            onClick = { profileToDelete = profile },
+                            modifier = Modifier.padding(start = 4.dp)
+                        ) {
+                            Text("Borrar", color = AmberAccent, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
                 }
+                Spacer(modifier = Modifier.height(6.dp))
+            }
+
+            profileToDelete?.let { profile ->
+                AlertDialog(
+                    onDismissRequest = { profileToDelete = null },
+                    title = { Text("¿Borrar perfil?") },
+                    text = { Text("\"${profile.name}\" se eliminará del dispositivo.") },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                viewModel.deleteProfile(profile)
+                                profileToDelete = null
+                            }
+                        ) {
+                            Text("Borrar", color = AmberAccent)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { profileToDelete = null }) {
+                            Text("Cancelar")
+                        }
+                    }
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
