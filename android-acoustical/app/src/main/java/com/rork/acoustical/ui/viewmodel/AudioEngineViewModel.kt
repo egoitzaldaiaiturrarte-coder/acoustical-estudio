@@ -12,6 +12,8 @@ import com.rork.acoustical.domain.audio.EngineerAgent
 import com.rork.acoustical.domain.audio.FocusModeManager
 import com.rork.acoustical.domain.audio.WalkieTalkieManager
 import com.rork.acoustical.domain.audio.Rt60Estimator
+import com.rork.acoustical.domain.audio.TestSignalPlayer
+import com.rork.acoustical.domain.audio.TestSignalType
 import com.rork.acoustical.domain.console.ConsoleChannel
 import com.rork.acoustical.domain.console.ConsoleConfig
 import com.rork.acoustical.domain.console.ConsoleConnectionState
@@ -60,6 +62,7 @@ import com.rork.acoustical.domain.model.DistanceMeasurement
 import com.rork.acoustical.domain.model.DistanceStep
 import com.rork.acoustical.domain.model.GpsPoint
 import com.rork.acoustical.service.AudioAnalysisService
+import com.rork.acoustical.service.ProfileStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -148,7 +151,9 @@ class AudioEngineViewModel(
         // Focus (concert) mode & walkie-talkie
         val focusModeActive: Boolean = false,
         val walkieActive: Boolean = false,
-        val walkieTargets: Set<String> = emptySet()
+        val walkieTargets: Set<String> = emptySet(),
+        // Output currently playing a test signal (null = none)
+        val testingOutputId: String? = null
     ) {
         val sweepFactor: Float
             get() = when {
@@ -182,6 +187,8 @@ class AudioEngineViewModel(
     private val engineerAgent = EngineerAgent()
     private var focusModeManager: FocusModeManager? = null
     private var walkieManager: WalkieTalkieManager? = null
+    private var profileStore: ProfileStore? = null
+    private val testSignalPlayer = TestSignalPlayer()
 
     init {
         initRoutingNodes()
@@ -323,6 +330,14 @@ class AudioEngineViewModel(
 
         // Refresh system audio outputs
         refreshAudioOutputs()
+
+        // Restore persisted room profiles (they survive app restarts)
+        profileStore = ProfileStore(application).also { store ->
+            val profiles = store.loadProfiles()
+            val activeName = store.loadActiveProfileName()
+            val active = profiles.firstOrNull { it.name == activeName }
+            _uiState.update { it.copy(savedProfiles = profiles, activeProfile = active) }
+        }
     }
 
     // === Session Management ===
@@ -650,7 +665,29 @@ class AudioEngineViewModel(
     }
 
     fun removeOutput(id: String) {
+        if (_uiState.value.testingOutputId == id) stopTestSignal()
         _uiState.update { it.copy(outputs = it.outputs.filterNot { o -> o.id == id }) }
+        updateRoutingNodes()
+    }
+
+    /**
+     * Add a generic output of any type straight from the routing map,
+     * so every node of the flow becomes actionable.
+     */
+    fun addOutput(name: String, deviceType: DeviceType) {
+        if (deviceType == DeviceType.PHONE) {
+            addLocalOutput()
+            return
+        }
+        val output = OutputTarget(
+            id = "out_${System.currentTimeMillis()}",
+            name = name.ifBlank { deviceType.label },
+            deviceType = deviceType,
+            channel = "Main LR",
+            isActive = true,
+            volume = 0.75f
+        )
+        _uiState.update { it.copy(outputs = it.outputs + output) }
         updateRoutingNodes()
     }
 
@@ -676,6 +713,9 @@ class AudioEngineViewModel(
                 _uiState.update { it.copy(agentAdvices = (listOf(advice) + it.agentAdvices).take(6)) }
                 if (advice.severity == AgentSeverity.BLOCK) return
             }
+        } else if (_uiState.value.testingOutputId == id) {
+            // Silencing an output stops its test signal immediately
+            stopTestSignal()
         }
         _uiState.update { state ->
             state.copy(outputs = state.outputs.map { o ->
@@ -950,6 +990,7 @@ class AudioEngineViewModel(
     }
 
     fun muteAllOutputs() {
+        stopTestSignal()
         _uiState.update { it.copy(outputs = it.outputs.map { o -> o.copy(isMuted = true) }) }
     }
 
@@ -992,6 +1033,55 @@ class AudioEngineViewModel(
         _uiState.update { state ->
             state.copy(outputs = state.outputs.map { if (it.id == id) it.copy(delayMs = clamped) else it })
         }
+    }
+
+    // === Test Signal (Comprobar que suena) ===
+
+    /**
+     * Play a short test signal through the given output, honouring its
+     * volume, gain, delay and mute state. The stream volume of a connected
+     * device (phone speaker / Bluetooth) is also set so it is really audible.
+     */
+    fun playTestSignal(outputId: String, type: TestSignalType) {
+        val output = _uiState.value.outputs.find { it.id == outputId } ?: return
+        if (output.isMuted) {
+            _uiState.update {
+                it.copy(
+                    agentAdvices = listOf(
+                        AgentAdvice(
+                            severity = AgentSeverity.WARN,
+                            title = "Salida silenciada",
+                            message = "${output.name} está en mute: no sonará hasta que la actives.",
+                            suggestion = "Actívala primero y vuelve a comprobar."
+                        )
+                    ) + it.agentAdvices.take(5)
+                )
+            }
+            return
+        }
+        if (output.isLocalDevice || output.connectionState == DeviceState.CONNECTED) {
+            btAudioManager?.setStreamVolume(output.volume)
+        }
+        val started = testSignalPlayer.play(
+            type = type,
+            volume = output.volume,
+            gainDb = output.gainDb,
+            delayMs = output.delayMs,
+            isMuted = output.isMuted
+        ) {
+            if (_uiState.value.testingOutputId == outputId) {
+                _uiState.update { it.copy(testingOutputId = null) }
+            }
+        }
+        if (started) {
+            _uiState.update { it.copy(testingOutputId = outputId) }
+        }
+    }
+
+    /** Stop any playing test signal. */
+    fun stopTestSignal() {
+        testSignalPlayer.stop()
+        _uiState.update { it.copy(testingOutputId = null) }
     }
 
     // === Focus (Concert) Mode ===
@@ -1293,6 +1383,7 @@ class AudioEngineViewModel(
                 activeProfile = profile
             )
         }
+        persistProfiles()
     }
 
     fun loadProfile(profile: RoomProfile) {
@@ -1312,6 +1403,39 @@ class AudioEngineViewModel(
                 activeProfile = profile
             )
         }
+        persistProfiles()
+    }
+
+    /** Delete a saved profile from the list and from disk. */
+    fun deleteProfile(profile: RoomProfile) {
+        _uiState.update {
+            it.copy(
+                savedProfiles = it.savedProfiles.filterNot { p ->
+                    p.name == profile.name && p.createdAt == profile.createdAt
+                },
+                activeProfile = if (it.activeProfile == profile) null else it.activeProfile
+            )
+        }
+        persistProfiles()
+    }
+
+    /** Serialize a profile to JSON so it can be shared with other devices. */
+    fun exportProfileJson(profile: RoomProfile): String? =
+        profileStore?.exportProfile(profile)
+
+    /** Import a profile from a shared JSON payload; true when valid. */
+    fun importProfileJson(raw: String): Boolean {
+        val store = profileStore ?: return false
+        val profile = store.importProfile(raw) ?: return false
+        _uiState.update { it.copy(savedProfiles = it.savedProfiles + profile) }
+        persistProfiles()
+        return true
+    }
+
+    private fun persistProfiles() {
+        val s = _uiState.value
+        profileStore?.saveProfiles(s.savedProfiles)
+        profileStore?.saveActiveProfileName(s.activeProfile?.name)
     }
 
     // === Console Integration ===
@@ -1452,6 +1576,7 @@ class AudioEngineViewModel(
         super.onCleared()
         engine?.stop()
         engine = null
+        testSignalPlayer.stop()
         consoleManager?.disconnect()
         consoleManager = null
         meshManager?.stop()

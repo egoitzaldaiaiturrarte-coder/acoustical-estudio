@@ -35,11 +35,14 @@ import androidx.compose.material.icons.filled.Waves
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -66,9 +69,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.rork.acoustical.domain.audio.TestSignalType
 import com.rork.acoustical.domain.model.DeviceState
 import com.rork.acoustical.domain.model.DeviceType
 import com.rork.acoustical.domain.model.OutputTarget
+import com.rork.acoustical.domain.model.ReferenceSource
 import com.rork.acoustical.domain.model.RoutingNode
 import com.rork.acoustical.domain.model.RoutingNodeType
 import com.rork.acoustical.ui.components.GlassCard
@@ -100,6 +105,12 @@ fun RoutingMapScreen(
     val selectedOutput = state.outputs.find { it.id == selectedOutputId }
     val masterVolume = state.outputs.firstOrNull()?.volume ?: 0.75f
 
+    // Create-output sheet state — every node can spawn its own output
+    var showCreateOutput by remember { mutableStateOf(false) }
+    var createType by remember { mutableStateOf(DeviceType.PA_SYSTEM) }
+    var createName by remember { mutableStateOf("") }
+    val createSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -124,7 +135,7 @@ fun RoutingMapScreen(
                 fontWeight = FontWeight.Medium
             )
             Text(
-                text = "Toca cualquier salida para silenciarla o ajustarla",
+                text = "Toca cualquier nodo para ajustarlo — o para crear su salida al instante",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -250,7 +261,14 @@ fun RoutingMapScreen(
                                         node = node,
                                         outputs = nodeOutputs,
                                         onClick = {
-                                            nodeOutputs.firstOrNull()?.let { selectedOutputId = it.id }
+                                            val first = nodeOutputs.firstOrNull()
+                                            if (first != null) {
+                                                selectedOutputId = first.id
+                                            } else {
+                                                createType = deviceTypeForNode(node.id)
+                                                createName = ""
+                                                showCreateOutput = true
+                                            }
                                         }
                                     )
                                 }
@@ -314,6 +332,27 @@ fun RoutingMapScreen(
                             inactiveTrackColor = SurfaceElevated
                         )
                     )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Add output straight from the routing screen
+                    OutlinedButton(
+                        onClick = {
+                            createType = DeviceType.PA_SYSTEM
+                            createName = ""
+                            showCreateOutput = true
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            "+ Añadir salida",
+                            color = CyanPrimary,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(6.dp))
 
@@ -386,33 +425,118 @@ fun RoutingMapScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Reference section
+            // Reference section — source selectable and captured spectrum manageable
             GlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Referencia",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = AmberAccent,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Fuente de señal de referencia",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    ReferenceSource.entries.forEach { ref ->
+                        FilterChip(
+                            selected = state.workConfig.referenceSource == ref,
+                            onClick = { viewModel.setReferenceSource(ref) },
+                            label = { Text(ref.label) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = AmberAccent.copy(alpha = 0.2f),
+                                selectedLabelColor = AmberAccent
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                    Text(
+                        text = state.workConfig.referenceSource.description,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Captured spectrum reference
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Referencia",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = AmberAccent,
+                            text = "Referencia de espectro",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = state.workConfig.referenceSource.label,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        StatusPill(
+                            text = if (state.isReferenceCaptured) "Activa" else "Sin capturar",
+                            color = if (state.isReferenceCaptured) LimeActive else AmberAccent
                         )
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = state.workConfig.referenceSource.description,
-                        style = MaterialTheme.typography.bodySmall,
+                        text = if (state.isReferenceCaptured) {
+                            "La corrección compara la sala contra la referencia capturada."
+                        } else {
+                            "Sin referencia capturada: la corrección usa objetivo plano (0 dB en todas las bandas). Captura una para comparar contra la señal original."
+                        },
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (state.isReferenceCaptured) {
+                            OutlinedButton(
+                                onClick = { viewModel.clearReference() },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(38.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text(
+                                    "Borrar",
+                                    color = CoralAlert,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+                        } else {
+                            Button(
+                                onClick = { viewModel.captureReference() },
+                                enabled = state.isRunning,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(38.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = CyanPrimary.copy(alpha = 0.25f),
+                                    contentColor = CyanGlow
+                                )
+                            ) {
+                                Text("Capturar", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                        if (!state.isRunning) {
+                            Text(
+                                text = "Arranca el motor para capturar",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 4.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
@@ -505,6 +629,9 @@ fun RoutingMapScreen(
             ) {
                 OutputDetailSheet(
                     output = selectedOutput,
+                    isTesting = state.testingOutputId == selectedOutput.id,
+                    onTestSignal = { viewModel.playTestSignal(selectedOutput.id, it) },
+                    onStopTest = { viewModel.stopTestSignal() },
                     onGainChange = { viewModel.setOutputGainDb(selectedOutput.id, it) },
                     onDelayChange = { viewModel.setOutputDelayMs(selectedOutput.id, it) },
                     onMuteToggle = { viewModel.toggleOutputMute(selectedOutput.id) },
@@ -512,6 +639,27 @@ fun RoutingMapScreen(
                     onRemove = {
                         viewModel.removeOutput(selectedOutput.id)
                         selectedOutputId = null
+                    }
+                )
+            }
+        }
+
+        // Create output sheet — reached from the map nodes or the add button
+        if (showCreateOutput) {
+            ModalBottomSheet(
+                onDismissRequest = { showCreateOutput = false },
+                sheetState = createSheetState,
+                containerColor = MaterialTheme.colorScheme.surface
+            ) {
+                CreateOutputSheet(
+                    selectedType = createType,
+                    name = createName,
+                    onTypeChange = { createType = it },
+                    onNameChange = { createName = it },
+                    onCreate = {
+                        viewModel.addOutput(createName, createType)
+                        showCreateOutput = false
+                        createName = ""
                     }
                 )
             }
@@ -531,14 +679,17 @@ private fun NodeWidget(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .height(44.dp)
-            .let { base ->
-                if (hasOutputs) {
-                    base
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { onClick() }
-                } else base
-            }
+            .height(48.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .background(
+                when {
+                    !hasOutputs -> SurfaceElevated.copy(alpha = 0.2f)
+                    allMuted -> CoralAlert.copy(alpha = 0.12f)
+                    else -> CyanPrimary.copy(alpha = 0.1f)
+                }
+            )
+            .padding(horizontal = 6.dp)
     ) {
         NodeIcon(node.type, node.isActive)
         Spacer(modifier = Modifier.height(2.dp))
@@ -548,20 +699,20 @@ private fun NodeWidget(
             color = if (node.isActive) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
             fontWeight = FontWeight.Medium
         )
-        if (hasOutputs) {
-            Text(
-                text = if (allMuted) "MUTE" else "%d%%".format(outputs.first().volumePercent),
-                style = MaterialTheme.typography.labelSmall,
-                color = if (allMuted) CoralAlert else CyanGlow,
-                fontWeight = if (allMuted) FontWeight.Bold else FontWeight.Normal
-            )
-        } else if (node.spl > 0f) {
-            Text(
-                text = "%.0f dB".format(node.spl),
-                style = MaterialTheme.typography.labelSmall,
-                color = CyanGlow
-            )
-        }
+        Text(
+            text = when {
+                !hasOutputs -> "Añadir"
+                allMuted -> "MUTE"
+                else -> "%d%%".format(outputs.first().volumePercent)
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = when {
+                !hasOutputs -> CyanDim
+                allMuted -> CoralAlert
+                else -> CyanGlow
+            },
+            fontWeight = if (allMuted) FontWeight.Bold else FontWeight.Normal
+        )
     }
 }
 
@@ -642,12 +793,17 @@ private fun OutputControlRow(
 @Composable
 private fun OutputDetailSheet(
     output: OutputTarget,
+    isTesting: Boolean,
+    onTestSignal: (TestSignalType) -> Unit,
+    onStopTest: () -> Unit,
     onGainChange: (Float) -> Unit,
     onDelayChange: (Float) -> Unit,
     onMuteToggle: () -> Unit,
     onSoloToggle: () -> Unit,
     onRemove: () -> Unit
 ) {
+    var testType by remember { mutableStateOf(TestSignalType.PINK_NOISE) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -712,6 +868,67 @@ private fun OutputDetailSheet(
                 inactiveTrackColor = SurfaceElevated
             )
         )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Test signal — verify the output actually sounds
+        Text(
+            "Comprobar que suena",
+            style = MaterialTheme.typography.titleSmall,
+            color = CyanGlow,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            text = if (output.isMuted) {
+                "La salida está silenciada: actívala para comprobarla."
+            } else {
+                "Reproduce 2 s por la salida respetando volumen, ganancia y delay."
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TestSignalType.entries.forEach { signal ->
+                FilterChip(
+                    selected = testType == signal,
+                    onClick = { testType = signal },
+                    label = { Text(signal.shortLabel) },
+                    enabled = !isTesting,
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = CyanPrimary.copy(alpha = 0.25f),
+                        selectedLabelColor = CyanGlow
+                    )
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        if (isTesting) {
+            Button(
+                onClick = onStopTest,
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CoralAlert.copy(alpha = 0.2f),
+                    contentColor = CoralAlert
+                )
+            ) {
+                Text("Detener señal")
+            }
+        } else {
+            Button(
+                onClick = { onTestSignal(testType) },
+                enabled = !output.isMuted,
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CyanPrimary,
+                    contentColor = Color.Black
+                )
+            ) {
+                Text("Comprobar (2 s)", fontWeight = FontWeight.SemiBold)
+            }
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -788,4 +1005,109 @@ private fun outputsForNode(nodeId: String, outputs: List<OutputTarget>): List<Ou
     "out_inear" -> outputs.filter { it.deviceType == DeviceType.IN_EARS }
     "out_monitor" -> outputs.filter { it.isLocalDevice || it.deviceType == DeviceType.MONITOR }
     else -> emptyList()
+}
+
+/** Which output type a routing node spawns when tapped without outputs. */
+private fun deviceTypeForNode(nodeId: String): DeviceType = when (nodeId) {
+    "out_console" -> DeviceType.CONSOLE
+    "out_bt" -> DeviceType.BLUETOOTH_SPEAKER
+    "out_pa" -> DeviceType.PA_SYSTEM
+    "out_inear" -> DeviceType.IN_EARS
+    "out_monitor" -> DeviceType.MONITOR
+    else -> DeviceType.MONITOR
+}
+
+/**
+ * Sheet to create a new output straight from the routing map:
+ * pick a type, optionally name it, done.
+ */
+@Composable
+private fun CreateOutputSheet(
+    selectedType: DeviceType,
+    name: String,
+    onTypeChange: (DeviceType) -> Unit,
+    onNameChange: (String) -> Unit,
+    onCreate: () -> Unit
+) {
+    val creatableTypes = listOf(
+        DeviceType.PA_SYSTEM,
+        DeviceType.IN_EARS,
+        DeviceType.BLUETOOTH_SPEAKER,
+        DeviceType.CONSOLE,
+        DeviceType.MONITOR,
+        DeviceType.USB_AUDIO,
+        DeviceType.PHONE
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 16.dp)
+    ) {
+        Text(
+            "Nueva salida",
+            style = MaterialTheme.typography.titleMedium,
+            color = CyanGlow,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            "Elige el tipo de salida y dale un nombre si quieres",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        creatableTypes.chunked(2).forEach { rowTypes ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                rowTypes.forEach { type ->
+                    FilterChip(
+                        selected = selectedType == type,
+                        onClick = { onTypeChange(type) },
+                        label = { Text(type.label) },
+                        modifier = Modifier.weight(1f),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CyanPrimary.copy(alpha = 0.25f),
+                            selectedLabelColor = CyanGlow
+                        )
+                    )
+                }
+                if (rowTypes.size == 1) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+        OutlinedTextField(
+            value = name,
+            onValueChange = onNameChange,
+            label = { Text("Nombre (opcional)") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            singleLine = true
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Button(
+            onClick = onCreate,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp),
+            shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = CyanPrimary,
+                contentColor = Color.Black
+            )
+        ) {
+            Text("Añadir salida", fontWeight = FontWeight.SemiBold)
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+    }
 }
