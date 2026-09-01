@@ -1,5 +1,6 @@
 package com.rork.acoustical.ui.screens
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -38,6 +39,7 @@ import com.rork.acoustical.domain.model.AnalysisInterval
 import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.FftSize
 import com.rork.acoustical.domain.model.SampleRate
+import com.rork.acoustical.ui.components.FineDelayControl
 import com.rork.acoustical.ui.components.GlassCard
 import com.rork.acoustical.ui.theme.AmberAccent
 import com.rork.acoustical.ui.theme.CyanGlow
@@ -153,13 +155,17 @@ fun SettingsScreen(
                     Text("Más bandas = corrección más precisa.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         BandCount.entries.forEach { bc ->
                             ChipSelector(bc.label, config.bandCount == bc) { viewModel.setBandCount(bc) }
                         }
                     }
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text("${config.bandCount.count} bandas de corrección", style = MaterialTheme.typography.labelSmall, color = CyanGlow)
                 }
             }
 
@@ -172,20 +178,12 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.height(2.dp))
                     Text("Sincroniza múltiples dispositivos con precisión decimal.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("25.0 ms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("%.1f ms".format(config.audioDelayMs), style = MaterialTheme.typography.titleSmall, color = AmberAccent, fontWeight = FontWeight.SemiBold)
-                        Text("2000.0 ms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Slider(
-                        value = config.audioDelayMs,
-                        onValueChange = { viewModel.setAudioDelayMs(it) },
-                        valueRange = 25f..2000f
+                    FineDelayControl(
+                        label = "Retardo global",
+                        valueMs = config.audioDelayMs,
+                        valueRange = 25f..2000f,
+                        onChange = { viewModel.setAudioDelayMs(it) }
                     )
-                    Text("Distancia equivalente: %.1f m".format(config.audioDelayMs * 0.343f), style = MaterialTheme.typography.labelSmall, color = CyanGlow)
                 }
             }
 
@@ -241,13 +239,13 @@ fun SettingsScreen(
                     ) {
                         Text("0 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("±%.0f dB".format(config.maxGainDb), style = MaterialTheme.typography.titleSmall, color = CyanGlow, fontWeight = FontWeight.SemiBold)
-                        Text("24 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("50 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Slider(
                         value = config.maxGainDb,
                         onValueChange = { viewModel.setMaxGainDb(it) },
-                        valueRange = 0f..24f,
-                        steps = 23
+                        valueRange = 0f..50f,
+                        steps = 49
                     )
                 }
             }
@@ -274,6 +272,17 @@ fun SettingsScreen(
                         onValueChange = { viewModel.setSmoothingFactor(it) },
                         valueRange = 0.05f..1f
                     )
+                    if (config.needsExtendedSmoothing) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Suavizado efectivo: %.3f — extendido automáticamente por el límite alto (%.0f dB)".format(
+                                config.effectiveSmoothingFactor,
+                                config.maxGainDb
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AmberAccent
+                        )
+                    }
                 }
             }
 

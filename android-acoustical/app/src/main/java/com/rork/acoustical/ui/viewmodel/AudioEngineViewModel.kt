@@ -1,7 +1,10 @@
 package com.rork.acoustical.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rork.acoustical.domain.audio.AudioEngine
@@ -40,9 +43,9 @@ import com.rork.acoustical.domain.model.PanZone
 import com.rork.acoustical.domain.model.ProbeQuality
 import com.rork.acoustical.domain.model.ReferenceSource
 import com.rork.acoustical.domain.model.RoomProfile
-import com.rork.acoustical.domain.model.RoutingConnection
-import com.rork.acoustical.domain.model.RoutingNode
-import com.rork.acoustical.domain.model.RoutingNodeType
+import com.rork.acoustical.domain.model.EqChannel
+import com.rork.acoustical.domain.model.InputTarget
+import com.rork.acoustical.domain.model.InputType
 import com.rork.acoustical.domain.model.SampleRate
 import com.rork.acoustical.domain.model.ScenarioPreset
 import com.rork.acoustical.domain.model.SpatialPosition
@@ -72,6 +75,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * Central ViewModel shared across all screens.
@@ -127,8 +131,7 @@ class AudioEngineViewModel(
         val workConfig: WorkConfig = WorkConfig(),
         val spatialPosition: SpatialPosition = SpatialPosition(),
         val splCompensation: SplCompensation = SplCompensation(),
-        val routingNodes: List<RoutingNode> = emptyList(),
-        val routingConnections: List<RoutingConnection> = emptyList(),
+        val inputs: List<InputTarget> = emptyList(),
         val outputs: List<OutputTarget> = emptyList(),
         val bluetoothDevices: List<BluetoothAudioManager.BtDevice> = emptyList(),
         val isBtScanning: Boolean = false,
@@ -152,8 +155,13 @@ class AudioEngineViewModel(
         val focusModeActive: Boolean = false,
         val walkieActive: Boolean = false,
         val walkieTargets: Set<String> = emptySet(),
-        // Output currently playing a test signal (null = none)
-        val testingOutputId: String? = null
+        // Outputs currently playing a test signal (several can sound at once)
+        val testingOutputIds: Set<String> = emptySet(),
+        // EQ channels — L and R can be unlinked and trimmed separately
+        val bandsL: List<EqBand> = emptyList(),
+        val bandsR: List<EqBand> = emptyList(),
+        val eqLinked: Boolean = true,
+        val eqChannel: EqChannel = EqChannel.LEFT
     ) {
         val sweepFactor: Float
             get() = when {
@@ -189,9 +197,12 @@ class AudioEngineViewModel(
     private var walkieManager: WalkieTalkieManager? = null
     private var profileStore: ProfileStore? = null
     private val testSignalPlayer = TestSignalPlayer()
+    // Manual per-channel EQ trims on top of the engine's correction gains
+    private val eqOffsetsL = mutableListOf<Float>()
+    private val eqOffsetsR = mutableListOf<Float>()
 
     init {
-        initRoutingNodes()
+        initInputs()
         engine = AudioEngine().also { eng ->
             eng.configure(_uiState.value.config)
             eng.onAnalysisUpdate = { result ->
@@ -229,6 +240,7 @@ class AudioEngineViewModel(
                 // Update mesh with local SPL
                 meshManager?.updateLocalSpl(result.spl)
                 meshManager?.updateLocalCorrections(result.bands.map { it.gainDb })
+                publishChannelBands()
             }
             eng.onNoiseCaptureProgress = { progress ->
                 _uiState.update { it.copy(noiseCaptureProgress = progress) }
@@ -368,7 +380,7 @@ class AudioEngineViewModel(
         }
         // Start mesh as master
         startMeshMaster()
-        updateRoutingNodes()
+        updateInputs()
     }
 
     fun joinSession(name: String, pin: String) {
@@ -397,7 +409,7 @@ class AudioEngineViewModel(
         }
         // Start mesh as listener
         startMeshListener()
-        updateRoutingNodes()
+        updateInputs()
     }
 
     fun leaveSession() {
@@ -409,7 +421,7 @@ class AudioEngineViewModel(
                 splCompensation = SplCompensation()
             )
         }
-        updateRoutingNodes()
+        updateInputs()
     }
 
     fun addDevice(
@@ -452,7 +464,7 @@ class AudioEngineViewModel(
                 }
                 state.copy(session = state.session.copy(devices = updated))
             }
-            updateRoutingNodes()
+            updateInputs()
         }
     }
 
@@ -460,7 +472,7 @@ class AudioEngineViewModel(
         _uiState.update { state ->
             state.copy(session = state.session.copy(devices = state.session.devices.filterNot { it.id == deviceId }))
         }
-        updateRoutingNodes()
+        updateInputs()
     }
 
     fun toggleDeviceActive(deviceId: String) {
@@ -470,19 +482,19 @@ class AudioEngineViewModel(
             }
             state.copy(session = state.session.copy(devices = updated))
         }
-        updateRoutingNodes()
+        updateInputs()
     }
 
     // === Work Configuration ===
 
     fun setWorkEnvironment(env: WorkEnvironmentType) {
         _uiState.update { it.copy(workConfig = it.workConfig.copy(environment = env)) }
-        updateRoutingNodes()
+        updateInputs()
     }
 
     fun setReferenceSource(ref: ReferenceSource) {
         _uiState.update { it.copy(workConfig = it.workConfig.copy(referenceSource = ref)) }
-        updateRoutingNodes()
+        updateInputs()
     }
 
     fun setBitDepth(depth: BitDepth) {
@@ -546,17 +558,9 @@ class AudioEngineViewModel(
                 delay(interval)
                 if (!_uiState.value.isRunning) continue
                 if (_uiState.value.agentMode != AgentMode.OFF) refreshAgentAdvices()
-                // Run a probe measurement
-                val spl = _uiState.value.currentSpl
-                val rt60 = _uiState.value.rt60Ms
-                _uiState.update { state ->
-                    // Update routing nodes with fresh probe data
-                    state.copy(
-                        routingNodes = state.routingNodes.map { node ->
-                            if (node.type == RoutingNodeType.PROCESS) node.copy(spl = spl) else node
-                        }
-                    )
-                }
+                // The fast two-band correction is driven by the engine itself;
+                // this loop keeps the input states fresh at the probe cadence
+                updateInputs()
             }
         }
     }
@@ -566,58 +570,65 @@ class AudioEngineViewModel(
         autoCheckJob = null
     }
 
-    // === Routing Map ===
+    // === Inputs (Ruteos) ===
 
-    private fun initRoutingNodes() {
-        val nodes = listOf(
-            RoutingNode("in_mic", "Micrófono", RoutingNodeType.INPUT, true, spl = 0f, subtitle = "Captura local"),
-            RoutingNode("in_usb", "USB Audio", RoutingNodeType.INPUT, false, subtitle = "Interface USB"),
-            RoutingNode("in_console", "Consola In", RoutingNodeType.INPUT, false, subtitle = "Entrada OSC"),
-            RoutingNode("proc_eq", "EQ Dinámico", RoutingNodeType.PROCESS, true, subtitle = "Corrección espectral"),
-            RoutingNode("proc_pressure", "Corrector presión", RoutingNodeType.PROCESS, true, subtitle = "Compensación SPL"),
-            RoutingNode("proc_noise", "Noise Profiler", RoutingNodeType.PROCESS, true, subtitle = "Sustracción de ruido"),
-            RoutingNode("proc_rt60", "RT60", RoutingNodeType.PROCESS, false, subtitle = "Reverberación"),
-            RoutingNode("out_console", "Consola", RoutingNodeType.OUTPUT, false, subtitle = "Main LR"),
-            RoutingNode("out_bt", "Altavoces BT", RoutingNodeType.OUTPUT, false, subtitle = "Bluetooth"),
-            RoutingNode("out_pa", "PA Escenario", RoutingNodeType.OUTPUT, false, subtitle = "P.A."),
-            RoutingNode("out_inear", "In-Ears", RoutingNodeType.OUTPUT, false, subtitle = "Monitores de oído"),
-            RoutingNode("out_monitor", "Monitores", RoutingNodeType.OUTPUT, true, subtitle = "Salida local"),
-            RoutingNode("out_remote", "Móviles remotos", RoutingNodeType.OUTPUT, false, subtitle = "Mesh")
+    private fun initInputs() {
+        val inputs = listOf(
+            InputTarget("in_mic", InputType.MIC, "Micrófono del móvil", isActive = true, subtitle = "Motor parado"),
+            InputTarget("in_usb", InputType.USB, "USB Audio", isActive = false, subtitle = "Interface USB"),
+            InputTarget("in_console", InputType.CONSOLE_IN, "Consola In", isActive = false, subtitle = "Entrada OSC"),
+            InputTarget("in_ref", InputType.FILE_REFERENCE, "Archivo / Referencia", isActive = true, subtitle = "Fuente de señal")
         )
-        val connections = listOf(
-            RoutingConnection("in_mic", "proc_eq"),
-            RoutingConnection("in_usb", "proc_eq"),
-            RoutingConnection("in_console", "proc_eq"),
-            RoutingConnection("proc_eq", "proc_pressure"),
-            RoutingConnection("proc_pressure", "proc_noise"),
-            RoutingConnection("proc_noise", "out_console"),
-            RoutingConnection("proc_noise", "out_bt"),
-            RoutingConnection("proc_noise", "out_pa"),
-            RoutingConnection("proc_noise", "out_inear"),
-            RoutingConnection("proc_noise", "out_monitor"),
-            RoutingConnection("proc_noise", "out_remote")
-        )
-        _uiState.update { it.copy(routingNodes = nodes, routingConnections = connections) }
+        _uiState.update { it.copy(inputs = inputs) }
     }
 
-    private fun updateRoutingNodes() {
-        val devices = _uiState.value.session.devices
-        val outputs = _uiState.value.outputs
+    private fun updateInputs() {
+        _uiState.update { state ->
+            val devices = state.session.devices
+            state.copy(
+                inputs = state.inputs.map { input ->
+                    when (input.id) {
+                        "in_mic" -> input.copy(
+                            subtitle = if (state.isRunning) "Motor activo" else "Motor parado"
+                        )
+                        "in_usb" -> input.copy(
+                            isActive = input.isActive && (
+                                devices.any { it.type == DeviceType.USB_AUDIO && it.isActive } ||
+                                    state.usbAudioDevices.isNotEmpty()
+                                )
+                        )
+                        "in_console" -> input.copy(
+                            isActive = input.isActive && (
+                                devices.any { it.type == DeviceType.CONSOLE && it.isActive } ||
+                                    state.consoleConnectionState == ConsoleConnectionState.CONNECTED
+                                )
+                        )
+                        "in_ref" -> input.copy(subtitle = state.workConfig.referenceSource.label)
+                        else -> input
+                    }
+                }
+            )
+        }
+    }
+
+    /** Activate or deactivate an input from the routing screen. */
+    fun toggleInputActive(id: String) {
         _uiState.update { state ->
             state.copy(
-                routingNodes = state.routingNodes.map { node ->
-                    when (node.id) {
-                        "in_mic" -> node.copy(isActive = true)
-                        "in_usb" -> node.copy(isActive = devices.any { it.type == DeviceType.USB_AUDIO && it.isActive })
-                        "in_console" -> node.copy(isActive = devices.any { it.type == DeviceType.CONSOLE && it.isActive })
-                        "out_console" -> node.copy(isActive = devices.any { it.type == DeviceType.CONSOLE && it.isActive } || outputs.any { it.deviceType == DeviceType.CONSOLE && it.isActive })
-                        "out_bt" -> node.copy(isActive = devices.any { it.type == DeviceType.BLUETOOTH_SPEAKER && it.isActive } || outputs.any { it.deviceType == DeviceType.BLUETOOTH_SPEAKER && it.isActive })
-                        "out_pa" -> node.copy(isActive = outputs.any { it.deviceType == DeviceType.PA_SYSTEM && it.isActive })
-                        "out_inear" -> node.copy(isActive = outputs.any { it.deviceType == DeviceType.IN_EARS && it.isActive })
-                        "out_monitor" -> node.copy(isActive = outputs.any { it.isLocalDevice && it.isActive })
-                        "out_remote" -> node.copy(isActive = devices.any { it.type == DeviceType.PHONE && !it.isThisDevice && it.isActive })
-                        else -> node
-                    }
+                inputs = state.inputs.map { input ->
+                    if (input.id == id) input.copy(isActive = !input.isActive) else input
+                }
+            )
+        }
+    }
+
+    /** Trim an input's gain (−12…+12 dB). */
+    fun setInputGainDb(id: String, gainDb: Float) {
+        val clamped = gainDb.coerceIn(-12f, 12f)
+        _uiState.update { state ->
+            state.copy(
+                inputs = state.inputs.map { input ->
+                    if (input.id == id) input.copy(gainDb = clamped) else input
                 }
             )
         }
@@ -642,7 +653,7 @@ class AudioEngineViewModel(
     fun addLocalOutput() {
         if (_uiState.value.outputs.any { it.isLocalDevice }) return
         initLocalOutput()
-        updateRoutingNodes()
+        updateInputs()
     }
 
     fun addBluetoothOutput(address: String) {
@@ -661,13 +672,13 @@ class AudioEngineViewModel(
         if (btDevice.isConnected) {
             btAudioManager?.setStreamVolume(output.volume)
         }
-        updateRoutingNodes()
+        updateInputs()
     }
 
     fun removeOutput(id: String) {
-        if (_uiState.value.testingOutputId == id) stopTestSignal()
+        stopTestSignal(id)
         _uiState.update { it.copy(outputs = it.outputs.filterNot { o -> o.id == id }) }
-        updateRoutingNodes()
+        updateInputs()
     }
 
     /**
@@ -688,7 +699,7 @@ class AudioEngineViewModel(
             volume = 0.75f
         )
         _uiState.update { it.copy(outputs = it.outputs + output) }
-        updateRoutingNodes()
+        updateInputs()
     }
 
     fun setOutputVolume(id: String, volume: Float) {
@@ -713,9 +724,9 @@ class AudioEngineViewModel(
                 _uiState.update { it.copy(agentAdvices = (listOf(advice) + it.agentAdvices).take(6)) }
                 if (advice.severity == AgentSeverity.BLOCK) return
             }
-        } else if (_uiState.value.testingOutputId == id) {
+        } else if (id in _uiState.value.testingOutputIds) {
             // Silencing an output stops its test signal immediately
-            stopTestSignal()
+            stopTestSignal(id)
         }
         _uiState.update { state ->
             state.copy(outputs = state.outputs.map { o ->
@@ -1013,7 +1024,8 @@ class AudioEngineViewModel(
     }
 
     fun setOutputGainDb(id: String, gainDb: Float) {
-        val clamped = gainDb.coerceIn(-12f, 12f)
+        val maxGain = _uiState.value.config.maxGainDb
+        val clamped = gainDb.coerceIn(-maxGain, maxGain)
         val output = _uiState.value.outputs.find { it.id == id }
         if (output != null && _uiState.value.agentMode != AgentMode.OFF) {
             val advice = engineerAgent.preFlightGainChange(
@@ -1028,19 +1040,27 @@ class AudioEngineViewModel(
         }
     }
 
+    /** Fine delay set: quantized to 0.01 ms so cm-level alignment is possible. */
     fun setOutputDelayMs(id: String, delayMs: Float) {
-        val clamped = delayMs.coerceIn(0f, 2000f)
+        val clamped = (delayMs.coerceIn(0f, 2000f) * 100f).roundToInt() / 100f
         _uiState.update { state ->
             state.copy(outputs = state.outputs.map { if (it.id == id) it.copy(delayMs = clamped) else it })
         }
+    }
+
+    /** Nudge one output's delay by [deltaMs] (fine steps of 0.01 ms). */
+    fun nudgeOutputDelay(id: String, deltaMs: Float) {
+        val output = _uiState.value.outputs.find { it.id == id } ?: return
+        setOutputDelayMs(id, output.delayMs + deltaMs)
     }
 
     // === Test Signal (Comprobar que suena) ===
 
     /**
      * Play a short test signal through the given output, honouring its
-     * volume, gain, delay and mute state. The stream volume of a connected
-     * device (phone speaker / Bluetooth) is also set so it is really audible.
+     * volume, gain, delay and mute state. Multiroute: each output sounds on
+     * its own physical device, so the phone speaker and a Bluetooth speaker
+     * can play different signals at the same time.
      */
     fun playTestSignal(outputId: String, type: TestSignalType) {
         val output = _uiState.value.outputs.find { it.id == outputId } ?: return
@@ -1063,25 +1083,61 @@ class AudioEngineViewModel(
             btAudioManager?.setStreamVolume(output.volume)
         }
         val started = testSignalPlayer.play(
+            outputId = outputId,
             type = type,
             volume = output.volume,
             gainDb = output.gainDb,
             delayMs = output.delayMs,
-            isMuted = output.isMuted
+            isMuted = output.isMuted,
+            device = resolveOutputDevice(output.deviceType)
         ) {
-            if (_uiState.value.testingOutputId == outputId) {
-                _uiState.update { it.copy(testingOutputId = null) }
-            }
+            _uiState.update { it.copy(testingOutputIds = it.testingOutputIds - outputId) }
         }
         if (started) {
-            _uiState.update { it.copy(testingOutputId = outputId) }
+            _uiState.update { it.copy(testingOutputIds = it.testingOutputIds + outputId) }
         }
     }
 
-    /** Stop any playing test signal. */
-    fun stopTestSignal() {
-        testSignalPlayer.stop()
-        _uiState.update { it.copy(testingOutputId = null) }
+    /**
+     * Stop test signals. Without [outputId] stops every output at once;
+     * with it, only that output's signal stops.
+     */
+    fun stopTestSignal(outputId: String? = null) {
+        if (outputId == null) {
+            testSignalPlayer.stopAll()
+            _uiState.update { it.copy(testingOutputIds = emptySet()) }
+        } else {
+            testSignalPlayer.stop(outputId)
+            _uiState.update { it.copy(testingOutputIds = it.testingOutputIds - outputId) }
+        }
+    }
+
+    /**
+     * Resolve the physical output device for a logical output type, so each
+     * test signal is routed to its own speaker (built-in, BT, USB or wired).
+     */
+    private fun resolveOutputDevice(type: DeviceType): AudioDeviceInfo? {
+        val audioManager = getApplication<Application>()
+            .getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            ?: return null
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        return when (type) {
+            DeviceType.PHONE, DeviceType.TABLET ->
+                devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            DeviceType.BLUETOOTH_SPEAKER ->
+                devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+            DeviceType.USB_AUDIO ->
+                devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                        it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                }
+            DeviceType.IN_EARS, DeviceType.MONITOR ->
+                devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET
+                }
+            else -> null
+        }
     }
 
     // === Focus (Concert) Mode ===
@@ -1203,7 +1259,18 @@ class AudioEngineViewModel(
     fun setSmoothingFactor(factor: Float) = updateConfig { it.copy(smoothingFactor = factor) }
     fun setNoiseFloorDb(db: Float) = updateConfig { it.copy(noiseFloorDb = db) }
     fun setCorrectionEnabled(enabled: Boolean) = updateConfig { it.copy(correctionEnabled = enabled) }
-    fun setAudioDelayMs(delayMs: Float) = updateConfig { it.copy(audioDelayMs = delayMs) }
+    /**
+     * Global audio delay in 0.01 ms steps. Does not restart the engine —
+     * the delay only affects the test signal player and the UI readouts,
+     * so dragging the slider stays smooth.
+     */
+    fun setAudioDelayMs(delayMs: Float) {
+        val rounded = (delayMs * 100f).roundToInt() / 100f
+        _uiState.update { it.copy(config = it.config.copy(audioDelayMs = rounded), audioDelayMs = rounded) }
+    }
+
+    /** Nudge the global delay by [deltaMs] (fine steps of 0.01 ms). */
+    fun nudgeAudioDelay(deltaMs: Float) = setAudioDelayMs(_uiState.value.config.audioDelayMs + deltaMs)
     fun setNoiseSubtractionEnabled(enabled: Boolean) = updateConfig {
         it.copy(noiseSubtractionEnabled = enabled)
     }.also {
@@ -1284,21 +1351,71 @@ class AudioEngineViewModel(
         _uiState.update { it.copy(isReferenceCaptured = false) }
     }
 
-    fun setBandGain(index: Int, gainDb: Float) {
-        engine?.setBandGain(index, gainDb)
-        _uiState.update { state ->
-            val newBands = state.bands.toMutableList()
-            if (index in newBands.indices) {
-                newBands[index] = newBands[index].copy(gainDb = gainDb, targetGainDb = gainDb)
-            }
-            state.copy(bands = newBands)
+    /** Recompute the per-channel band lists from the engine bands + trims. */
+    private fun publishChannelBands() {
+        val state = _uiState.value
+        val maxGain = state.config.maxGainDb
+        val base = state.bands
+
+        fun channelBands(offsets: List<Float>): List<EqBand> = base.mapIndexed { i, band ->
+            val offset = offsets.getOrNull(i) ?: 0f
+            band.copy(gainDb = (band.gainDb + offset).coerceIn(-maxGain, maxGain))
         }
+
+        _uiState.update {
+            it.copy(bandsL = channelBands(eqOffsetsL), bandsR = channelBands(eqOffsetsR))
+        }
+    }
+
+    private fun setOffset(list: MutableList<Float>, index: Int, value: Float) {
+        while (list.size <= index) list.add(0f)
+        list[index] = value
+    }
+
+    /**
+     * Manual EQ edit for one channel. When linked the trim applies to both
+     * channels; when free, only the edited channel moves. The trim sits on
+     * top of the engine's automatic correction.
+     */
+    fun setEqBandGain(channel: EqChannel, index: Int, gainDb: Float) {
+        val state = _uiState.value
+        val maxGain = state.config.maxGainDb
+        val clamped = gainDb.coerceIn(-maxGain, maxGain)
+        val engineGain = state.bands.getOrNull(index)?.gainDb ?: 0f
+        val offset = clamped - engineGain
+        if (state.eqLinked || channel == EqChannel.LEFT) setOffset(eqOffsetsL, index, offset)
+        if (state.eqLinked || channel == EqChannel.RIGHT) setOffset(eqOffsetsR, index, offset)
+        publishChannelBands()
+    }
+
+    /** Legacy single-list edit: behaves like a linked edit. */
+    fun setBandGain(index: Int, gainDb: Float) {
+        setEqBandGain(EqChannel.LEFT, index, gainDb)
+    }
+
+    fun setEqLinked(linked: Boolean) {
+        _uiState.update { it.copy(eqLinked = linked) }
+    }
+
+    fun toggleEqLink() {
+        _uiState.update { it.copy(eqLinked = !it.eqLinked) }
+    }
+
+    fun setEqChannel(channel: EqChannel) {
+        _uiState.update { it.copy(eqChannel = channel) }
     }
 
     fun resetBands() {
         engine?.resetBands()
+        eqOffsetsL.clear()
+        eqOffsetsR.clear()
         _uiState.update { state ->
-            state.copy(bands = state.bands.map { it.copy(gainDb = 0f, targetGainDb = 0f) })
+            val zeroed = state.bands.map { it.copy(gainDb = 0f, targetGainDb = 0f) }
+            state.copy(
+                bands = zeroed,
+                bandsL = zeroed,
+                bandsR = zeroed
+            )
         }
     }
 
@@ -1387,6 +1504,8 @@ class AudioEngineViewModel(
     }
 
     fun loadProfile(profile: RoomProfile) {
+        eqOffsetsL.clear()
+        eqOffsetsR.clear()
         val bands = _uiState.value.bands.toMutableList()
         for (i in bands.indices) {
             if (i < profile.measuredGains.size) {
@@ -1400,6 +1519,8 @@ class AudioEngineViewModel(
         _uiState.update {
             it.copy(
                 bands = bands,
+                bandsL = bands,
+                bandsR = bands,
                 activeProfile = profile
             )
         }
@@ -1576,7 +1697,7 @@ class AudioEngineViewModel(
         super.onCleared()
         engine?.stop()
         engine = null
-        testSignalPlayer.stop()
+        testSignalPlayer.stopAll()
         consoleManager?.disconnect()
         consoleManager = null
         meshManager?.stop()

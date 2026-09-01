@@ -32,6 +32,16 @@ class RoomCorrector(
     private val previousGains = FloatArray(bandCount)
     private var currentBandLevels = FloatArray(bandCount)
 
+    /** Fast two-band correction cadence: 2 corrections per second (500 ms). */
+    private var lastCorrectionMs = 0L
+
+    /**
+     * Band edge ratio for aggregation. With ultra band counts (124) the
+     * spacing is ~1/12 octave, so narrower edges avoid heavy overlap.
+     */
+    private val bandEdgeRatio: Double =
+        if (bandCount > 40) 2.0.pow(1.0 / 12.0) else 2.0.pow(1.0 / 6.0)
+
     /**
      * Aggregate raw FFT bins into perceptual bands using log-spaced center frequencies.
      *
@@ -47,8 +57,8 @@ class RoomCorrector(
 
         for (b in 0 until bandCount) {
             val center = bandFrequencies[b]
-            // Band edges for 1/3 octave (factor 2^(1/6) ≈ 1.122)
-            val ratio = 2.0.pow(1.0 / 6.0)
+            // Band edges: half the band spacing (1/3 or 1/6 octave depending on density)
+            val ratio = bandEdgeRatio
             val lower = (center / ratio).toFloat()
             val upper = (center * ratio).toFloat()
 
@@ -74,6 +84,11 @@ class RoomCorrector(
     /**
      * Compute correction gains by comparing measured bands to reference bands.
      *
+     * Fast two-band mode: at most twice per second, the two most deviant bands
+     * get corrected simultaneously — the band that most exceeds its target
+     * (highest deviation, cut) and the one that most lacks (lowest deviation,
+     * boost). All other bands keep their current gain.
+     *
      * @param referenceLevels dB per band from the source signal
      * @param measuredLevels dB per band from the microphone
      * @param currentBands existing EQ bands (for smooth transitions)
@@ -84,34 +99,49 @@ class RoomCorrector(
         measuredLevels: FloatArray,
         currentBands: List<EqBand>
     ): List<EqBand> {
-        val correctedBands = mutableListOf<EqBand>()
+        val now = System.currentTimeMillis()
+        if (now - lastCorrectionMs < TWO_BAND_PERIOD_MS) {
+            return currentBands
+        }
+        lastCorrectionMs = now
 
+        if (currentBands.isEmpty()) return currentBands
+
+        // Deviation per band: how much the room boosts (+) or dips (−) it
+        var maxIdx = -1
+        var minIdx = -1
         for (i in currentBands.indices) {
             val refLevel = if (i < referenceLevels.size) referenceLevels[i] else 0f
             val measLevel = if (i < measuredLevels.size) measuredLevels[i] else 0f
-
-            // Deviation: how much the room boosts or cuts this band
             val deviation = measLevel - refLevel
-
-            // Invert the deviation (negative feedback)
-            val rawCorrection = -deviation
-
-            // Clamp to max gain
-            val clamped = rawCorrection.coerceIn(-maxGainDb, maxGainDb)
-
-            // Smooth: blend with previous gain to avoid jumps
-            val smoothed = previousGains[i] * (1f - smoothingFactor) + clamped * smoothingFactor
-            previousGains[i] = smoothed
-
-            correctedBands.add(
-                currentBands[i].copy(
-                    targetGainDb = clamped,
-                    gainDb = smoothed
-                )
-            )
+            if (maxIdx == -1 || deviation > deviationAt(maxIdx, referenceLevels, measuredLevels)) maxIdx = i
+            if (minIdx == -1 || deviation < deviationAt(minIdx, referenceLevels, measuredLevels)) minIdx = i
         }
 
-        return correctedBands
+        val result = currentBands.toMutableList()
+        if (maxIdx >= 0) {
+            val d = deviationAt(maxIdx, referenceLevels, measuredLevels)
+            result[maxIdx] = applyCorrection(result[maxIdx], maxIdx, -d)
+        }
+        if (minIdx >= 0 && minIdx != maxIdx) {
+            val d = deviationAt(minIdx, referenceLevels, measuredLevels)
+            result[minIdx] = applyCorrection(result[minIdx], minIdx, -d)
+        }
+        return result
+    }
+
+    private fun deviationAt(i: Int, referenceLevels: FloatArray, measuredLevels: FloatArray): Float {
+        val refLevel = if (i < referenceLevels.size) referenceLevels[i] else 0f
+        val measLevel = if (i < measuredLevels.size) measuredLevels[i] else 0f
+        return measLevel - refLevel
+    }
+
+    /** Clamp, smooth and store the correction for a single band. */
+    private fun applyCorrection(band: EqBand, index: Int, rawCorrection: Float): EqBand {
+        val clamped = rawCorrection.coerceIn(-maxGainDb, maxGainDb)
+        val smoothed = previousGains[index] * (1f - smoothingFactor) + clamped * smoothingFactor
+        previousGains[index] = smoothed
+        return band.copy(targetGainDb = clamped, gainDb = smoothed)
     }
 
     /**
@@ -144,12 +174,14 @@ class RoomCorrector(
     }
 
     /**
-     * Calculate the overall correction intensity (0-1) — how much the EQ is actively changing.
+     * Calculate the overall correction intensity (0-1) — how much the EQ is
+     * actively changing. Normalized against the two bands the fast corrector
+     * can move at once, so the percentage stays meaningful with 124 bands.
      */
     fun correctionIntensity(bands: List<EqBand>): Float {
         if (bands.isEmpty()) return 0f
         val totalDeviation = bands.sumOf { abs(it.gainDb.toDouble()) }
-        val maxPossible = bands.size * maxGainDb
+        val maxPossible = (2f * maxGainDb).coerceAtLeast(0.5f)
         return (totalDeviation / maxPossible).toFloat().coerceIn(0f, 1f)
     }
 
@@ -159,9 +191,13 @@ class RoomCorrector(
         for (i in previousGains.indices) {
             previousGains[i] = 0f
         }
+        lastCorrectionMs = 0L
     }
 
     companion object {
+        /** Fast two-band correction runs twice per second. */
+        private const val TWO_BAND_PERIOD_MS = 500L
+
         fun create(
             bandFrequencies: FloatArray,
             sampleRate: Int,

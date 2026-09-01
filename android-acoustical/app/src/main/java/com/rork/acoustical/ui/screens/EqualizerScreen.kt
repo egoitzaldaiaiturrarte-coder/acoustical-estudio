@@ -33,6 +33,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.rork.acoustical.domain.model.EqChannel
+import com.rork.acoustical.ui.components.EqChannelBar
 import com.rork.acoustical.ui.components.EqSliderRow
 import com.rork.acoustical.ui.components.GlassCard
 import com.rork.acoustical.ui.components.StatusPill
@@ -121,7 +123,7 @@ fun EqualizerScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${state.config.bandCount.label} · ${state.config.maxGainDb.toInt()} dB max · %.1fms".format(state.config.audioDelayMs),
+                    text = "${state.config.bandCount.label} · ${state.config.maxGainDb.toInt()} dB max · %.2fms".format(state.config.audioDelayMs),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -138,12 +140,23 @@ fun EqualizerScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    if (state.bands.isNotEmpty()) {
+                    // Channel selector — Link joins L and R, Unlink frees them
+                    EqChannelBar(
+                        linked = state.eqLinked,
+                        channel = state.eqChannel,
+                        onToggleLink = { viewModel.toggleEqLink() },
+                        onChannelChange = { viewModel.setEqChannel(it) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    val activeBands = if (state.eqChannel == EqChannel.RIGHT) state.bandsR else state.bandsL
+                    if (activeBands.isNotEmpty()) {
                         EqSliderRow(
-                            bands = state.bands,
+                            bands = activeBands,
                             maxGain = state.config.maxGainDb,
                             onBandGainChange = { index, gain ->
-                                viewModel.setBandGain(index, gain)
+                                viewModel.setEqBandGain(state.eqChannel, index, gain)
                             }
                         )
                     } else {

@@ -93,7 +93,8 @@ class AudioEngine {
             sampleRate = newConfig.sampleRate.hz,
             fftSize = newConfig.fftSize.samples,
             maxGainDb = newConfig.maxGainDb,
-            smoothingFactor = newConfig.smoothingFactor,
+            // High correction limits automatically relax the smoothing to avoid oscillation
+            smoothingFactor = newConfig.effectiveSmoothingFactor,
             noiseFloorDb = newConfig.noiseFloorDb
         )
         splMeter = SplMeter(calibrationOffset = 120f)
@@ -197,7 +198,8 @@ class AudioEngine {
 
     fun setBandGain(index: Int, gainDb: Float) {
         if (index in bands.indices) {
-            bands[index] = bands[index].copy(gainDb = gainDb, targetGainDb = gainDb)
+            val clamped = gainDb.coerceIn(-config.maxGainDb, config.maxGainDb)
+            bands[index] = bands[index].copy(gainDb = clamped, targetGainDb = clamped)
         }
     }
 

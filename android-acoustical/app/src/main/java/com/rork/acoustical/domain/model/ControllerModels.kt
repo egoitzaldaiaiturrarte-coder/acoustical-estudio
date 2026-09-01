@@ -310,35 +310,26 @@ data class WorkConfig(
 )
 
 /**
- * Type of node in the routing map.
+ * Type of input source in the routing view.
  */
-enum class RoutingNodeType(val label: String) {
-    INPUT("Entrada"),
-    PROCESS("Proceso"),
-    OUTPUT("Salida"),
-    REFERENCE("Referencia")
+enum class InputType(val label: String) {
+    MIC("Micrófono del móvil"),
+    USB("USB Audio"),
+    CONSOLE_IN("Consola In"),
+    FILE_REFERENCE("Archivo / Referencia")
 }
 
 /**
- * A node in the routing map signal chain.
+ * An input source of the signal chain: mic, USB interface, console in or
+ * reference file. Tappable from the routing screen to activate and trim.
  */
-data class RoutingNode(
+data class InputTarget(
     val id: String,
+    val type: InputType,
     val name: String,
-    val type: RoutingNodeType,
-    val isActive: Boolean = true,
-    val hasError: Boolean = false,
-    val spl: Float = 0f,
+    val isActive: Boolean = false,
+    val gainDb: Float = 0f,
     val subtitle: String = ""
-)
-
-/**
- * Connection between two routing nodes.
- */
-data class RoutingConnection(
-    val fromId: String,
-    val toId: String,
-    val isActive: Boolean = true
 )
 
 /**
@@ -353,6 +344,14 @@ data class ProbeResult(
     val bandGains: List<Float> = emptyList(),
     val noiseFloorDb: Float = 0f
 )
+
+/**
+ * Channel of the equalizer when L and R are unlinked.
+ */
+enum class EqChannel(val label: String) {
+    LEFT("L"),
+    RIGHT("R")
+}
 
 /**
  * Spatial state for stereo-free mode (independent L/R positions).
