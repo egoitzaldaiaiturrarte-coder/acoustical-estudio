@@ -35,8 +35,8 @@ Amplía el motor a 124 bandas con corrección de hasta 50 dB, rediseña Ruteos c
 - La corrección automática sigue aplicándose a ambos canales; lo independiente es el ajuste manual.
 
 **Auto-corrección rápida: 2 bandas por ciclo, 2 veces por segundo**
-- Cada 500 ms se corrigen a la vez las dos bandas más desviadas: la que más sobra (se recorta) y la que más falta (se sube).
-- Se acabó el ciclo de 10 s con una sola banda: corrección continua y visible al instante en los faders.
+- Cada 500 ms se corrigen a la vez las dos bandas con SPL medido más extremo: la de dB SPL más alto (se recorta) y la de dB SPL más bajo (se sube).
+- El ciclo siguiente pasa a las SIGUIENTES dos del ranking de SPL (barrido rotativo); cuando todas las bandas fueron tocadas, el barrido se reinicia desde arriba.
 
 **Retardos de precisión centimétrica (0.01 ms)**
 - Todos los retardos (global de Ajustes, por salida en Ruteos/Mix y Calibración) se ajustan en pasos de 0.01 ms, suficientes para alinear equipos por centímetros (1 cm ≈ 0.03 ms).
