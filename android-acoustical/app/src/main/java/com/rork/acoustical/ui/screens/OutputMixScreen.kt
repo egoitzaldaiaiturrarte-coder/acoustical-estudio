@@ -321,7 +321,7 @@ private fun OutputChannelCard(
                         )
                         if (output.connectionState == DeviceState.CONNECTED) {
                             Text(
-                                text = "%.0fms".format(output.delayMs),
+                                text = "%.2f ms".format(output.delayMs),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

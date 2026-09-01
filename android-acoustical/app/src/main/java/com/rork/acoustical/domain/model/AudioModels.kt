@@ -1,5 +1,6 @@
 package com.rork.acoustical.domain.model
 
+import kotlin.math.pow
 import kotlinx.serialization.Serializable
 
 /**
@@ -49,10 +50,11 @@ enum class AnalysisInterval(val ms: Long, val label: String) {
  */
 @Serializable
 enum class BandCount(val count: Int, val label: String) {
-    BANDS_8(8, "8 Bands"),
-    BANDS_10(10, "10 Bands"),
-    BANDS_16(16, "16 Bands"),
-    BANDS_31(31, "31 Bands (1/3 octave)")
+    BANDS_8(8, "8"),
+    BANDS_10(10, "10"),
+    BANDS_16(16, "16"),
+    BANDS_31(31, "31 · 1/3 oct"),
+    BANDS_124(124, "124 · Ultra")
 }
 
 /**
@@ -74,6 +76,20 @@ data class AudioConfig(
     val geoAutoAdjust: Boolean = false,
     val scenarioPreset: String = "CUSTOM"
 ) {
+    /**
+     * Effective smoothing for the corrector. With high correction limits the
+     * adaptation is automatically relaxed to avoid oscillation: above 24 dB
+     * of limit the factor scales down proportionally.
+     */
+    val effectiveSmoothingFactor: Float
+        get() = if (maxGainDb > 24f) {
+            (smoothingFactor * 24f / maxGainDb).coerceAtLeast(0.05f)
+        } else {
+            smoothingFactor
+        }
+
+    val needsExtendedSmoothing: Boolean get() = maxGainDb > 24f
+
     companion object {
         val Default = AudioConfig()
     }
@@ -90,7 +106,9 @@ data class EqBand(
     val targetGainDb: Float = 0f,
     val q: Float = 1.41f
 ) {
-    val isClamped: Boolean get() = kotlin.math.abs(gainDb) >= 11.5f
+    /** True when the band sits at the configured correction limit. */
+    fun isClampedAt(maxGainDb: Float): Boolean =
+        maxGainDb > 0f && kotlin.math.abs(gainDb) >= maxGainDb - 0.5f
 }
 
 /**
@@ -116,11 +134,21 @@ object StandardFrequencies {
         1600f, 2500f, 4000f, 6300f, 8000f, 10000f, 14000f, 16000f
     )
 
+    /**
+     * 124 log-spaced bands from 20 Hz to 20 kHz (ultra resolution).
+     * Generated so adjacent bands keep a constant ratio of 1000^(1/123).
+     * Recompute eagerly once — cheap (124 pow calls) and thread-safe.
+     */
+    val ultra124: FloatArray = FloatArray(124) { i ->
+        (20.0 * 1000.0.pow(i / 123.0)).toFloat()
+    }
+
     fun forCount(count: BandCount): FloatArray = when (count) {
         BandCount.BANDS_8 -> eightBand
         BandCount.BANDS_10 -> tenBand
         BandCount.BANDS_16 -> sixteenBand
         BandCount.BANDS_31 -> thirdOctave
+        BandCount.BANDS_124 -> ultra124
     }
 }
 

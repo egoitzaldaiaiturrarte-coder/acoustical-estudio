@@ -32,6 +32,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.rork.acoustical.domain.model.EqChannel
+import com.rork.acoustical.ui.components.EqChannelBar
 import com.rork.acoustical.ui.components.EqSliderRow
 import com.rork.acoustical.ui.components.SpectrumAnalyzer
 import com.rork.acoustical.ui.theme.AbyssBlack
@@ -126,13 +128,25 @@ fun FullEqScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // EQ sliders
-        if (state.bands.isNotEmpty()) {
+        // Channel selector — Link joins L and R, Unlink frees them
+        EqChannelBar(
+            linked = state.eqLinked,
+            channel = state.eqChannel,
+            onToggleLink = { viewModel.toggleEqLink() },
+            onChannelChange = { viewModel.setEqChannel(it) },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // EQ sliders for the active channel
+        val activeBands = if (state.eqChannel == EqChannel.RIGHT) state.bandsR else state.bandsL
+        if (activeBands.isNotEmpty()) {
             EqSliderRow(
-                bands = state.bands,
+                bands = activeBands,
                 maxGain = state.config.maxGainDb,
                 onBandGainChange = { index, gain ->
-                    viewModel.setBandGain(index, gain)
+                    viewModel.setEqBandGain(state.eqChannel, index, gain)
                 },
                 modifier = Modifier.fillMaxWidth()
             )

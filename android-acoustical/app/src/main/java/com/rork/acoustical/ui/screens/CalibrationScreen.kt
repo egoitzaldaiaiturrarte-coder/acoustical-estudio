@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.rork.acoustical.domain.model.RoomProfile
+import com.rork.acoustical.ui.components.FineDelayControl
 import com.rork.acoustical.ui.components.GlassCard
 import com.rork.acoustical.ui.components.ProgressIndicator
 import com.rork.acoustical.ui.components.SplGauge
@@ -280,18 +281,11 @@ fun CalibrationScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("25.0 ms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("%.1f ms".format(state.config.audioDelayMs), style = MaterialTheme.typography.titleMedium, color = AmberAccent, fontWeight = FontWeight.Bold)
-                        Text("2000.0 ms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Slider(
-                        value = state.config.audioDelayMs,
-                        onValueChange = { viewModel.setAudioDelayMs(it) },
-                        valueRange = 25f..2000f
+                    FineDelayControl(
+                        label = "Retardo global",
+                        valueMs = state.config.audioDelayMs,
+                        valueRange = 25f..2000f,
+                        onChange = { viewModel.setAudioDelayMs(it) }
                     )
                     // Delay presets for common scenarios
                     Row(
@@ -318,13 +312,6 @@ fun CalibrationScreen(
                             }
                         }
                     }
-                    // Show distance equivalent
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Equivale a %.1f m de distancia".format(state.config.audioDelayMs * 0.343f),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CyanGlow
-                    )
                 }
             }
 

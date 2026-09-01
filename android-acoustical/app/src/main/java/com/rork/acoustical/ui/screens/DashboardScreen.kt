@@ -138,7 +138,7 @@ fun DashboardScreen(
                     )
                     StatBlock(
                         label = "RETARDO",
-                        value = "%.1fms".format(state.config.audioDelayMs),
+                        value = "%.2f ms".format(state.config.audioDelayMs),
                         valueColor = AmberAccent
                     )
                 }
@@ -514,7 +514,7 @@ fun DashboardScreen(
                 EngineInfoRow("FFT", state.config.fftSize.label)
                 EngineInfoRow("Intervalo", state.config.analysisInterval.label)
                 EngineInfoRow("Bandas", state.config.bandCount.label)
-                EngineInfoRow("Retardo", "%.1f ms".format(state.config.audioDelayMs))
+                EngineInfoRow("Retardo", "%.2f ms".format(state.config.audioDelayMs))
                 EngineInfoRow("Frames", "${state.framesAnalyzed}")
             }
         }

@@ -6,6 +6,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,7 +39,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import com.rork.acoustical.domain.model.EqBand
+import com.rork.acoustical.domain.model.EqChannel
 import com.rork.acoustical.ui.theme.AmberAccent
 import com.rork.acoustical.ui.theme.CyanGlow
 import com.rork.acoustical.ui.theme.CyanPrimary
@@ -204,7 +209,8 @@ fun EqVerticalSlider(
 }
 
 /**
- * Row of vertical EQ sliders for all bands.
+ * Row of vertical EQ sliders for all bands. With many bands (31, 124) the row
+ * becomes horizontally scrollable so every fader keeps a comfortable width.
  */
 @Composable
 fun EqSliderRow(
@@ -213,11 +219,13 @@ fun EqSliderRow(
     onBandGainChange: (Int, Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val scrollable = bands.size > 10
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .then(if (scrollable) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
             .padding(horizontal = 8.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
+        horizontalArrangement = if (scrollable) Arrangement.spacedBy(4.dp) else Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
         bands.forEach { band ->
@@ -227,6 +235,57 @@ fun EqSliderRow(
                 onGainChange = { gain -> onBandGainChange(band.index, gain) }
             )
         }
+    }
+}
+
+/**
+ * Channel selector for the EQ: L / R chips plus the Link toggle. When linked
+ * the two channels move together; when unlinked, the active channel chip is
+ * highlighted and only that channel's bands respond to edits.
+ */
+@Composable
+fun EqChannelBar(
+    linked: Boolean,
+    channel: EqChannel,
+    onToggleLink: () -> Unit,
+    onChannelChange: (EqChannel) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FilterChip(
+            selected = !linked && channel == EqChannel.LEFT,
+            enabled = !linked,
+            onClick = { onChannelChange(EqChannel.LEFT) },
+            label = { Text("L", fontWeight = FontWeight.SemiBold) },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = CyanPrimary.copy(alpha = 0.3f),
+                selectedLabelColor = CyanGlow
+            )
+        )
+        FilterChip(
+            selected = !linked && channel == EqChannel.RIGHT,
+            enabled = !linked,
+            onClick = { onChannelChange(EqChannel.RIGHT) },
+            label = { Text("R", fontWeight = FontWeight.SemiBold) },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = CyanPrimary.copy(alpha = 0.3f),
+                selectedLabelColor = CyanGlow
+            )
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        FilterChip(
+            selected = linked,
+            onClick = onToggleLink,
+            label = { Text(if (linked) "Link L+R" else "Unlink") },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = LimeActive.copy(alpha = 0.2f),
+                selectedLabelColor = LimeActive
+            )
+        )
     }
 }
 

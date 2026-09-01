@@ -1,13 +1,14 @@
 package com.rork.acoustical.domain.audio
 
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Handler
 import android.os.Looper
 import kotlin.math.ln
 import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -20,33 +21,42 @@ enum class TestSignalType(val label: String, val shortLabel: String) {
 }
 
 /**
- * Generates short test signals and plays them through the device's active
- * audio output (phone speaker or the connected Bluetooth device), honouring
- * the output's volume, gain, delay and mute state.
+ * Multiroute test signal player: every output gets its own AudioTrack routed
+ * to its physical device (phone speaker, Bluetooth A2DP, USB, wired) via
+ * [AudioTrack.setPreferredDevice]. Several outputs can sound at the same time,
+ * each with its own signal, volume, gain and delay.
  *
- * Playback uses a static AudioTrack buffer with a completion notification,
- * so [onFinished] fires on the main thread exactly when the signal ends.
+ * Playback uses static AudioTrack buffers with completion markers, so
+ * [onFinished] fires on the main thread exactly when each signal ends.
  */
 class TestSignalPlayer {
 
-    private var currentTrack: AudioTrack? = null
+    private val activeTracks = HashMap<String, AudioTrack>()
+    private val lock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** Whether a test signal is currently playing. */
+    /** Whether any test signal is currently playing. */
     val isPlaying: Boolean
-        get() = currentTrack?.playState == AudioTrack.PLAYSTATE_PLAYING
+        get() = synchronized(lock) { activeTracks.isNotEmpty() }
+
+    /** Ids of the outputs currently sounding. */
+    val activeOutputIds: Set<String>
+        get() = synchronized(lock) { activeTracks.keys.toSet() }
 
     /**
-     * Play [type] for [durationMs] honouring the output parameters.
-     * No-op (returns false) when the output is muted or inaudible.
+     * Play [type] for [durationMs] honouring the output parameters, routed to
+     * [device] when provided. Replaces any signal already playing for this
+     * output without touching other outputs. No-op (false) when muted.
      */
     fun play(
+        outputId: String,
         type: TestSignalType,
         durationMs: Long = DEFAULT_DURATION_MS,
         volume: Float,
         gainDb: Float,
         delayMs: Float,
         isMuted: Boolean,
+        device: AudioDeviceInfo? = null,
         onFinished: () -> Unit = {}
     ): Boolean {
         if (isMuted) return false
@@ -54,9 +64,10 @@ class TestSignalPlayer {
         val amplitude = (BASE_AMPLITUDE * volume * 10f.pow(gainDb / 20f)).coerceIn(0f, 0.95f)
         if (amplitude <= 0.002f) return false
 
-        stop()
+        stop(outputId)
 
-        val delaySamples = ((delayMs.coerceIn(0f, 2000f)) / 1000f * SAMPLE_RATE).toInt()
+        // Delay offset quantized to whole samples at 48 kHz (1 sample ≈ 0.021 ms)
+        val delaySamples = ((delayMs.coerceIn(0f, 2000f)) / 1000f * SAMPLE_RATE).roundToInt()
         val signalSamples = (durationMs / 1000f * SAMPLE_RATE).toInt()
         val totalSamples = signalSamples + delaySamples
         val samples = ShortArray(totalSamples)
@@ -73,7 +84,7 @@ class TestSignalPlayer {
         track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
             override fun onMarkerReached(t: AudioTrack) {
                 mainHandler.post {
-                    stop()
+                    stop(outputId)
                     onFinished()
                 }
             }
@@ -82,23 +93,45 @@ class TestSignalPlayer {
                 // Marker-only listener
             }
         })
-        currentTrack = track
+
+        // Route to this output's physical device (speaker / BT / USB / wired)
+        if (device != null) {
+            try {
+                track.preferredDevice = device
+            } catch (e: Exception) {
+                // Routing unavailable — falls back to the system default
+            }
+        }
+
+        synchronized(lock) { activeTracks[outputId] = track }
         track.play()
         return true
     }
 
-    /** Stop and release any playing signal immediately. */
-    fun stop() {
-        currentTrack?.let { track ->
-            try {
-                track.pause()
-                track.flush()
-                track.release()
-            } catch (e: IllegalStateException) {
-                // Track already released — nothing to do
-            }
+    /** Stop and release the signal of one output, leaving the others playing. */
+    fun stop(outputId: String) {
+        val track = synchronized(lock) { activeTracks.remove(outputId) } ?: return
+        releaseTrack(track)
+    }
+
+    /** Stop and release every playing signal. */
+    fun stopAll() {
+        val tracks = synchronized(lock) {
+            val all = activeTracks.values.toList()
+            activeTracks.clear()
+            all
         }
-        currentTrack = null
+        tracks.forEach { releaseTrack(it) }
+    }
+
+    private fun releaseTrack(track: AudioTrack) {
+        try {
+            track.pause()
+            track.flush()
+            track.release()
+        } catch (e: IllegalStateException) {
+            // Track already released — nothing to do
+        }
     }
 
     // --- Generators ---
