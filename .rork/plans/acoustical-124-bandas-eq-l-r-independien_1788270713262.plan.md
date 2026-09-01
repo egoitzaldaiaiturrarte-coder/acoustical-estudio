@@ -38,16 +38,29 @@ Amplía el motor a 124 bandas con corrección de hasta 50 dB, rediseña Ruteos c
 - Cada 500 ms se corrigen a la vez las dos bandas más desviadas: la que más sobra (se recorta) y la que más falta (se sube).
 - Se acabó el ciclo de 10 s con una sola banda: corrección continua y visible al instante en los faders.
 
+**Retardos de precisión centimétrica (0.01 ms)**
+- Todos los retardos (global de Ajustes, por salida en Ruteos/Mix y Calibración) se ajustan en pasos de 0.01 ms, suficientes para alinear equipos por centímetros (1 cm ≈ 0.03 ms).
+- Siempre se muestran los dos valores juntos: "12.45 ms · 4.27 m" (o cm en retardos cortos), usando 34.3 cm por ms.
+- Internamente el retardo se redondea a muestras enteras a 48 kHz (1 muestra ≈ 0.021 ms): la pantalla muestra 0.01 ms y la reproducción es lo más fiel posible físicamente.
+- El rango por salida queda 0–2000 ms con precisión fina; flechas +/− de 0.01 ms además del slider para ajuste exacto.
+
+**Suavizado adaptado al límite de 50 dB**
+- Con límites de corrección altos el motor amplía automáticamente el tiempo de suavizado (adaptación más lenta) para evitar oscilaciones: el suavizado efectivo se relaja proporcionalmente a partir de 24 dB de límite.
+- En Ajustes se muestra un aviso bajo el suavizado cuando el límite alto exige suavizado extendido, con el valor efectivo.
+
 ## Design
 - Paleta Deep Ocean actual (negro abisal, cian, ámbar, lima) sin cambios.
 - Ruteos: dos paneles tipo columna con título "Entradas" / "Salidas", nodos compactos con pill de estado y líneas cian de conexión; botón "+ Añadir" al pie de cada columna.
 - Ecualizador: fila de chips L / R / Link arriba de los faders; el canal activo se resalta en cian, el inactivo se atenúa.
 
 ## Pages / Screens
-- **Ajustes**: chips de bandas (ahora con 124), slider de ganancia 0–50 dB.
-- **Ruteos**: pantalla rehecha en dos columnas conectadas + hojas de detalle de entrada y salida.
+- **Ajustes**: chips de bandas (ahora con 124), slider de ganancia 0–50 dB, retardo con doble lectura tiempo/distancia y aviso de suavizado extendido.
+- **Ruteos**: pantalla rehecha en dos columnas conectadas + hojas de detalle de entrada y salida (delay fino de 0.01 ms con distancia en cm).
 - **Ecualizador (completo y simple)**: selector de canal y link/unlink; lista deslizable de bandas.
 - **Control**: sin cambios estructurales; la auto-corrección rápida corre de fondo cuando el motor está activo.
+- **Calibración**: retardo con doble lectura y pasos de 0.01 ms.
 
 ## Validación
 - Compilación Android completa (runChecks) al terminar.
+- Prueba de comportamiento en el simulador de nube: motor, señal de prueba multiruta, retardo fino y auto-corrección a 2 Hz.
+- Importante: no tengo acceso a tu Redmi Note 15 4G físico, así que la verificación final en ese terminal te toca a ti (altavoz + Bluetooth a la vez y sensación del suavizado). En el momento en que detectes algo raro ahí, lo reportas y lo afino.
