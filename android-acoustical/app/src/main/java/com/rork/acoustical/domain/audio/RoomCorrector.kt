@@ -36,6 +36,13 @@ class RoomCorrector(
     private var lastCorrectionMs = 0L
 
     /**
+     * Round-robin cursor over the SPL ranking. Cycle 0 corrects the loudest
+     * and quietest band, cycle 1 the next pair, and so on. Resets once every
+     * band has been touched so the sweep starts over.
+     */
+    private var rankCursor = 0
+
+    /**
      * Band edge ratio for aggregation. With ultra band counts (124) the
      * spacing is ~1/12 octave, so narrower edges avoid heavy overlap.
      */
@@ -84,10 +91,11 @@ class RoomCorrector(
     /**
      * Compute correction gains by comparing measured bands to reference bands.
      *
-     * Fast two-band mode: at most twice per second, the two most deviant bands
-     * get corrected simultaneously — the band that most exceeds its target
-     * (highest deviation, cut) and the one that most lacks (lowest deviation,
-     * boost). All other bands keep their current gain.
+     * Fast two-band mode: at most twice per second, the band with the highest
+     * measured SPL is cut and the band with the lowest measured SPL is boosted,
+     * simultaneously. The next cycle moves to the NEXT pair in the SPL ranking
+     * (round-robin), so every band gets corrected before the sweep restarts
+     * from the top.
      *
      * @param referenceLevels dB per band from the source signal
      * @param measuredLevels dB per band from the microphone
@@ -107,26 +115,32 @@ class RoomCorrector(
 
         if (currentBands.isEmpty()) return currentBands
 
-        // Deviation per band: how much the room boosts (+) or dips (−) it
-        var maxIdx = -1
-        var minIdx = -1
-        for (i in currentBands.indices) {
-            val refLevel = if (i < referenceLevels.size) referenceLevels[i] else 0f
-            val measLevel = if (i < measuredLevels.size) measuredLevels[i] else 0f
-            val deviation = measLevel - refLevel
-            if (maxIdx == -1 || deviation > deviationAt(maxIdx, referenceLevels, measuredLevels)) maxIdx = i
-            if (minIdx == -1 || deviation < deviationAt(minIdx, referenceLevels, measuredLevels)) minIdx = i
+        // Rank bands by measured SPL, descending: rank 0 = loudest band,
+        // last rank = quietest band.
+        val order = currentBands.indices.sortedByDescending { i ->
+            if (i < measuredLevels.size) measuredLevels[i] else noiseFloorDb
+        }
+
+        val rank = rankCursor.coerceAtMost(order.size - 1)
+        val cutIdx = order[rank]
+        val boostRank = order.size - 1 - rank
+        var boostIdx = order[boostRank]
+        // Odd band counts: the middle band would be both cut and boosted —
+        // boost the next quietest instead.
+        if (boostIdx == cutIdx && boostRank > 0) {
+            boostIdx = order[boostRank - 1]
         }
 
         val result = currentBands.toMutableList()
-        if (maxIdx >= 0) {
-            val d = deviationAt(maxIdx, referenceLevels, measuredLevels)
-            result[maxIdx] = applyCorrection(result[maxIdx], maxIdx, -d)
+        val cutDeviation = deviationAt(cutIdx, referenceLevels, measuredLevels)
+        result[cutIdx] = applyCorrection(result[cutIdx], cutIdx, -cutDeviation)
+        if (boostIdx != cutIdx) {
+            val boostDeviation = deviationAt(boostIdx, referenceLevels, measuredLevels)
+            result[boostIdx] = applyCorrection(result[boostIdx], boostIdx, -boostDeviation)
         }
-        if (minIdx >= 0 && minIdx != maxIdx) {
-            val d = deviationAt(minIdx, referenceLevels, measuredLevels)
-            result[minIdx] = applyCorrection(result[minIdx], minIdx, -d)
-        }
+
+        rankCursor++
+        if (rankCursor * 2 >= order.size) rankCursor = 0
         return result
     }
 
@@ -192,6 +206,7 @@ class RoomCorrector(
             previousGains[i] = 0f
         }
         lastCorrectionMs = 0L
+        rankCursor = 0
     }
 
     companion object {
