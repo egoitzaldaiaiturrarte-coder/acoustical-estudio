@@ -61,6 +61,8 @@ class AudioEngine {
     var onAnalysisUpdate: ((AnalysisResult) -> Unit)? = null
     var onNoiseCaptureProgress: ((Float) -> Unit)? = null
     var onNoiseCaptureComplete: (() -> Unit)? = null
+    /** Invoked when the engine cannot start (permission denied, mic unavailable). */
+    var onStartFailed: ((String) -> Unit)? = null
 
     private var framesAnalyzed: Long = 0L
     private var isRunning: Boolean = false
@@ -111,9 +113,11 @@ class AudioEngine {
     /**
      * Start the audio analysis loop.
      * Requires RECORD_AUDIO permission.
+     *
+     * @return true if capture started, false if the microphone could not be opened
      */
-    fun start() {
-        if (isRunning) return
+    fun start(): Boolean {
+        if (isRunning) return true
         isRunning = true
 
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -138,21 +142,25 @@ class AudioEngine {
         } catch (e: SecurityException) {
             Log.e(TAG, "RECORD_AUDIO permission not granted", e)
             isRunning = false
-            return
+            onStartFailed?.invoke("Sin permiso de micrófono: concédelo para iniciar el análisis")
+            return false
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create AudioRecord", e)
             isRunning = false
-            return
+            onStartFailed?.invoke("No se pudo abrir el micrófono de este dispositivo")
+            return false
         }
 
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord failed to initialize")
             isRunning = false
-            return
+            onStartFailed?.invoke("El micrófono no está disponible (¿otra app lo está usando?)")
+            return false
         }
 
         audioRecord?.startRecording()
         startAnalysisLoop(bufferSize, fftSize, sampleRate)
+        return true
     }
 
     /**
