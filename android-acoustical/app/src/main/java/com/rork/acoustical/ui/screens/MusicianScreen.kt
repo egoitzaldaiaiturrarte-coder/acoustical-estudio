@@ -73,7 +73,9 @@ fun MusicianScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val musician = state.musicianState
-    val spl = state.currentSpl
+    // The live meter only moves while musician mode is ON, so it can't be
+    // mistaken for the EQ engine being active.
+    val spl = if (musician.isActive) state.currentSpl else 0f
     val geo = state.geoInfo
 
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")

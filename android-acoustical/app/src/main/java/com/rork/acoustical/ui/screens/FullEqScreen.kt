@@ -36,10 +36,12 @@ import com.rork.acoustical.domain.model.EqChannel
 import com.rork.acoustical.ui.components.EqChannelBar
 import com.rork.acoustical.ui.components.EqSliderRow
 import com.rork.acoustical.ui.components.SpectrumAnalyzer
+import com.rork.acoustical.ui.components.StatusPill
 import com.rork.acoustical.ui.theme.AbyssBlack
 import com.rork.acoustical.ui.theme.AmberAccent
 import com.rork.acoustical.ui.theme.CyanGlow
 import com.rork.acoustical.ui.theme.CyanPrimary
+import com.rork.acoustical.ui.theme.LimeActive
 import com.rork.acoustical.ui.viewmodel.AudioEngineViewModel
 
 @Composable
@@ -136,6 +138,14 @@ fun FullEqScreen(
             onChannelChange = { viewModel.setEqChannel(it) },
             modifier = Modifier.fillMaxWidth()
         )
+
+        if (state.isRunning) {
+            Spacer(modifier = Modifier.height(4.dp))
+            StatusPill(
+                text = if (state.isCorrecting) "Ecu dinámico activo" else "Motor activo — escuchando la sala",
+                color = if (state.isCorrecting) LimeActive else CyanPrimary
+            )
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
 
