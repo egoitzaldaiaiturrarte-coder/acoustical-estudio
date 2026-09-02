@@ -135,6 +135,22 @@ fun ControlScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // Engine start failure — visible reason instead of a silently dead motor
+            state.engineError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CoralAlert,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(CoralAlert.copy(alpha = 0.15f))
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
             // Agent mode selector (4 modes)
             Row(
                 modifier = Modifier.fillMaxWidth(),

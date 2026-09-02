@@ -3,8 +3,10 @@ package com.rork.acoustical.ui.viewmodel
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rork.acoustical.domain.audio.AudioEngine
@@ -88,6 +90,8 @@ class AudioEngineViewModel(
 
     data class UiState(
         val isRunning: Boolean = false,
+        /** Non-null when the engine failed to start (permission, mic busy…). */
+        val engineError: String? = null,
         val isCorrecting: Boolean = false,
         val config: AudioConfig = AudioConfig.Default,
         val currentSpl: Float = 0f,
@@ -205,6 +209,13 @@ class AudioEngineViewModel(
         initInputs()
         engine = AudioEngine().also { eng ->
             eng.configure(_uiState.value.config)
+            // Single engine shared with the foreground service — two AudioRecords
+            // fighting for the mic is what left the analysis dead on device.
+            AudioAnalysisService.engine = eng
+            AudioAnalysisService.onStopRequested = { stopEngine() }
+            eng.onStartFailed = { message ->
+                _uiState.update { it.copy(isRunning = false, engineError = message) }
+            }
             eng.onAnalysisUpdate = { result ->
                 val rt60 = rt60Estimator
                 rt60?.feedFrame(result.measuredSpectrum.magnitudesDb)
@@ -1195,6 +1206,23 @@ class AudioEngineViewModel(
 
     fun startEngine() {
         val context = getApplication<Application>()
+
+        // The engine is dead without the mic — fail fast with a visible reason
+        val hasMicPermission = ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasMicPermission) {
+            _uiState.update {
+                it.copy(
+                    isRunning = false,
+                    engineError = "Concede el permiso de micrófono para iniciar el análisis"
+                )
+            }
+            return
+        }
+
+        _uiState.update { it.copy(engineError = null) }
+        AudioAnalysisService.engine = engine
         val intent = Intent(context, AudioAnalysisService::class.java).apply {
             action = AudioAnalysisService.ACTION_START
         }
@@ -1204,12 +1232,23 @@ class AudioEngineViewModel(
             context.startService(intent)
         }
 
-        engine?.start()
-        _uiState.update { it.copy(isRunning = true) }
-        startNotificationUpdates()
+        val started = engine?.start() ?: false
+        if (started) {
+            _uiState.update { it.copy(isRunning = true) }
+            startNotificationUpdates()
+        } else {
+            // engineError was already set by the engine's callback; make sure
+            // the foreground service is not left running with a dead engine
+            context.startService(
+                Intent(context, AudioAnalysisService::class.java).apply {
+                    action = AudioAnalysisService.ACTION_STOP
+                }
+            )
+        }
     }
 
     fun stopEngine() {
+        if (!_uiState.value.isRunning) return
         val context = getApplication<Application>()
         val intent = Intent(context, AudioAnalysisService::class.java).apply {
             action = AudioAnalysisService.ACTION_STOP
@@ -1697,6 +1736,8 @@ class AudioEngineViewModel(
         super.onCleared()
         engine?.stop()
         engine = null
+        AudioAnalysisService.engine = null
+        AudioAnalysisService.onStopRequested = null
         testSignalPlayer.stopAll()
         consoleManager?.disconnect()
         consoleManager = null

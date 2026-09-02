@@ -36,7 +36,10 @@ class AudioAnalysisService : Service() {
 
         @Volatile
         var engine: AudioEngine? = null
-            private set
+
+        /** Set by the ViewModel: invoked when the notification's stop action fires. */
+        @Volatile
+        var onStopRequested: (() -> Unit)? = null
     }
 
     private var notificationManager: NotificationManager? = null
@@ -53,9 +56,12 @@ class AudioAnalysisService : Service() {
                 engine?.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+                onStopRequested?.invoke()
                 return START_NOT_STICKY
             }
             ACTION_START -> {
+                // Reuse the shared engine created by the ViewModel when present;
+                // only fall back to our own instance after a sticky restart.
                 if (engine == null) {
                     engine = AudioEngine()
                 }
