@@ -29,7 +29,9 @@ class RoomCorrector(
 ) {
 
     private val bandCount: Int = bandFrequencies.size
-    private val previousGains = FloatArray(bandCount)
+
+    /** Long-lived target gain per band; smoothed toward on every frame. */
+    private var targetGains = FloatArray(bandCount)
     private var currentBandLevels = FloatArray(bandCount)
 
     /** Fast two-band correction cadence: 2 corrections per second (500 ms). */
@@ -91,13 +93,18 @@ class RoomCorrector(
     /**
      * Compute correction gains by comparing measured bands to reference bands.
      *
-     * Fast two-band mode: at most twice per second, the band with the highest
-     * measured SPL is cut and the band with the lowest measured SPL is boosted,
-     * simultaneously. The next cycle moves to the NEXT pair in the SPL ranking
-     * (round-robin), so every band gets corrected before the sweep restarts
-     * from the top.
+     * Fast two-band mode: every 500 ms the band with the highest measured SPL
+     * among the bands with real signal gets its target cut and the lowest gets
+     * its target boosted. The next cycle moves to the NEXT pair in the SPL
+     * ranking (round-robin), so every band gets corrected before the sweep
+     * restarts from the top.
      *
-     * @param referenceLevels dB per band from the source signal
+     * On every analysis frame ALL bands smooth continuously toward their
+     * targets, so the fader motion is visible instead of a rare jump once per
+     * sweep.
+     *
+     * @param referenceLevels dB per band from the source signal (all-zero when
+     *   no reference was captured — the mean of active bands is used instead)
      * @param measuredLevels dB per band from the microphone
      * @param currentBands existing EQ bands (for smooth transitions)
      * @return updated list of EqBand with new target gains
@@ -107,55 +114,62 @@ class RoomCorrector(
         measuredLevels: FloatArray,
         currentBands: List<EqBand>
     ): List<EqBand> {
-        val now = System.currentTimeMillis()
-        if (now - lastCorrectionMs < TWO_BAND_PERIOD_MS) {
-            return currentBands
-        }
-        lastCorrectionMs = now
-
         if (currentBands.isEmpty()) return currentBands
-
-        // Rank bands by measured SPL, descending: rank 0 = loudest band,
-        // last rank = quietest band.
-        val order = currentBands.indices.sortedByDescending { i ->
-            if (i < measuredLevels.size) measuredLevels[i] else noiseFloorDb
+        if (targetGains.size != bandCount) {
+            targetGains = FloatArray(bandCount)
         }
 
-        val rank = rankCursor.coerceAtMost(order.size - 1)
-        val cutIdx = order[rank]
-        val boostRank = order.size - 1 - rank
-        var boostIdx = order[boostRank]
-        // Odd band counts: the middle band would be both cut and boosted —
-        // boost the next quietest instead.
-        if (boostIdx == cutIdx && boostRank > 0) {
-            boostIdx = order[boostRank - 1]
+        val now = System.currentTimeMillis()
+        if (now - lastCorrectionMs >= TWO_BAND_PERIOD_MS) {
+            lastCorrectionMs = now
+
+            // Only bands with real signal above the noise floor participate;
+            // noise-floor bands would drag the neutral point down and make
+            // every real band look like a peak.
+            val active = currentBands.indices.filter { i ->
+                i < measuredLevels.size && measuredLevels[i] > noiseFloorDb + ACTIVE_MARGIN_DB
+            }
+            if (active.size >= 2) {
+                // A flat 0 dB reference would turn every negative dBFS level
+                // into a max boost, so without a captured reference fall back
+                // to the mean of the active bands as the neutral point.
+                val hasRef = referenceLevels.size == bandCount && referenceLevels.any { it != 0f }
+                val mean = active.map { measuredLevels[it] }.average().toFloat()
+
+                val order = active.sortedByDescending { measuredLevels[it] }
+                val rank = rankCursor.coerceAtMost(order.size - 1)
+                val cutIdx = order[rank]
+                val boostIdx = order[order.size - 1 - rank]
+
+                if (cutIdx != boostIdx) {
+                    val cutDeviation = if (hasRef) measuredLevels[cutIdx] - referenceLevels[cutIdx]
+                    else measuredLevels[cutIdx] - mean
+                    val boostDeviation = if (hasRef) measuredLevels[boostIdx] - referenceLevels[boostIdx]
+                    else measuredLevels[boostIdx] - mean
+
+                    // Cut only what actually exceeds the neutral point, boost
+                    // only what sits below it; otherwise leave the target put.
+                    if (cutDeviation > 0f) {
+                        targetGains[cutIdx] = (targetGains[cutIdx] - cutDeviation)
+                            .coerceIn(-maxGainDb, maxGainDb)
+                    }
+                    if (boostDeviation < 0f) {
+                        targetGains[boostIdx] = (targetGains[boostIdx] - boostDeviation)
+                            .coerceIn(-maxGainDb, maxGainDb)
+                    }
+                }
+
+                rankCursor++
+                if (rankCursor >= order.size) rankCursor = 0
+            }
         }
 
-        val result = currentBands.toMutableList()
-        val cutDeviation = deviationAt(cutIdx, referenceLevels, measuredLevels)
-        result[cutIdx] = applyCorrection(result[cutIdx], cutIdx, -cutDeviation)
-        if (boostIdx != cutIdx) {
-            val boostDeviation = deviationAt(boostIdx, referenceLevels, measuredLevels)
-            result[boostIdx] = applyCorrection(result[boostIdx], boostIdx, -boostDeviation)
+        // Continuous smoothing toward targets on every frame.
+        return currentBands.mapIndexed { i, band ->
+            val target = targetGains[i]
+            val smoothed = band.gainDb + (target - band.gainDb) * smoothingFactor
+            band.copy(targetGainDb = target, gainDb = smoothed)
         }
-
-        rankCursor++
-        if (rankCursor * 2 >= order.size) rankCursor = 0
-        return result
-    }
-
-    private fun deviationAt(i: Int, referenceLevels: FloatArray, measuredLevels: FloatArray): Float {
-        val refLevel = if (i < referenceLevels.size) referenceLevels[i] else 0f
-        val measLevel = if (i < measuredLevels.size) measuredLevels[i] else 0f
-        return measLevel - refLevel
-    }
-
-    /** Clamp, smooth and store the correction for a single band. */
-    private fun applyCorrection(band: EqBand, index: Int, rawCorrection: Float): EqBand {
-        val clamped = rawCorrection.coerceIn(-maxGainDb, maxGainDb)
-        val smoothed = previousGains[index] * (1f - smoothingFactor) + clamped * smoothingFactor
-        previousGains[index] = smoothed
-        return band.copy(targetGainDb = clamped, gainDb = smoothed)
     }
 
     /**
@@ -202,9 +216,7 @@ class RoomCorrector(
     fun getCurrentBandLevels(): FloatArray = currentBandLevels.copyOf()
 
     fun reset() {
-        for (i in previousGains.indices) {
-            previousGains[i] = 0f
-        }
+        targetGains = FloatArray(bandCount)
         lastCorrectionMs = 0L
         rankCursor = 0
     }
@@ -212,6 +224,9 @@ class RoomCorrector(
     companion object {
         /** Fast two-band correction runs twice per second. */
         private const val TWO_BAND_PERIOD_MS = 500L
+
+        /** Margin over the noise floor for a band to count as "real signal". */
+        private const val ACTIVE_MARGIN_DB = 3f
 
         fun create(
             bandFrequencies: FloatArray,
