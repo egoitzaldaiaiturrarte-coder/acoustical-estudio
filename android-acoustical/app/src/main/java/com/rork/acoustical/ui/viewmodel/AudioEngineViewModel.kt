@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -217,6 +218,9 @@ class AudioEngineViewModel(
                 _uiState.update { it.copy(isRunning = false, engineError = message) }
             }
             eng.onAnalysisUpdate = { result ->
+                if (result.framesAnalyzed == 1L) {
+                    Log.d("AudioEngineVM", "Primer frame analizado: ${result.bands.size} bandas, SPL %.1f".format(result.spl))
+                }
                 val rt60 = rt60Estimator
                 rt60?.feedFrame(result.measuredSpectrum.magnitudesDb)
                 _uiState.update { state ->
@@ -266,6 +270,9 @@ class AudioEngineViewModel(
                 }
             }
         }
+
+        // Show the EQ faders immediately (flat) instead of an empty placeholder
+        syncBandsFromEngine()
 
         // Initialize console manager
         consoleManager = ConsoleManager().also { cm ->
@@ -1233,7 +1240,9 @@ class AudioEngineViewModel(
         }
 
         val started = engine?.start() ?: false
+        Log.d("AudioEngineVM", "startEngine: started=$started")
         if (started) {
+            syncBandsFromEngine()
             _uiState.update { it.copy(isRunning = true) }
             startNotificationUpdates()
         } else {
@@ -1286,6 +1295,7 @@ class AudioEngineViewModel(
         val wasRunning = _uiState.value.isRunning
         if (wasRunning) engine?.stop()
         engine?.configure(newConfig)
+        syncBandsFromEngine()
         if (wasRunning) engine?.start()
     }
 
@@ -1404,6 +1414,17 @@ class AudioEngineViewModel(
         _uiState.update {
             it.copy(bandsL = channelBands(eqOffsetsL), bandsR = channelBands(eqOffsetsR))
         }
+    }
+
+    /**
+     * Mirror the engine's current bands into the UI state and channel lists,
+     * so the EQ faders are visible (flat) even before the first analysis frame.
+     */
+    private fun syncBandsFromEngine() {
+        val engineBands = engine?.getBands().orEmpty()
+        if (engineBands.isEmpty()) return
+        _uiState.update { it.copy(bands = engineBands) }
+        publishChannelBands()
     }
 
     private fun setOffset(list: MutableList<Float>, index: Int, value: Float) {

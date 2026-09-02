@@ -500,7 +500,7 @@ fun ControlScreen(
                     Icon(Icons.Filled.Speed, contentDescription = null)
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        if (state.isRunning) "Detener" else "Iniciar",
+                        if (state.isRunning) "Detener EQ" else "Iniciar EQ",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold
                     )
