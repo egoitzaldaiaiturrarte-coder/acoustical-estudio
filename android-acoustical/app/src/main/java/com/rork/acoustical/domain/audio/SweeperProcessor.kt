@@ -2,82 +2,101 @@ package com.rork.acoustical.domain.audio
 
 import kotlin.math.pow
 
+/** How the processor picks the next band to correct. */
+enum class SweepDirection {
+    /** Always goes where it is most needed (SPL ranking, round-robin). */
+    NEED_BASED,
+    /** Traverses the spectrum from the bass upward. */
+    BOTTOM_UP,
+    /** Traverses the spectrum from the treble downward. */
+    TOP_DOWN
+}
+
+/** Identifies one of the three automated processors. */
+enum class SweepProcess { AUTO_HELP, EQ_NORMAL, AUTO_CHECK }
+
 /**
- * "Auto ayuda" — the fast sweeper processor with its own mixer.
+ * Automated free-frequency corrector. The three processors (Auto ayuda,
+ * EQ normal, Auto-chequeo) are instances of this class, differing only in
+ * their [direction].
  *
- * It sweeps the EQ bands going where they are most needed: the band with the
- * highest measured SPL gets its target cut and the quietest one boosted,
- * advancing round-robin through the SPL ranking. Sweep speed and smoothing
- * adapt automatically and progressively by frequency — in the treble it sweeps
- * in 0.10 ms steps with up to 4 ms of smoothing, slowing down smoothly toward
- * the bass. There are no manual controls for these curves.
+ * Every [DECISION_INTERVAL_MS] the processor makes a decision — which band to
+ * cut and which to boost, chosen by its [direction] — while the gain values
+ * keep adjusting every [TICK_MS] toward their targets, with a smoothing time
+ * that adapts automatically by frequency (fast in the treble, relaxed toward
+ * the bass). There are no manual controls for these curves.
  */
 class SweeperProcessor(
     private val bandFrequencies: FloatArray,
-    private val maxGainDb: Float
+    private val maxGainDb: Float,
+    val direction: SweepDirection = SweepDirection.NEED_BASED
 ) {
-    /** One sweep correction, published to the UI for the live status. */
+    /** One correction decision, published to the UI for the live status. */
     data class SweepStep(
         val bandIndex: Int,
         val centerFreqHz: Float,
         val gainDb: Float,
-        val sweepIntervalMs: Float,
+        val decisionIntervalMs: Float,
         val smoothingMs: Float
     )
 
-    /** Its own mixer: 0..1 output level of the sweep corrections. */
+    /** Its own mixer: 0..1 output level of the corrections. */
     @Volatile
     var mixerLevel: Float = 0.8f
 
     private val bandCount: Int = bandFrequencies.size
     private val sweepGains = FloatArray(bandCount)
     private val targets = FloatArray(bandCount)
-    private var rankCursor = 0
-    private var lastAdvanceMs = 0L
+    private var cursor = 0
+    private var lastDecisionMs = 0L
 
     /** 0 = bass (20 Hz), 1 = treble (20 kHz), log-spaced. */
     private fun freqNorm(freqHz: Float): Float =
         (Math.log10((freqHz.coerceAtLeast(20f) / 20f).toDouble()) / 3.0).coerceIn(0.0, 1.0).toFloat()
 
-    /** Treble sweeps in 0.10 ms steps; bass up to 100x slower (100 ms). */
-    fun sweepIntervalMs(freqHz: Float): Float = 100f * 10f.pow(-3f * freqNorm(freqHz))
-
-    /** Treble smoothing caps at ~4 ms; bass relaxes up to 500 ms. */
+    /** Smoothing adapts automatically: ~4 ms in the treble, relaxed toward the bass. */
     fun smoothingMs(freqHz: Float): Float = 500f * 10f.pow(-2.1f * freqNorm(freqHz))
 
     /**
-     * One 10 ms tick. Smooths every band toward its target (attack time set
-     * automatically by frequency), then advances the sweep to the next band in
-     * the SPL ranking when its own interval allows.
+     * One 10 ms tick. Every band's gain keeps moving toward its target with its
+     * automatic smoothing; every [DECISION_INTERVAL_MS] a new decision picks
+     * the band to cut (above the average) and the one to boost (below it)
+     * according to this processor's direction.
      *
-     * @return the step that was just applied, or null when there is nothing to
-     *   correct (not enough signal) or the band's interval has not elapsed.
+     * @return the decision just applied, or null when the decision window has
+     *   not elapsed or there is not enough signal.
      */
     fun step(measuredLevels: FloatArray, nowMs: Long, dtMs: Float = TICK_MS.toFloat()): SweepStep? {
         if (bandCount == 0) return null
 
-        // 1. Continuous smoothing toward targets, per-band auto attack time.
+        // 1. Continuous 10 ms adjustment toward targets, per-band auto smoothing.
         for (i in 0 until bandCount) {
             val factor = (dtMs / smoothingMs(bandFrequencies[i])).coerceIn(0f, 1f)
             sweepGains[i] += (targets[i] - sweepGains[i]) * factor
         }
 
-        // 2. Only bands with real signal participate.
+        // 2. One decision every 800 ms.
+        if (nowMs - lastDecisionMs < DECISION_INTERVAL_MS) return null
+        lastDecisionMs = nowMs
+
+        // 3. Only bands with real signal participate.
         val active = (0 until bandCount).filter { i ->
             i < measuredLevels.size && measuredLevels[i] > NOISE_FLOOR_DB + ACTIVE_MARGIN_DB
         }
         if (active.size < 2) return null
 
-        val rank = rankCursor % active.size
-        val cutIdx = active.sortedByDescending { measuredLevels[it] }[rank]
-        val freq = bandFrequencies[cutIdx]
-
-        val interval = sweepIntervalMs(freq)
-        if (nowMs - lastAdvanceMs < interval) return null
-        lastAdvanceMs = nowMs
-
         val mean = active.map { measuredLevels[it] }.average().toFloat()
-        val boostIdx = active.sortedByDescending { measuredLevels[it] }[active.size - 1 - rank]
+
+        val ordered = when (direction) {
+            SweepDirection.NEED_BASED -> active.sortedByDescending { measuredLevels[it] }
+            SweepDirection.BOTTOM_UP -> active.sortedBy { bandFrequencies[it] }
+            SweepDirection.TOP_DOWN -> active.sortedByDescending { bandFrequencies[it] }
+        }
+
+        // Walk the ordered list round-robin: cut above the mean, boost below.
+        val rank = cursor % active.size
+        val cutIdx = ordered[rank]
+        val boostIdx = ordered[active.size - 1 - rank]
 
         if (boostIdx != cutIdx) {
             val cutDev = (measuredLevels[cutIdx] - mean).coerceAtLeast(0f)
@@ -90,17 +109,17 @@ class SweeperProcessor(
             }
         }
 
-        rankCursor++
+        cursor++
         return SweepStep(
             bandIndex = cutIdx,
-            centerFreqHz = freq,
+            centerFreqHz = bandFrequencies[cutIdx],
             gainDb = sweepGains[cutIdx] * mixerLevel,
-            sweepIntervalMs = interval,
-            smoothingMs = smoothingMs(freq)
+            decisionIntervalMs = DECISION_INTERVAL_MS.toFloat(),
+            smoothingMs = smoothingMs(bandFrequencies[cutIdx])
         )
     }
 
-    /** Post-mixer gains per band (raw corrections scaled by the mixer level). */
+    /** Post-mixer gains per band (corrections scaled by the mixer level). */
     fun gains(): FloatArray = FloatArray(bandCount) { sweepGains[it] * mixerLevel }
 
     fun reset() {
@@ -108,13 +127,16 @@ class SweeperProcessor(
             sweepGains[i] = 0f
             targets[i] = 0f
         }
-        rankCursor = 0
-        lastAdvanceMs = 0L
+        cursor = 0
+        lastDecisionMs = 0L
     }
 
     companion object {
-        /** The sweeper ticks every 10 ms. */
+        /** Gain values adjust every 10 ms. */
         const val TICK_MS = 10L
+
+        /** Each processor makes a decision every 800 ms. */
+        const val DECISION_INTERVAL_MS = 800L
 
         /** Same fixed threshold the engine uses (120 dB reference). */
         private const val NOISE_FLOOR_DB = -120f

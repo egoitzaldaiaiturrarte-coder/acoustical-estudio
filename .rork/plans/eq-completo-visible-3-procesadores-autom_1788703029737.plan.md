@@ -18,13 +18,14 @@ Rediseño del ecualizador para ver las 124 bandas a la vez en tu Redmi, tres pro
 - [x] Se mantiene Link/Unlink L/R y los ajustes independientes por canal.
 
 ## 2. Tres procesadores automatizados
-- [x] **Proceso 1 — Auto ayuda**: barrido automático cada **10 ms** en agudos, con velocidad y suavizado que se ajustan de forma lógica y progresiva hacia los graves (agudos: barrido 0,10 ms y suavizado máximo 4 ms; cada vez más lentos y suaves cuanto más graves). Sigue el patrón actual: va siempre donde más se necesita (recorta la banda con más SPL, sube la más baja), con rastreo por ranking. Tendrá **su propio mezclador** (nivel y envío propio, independiente del resto).
-- [x] **Proceso 2 — EQ normal**: el ecualizador de siempre con sus ajustes (faders L/R, Link), más **4 bandas de apoyo de frecuencia libre** (ajustas tú su frecuencia y ganancia, para dar empuje puntual donde las bandas fijas no llegan).
-- [x] **Proceso 3 — Auto-chequeo** (verificación): lo actual con **sus propios ajustes** y también sus **4 bandas de apoyo de frecuencia libre**.
-- [x] Tras cada captura (ruido o referencia), los barridos y correcciones se reinician y relanzan solos.
-- [x] **Auto-ajuste por frecuencia**: cada EQ adapta solo su velocidad de barrido y suavizado (rápido en agudos, lento en graves). Sin controles manuales para esto.
+- [x] **Los tres procesos son el mismo corrector automático de frecuencias libres** (como el que ya había), que se autoajusta por necesidad. Cada uno **decide cada 800 ms** a qué banda corregir, mientras **los valores se ajustan cada 10 ms** hacia su objetivo.
+- [x] **Proceso 1 — Auto ayuda**: va siempre donde más se necesita (recorta la banda con más SPL, sube la más baja, rastreo por ranking). Con **su propio mezclador** (0–1).
+- [x] **Proceso 2 — EQ normal**: lo mismo con parámetros auto ajustados, **empezando por los graves** (recorre el espectro de abajo arriba). Mantiene faders L/R, Link y **4 bandas de apoyo de frecuencia libre**.
+- [x] **Proceso 3 — Auto-chequeo**: lo mismo **empezando por los agudos** (recorre de arriba abajo), con sus propios ajustes (ciclo 15/30/60/120 s, calidad) y **4 bandas de apoyo de frecuencia libre**.
+- [x] **Suavizado automático por frecuencia**: rápido en agudos (~4 ms), relajado hacia los graves. Sin controles manuales.
+- [x] Tras cada captura (ruido o referencia), las correcciones se reinician y relanzan solas.
 - [x] **Fijo y sin control**: frecuencia de muestreo siempre 96 kHz; umbral de ruido fijo en 120 (desaparece ese slider de Ajustes).
-- [x] Cada proceso muestra su estado en vivo (activo, a qué banda está corrigiendo ahora).
+- [x] Cada proceso muestra su estado en vivo (activo, a qué banda está corrigiendo ahora) y tiene su propio mezclador.
 
 ## 3. Ajustes manuales → Ruteos
 - [x] Se quitan de Ajustes todos los parámetros que pasan a automático o fijo (muestreo, FFT, intervalo, límite de ganancia, suavizado, umbral).
