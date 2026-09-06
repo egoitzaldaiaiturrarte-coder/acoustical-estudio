@@ -33,8 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.rork.acoustical.domain.model.EqChannel
+import com.rork.acoustical.ui.components.CompactEqCanvas
 import com.rork.acoustical.ui.components.EqChannelBar
-import com.rork.acoustical.ui.components.EqSliderRow
 import com.rork.acoustical.ui.components.SpectrumAnalyzer
 import com.rork.acoustical.ui.components.StatusPill
 import com.rork.acoustical.ui.theme.AbyssBlack
@@ -120,12 +120,12 @@ fun FullEqScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Spectrum overlay
+        // Spectrum overlay — narrow strip to leave room for the full EQ
         SpectrumAnalyzer(
             measured = state.measuredSpectrum,
             corrected = state.correctedSpectrum,
             showCorrected = state.isCorrecting,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().height(56.dp)
         )
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -149,10 +149,10 @@ fun FullEqScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // EQ sliders for the active channel
+        // Full EQ — every band visible at once, drag to adjust
         val activeBands = if (state.eqChannel == EqChannel.RIGHT) state.bandsR else state.bandsL
         if (activeBands.isNotEmpty()) {
-            EqSliderRow(
+            CompactEqCanvas(
                 bands = activeBands,
                 maxGain = state.config.maxGainDb,
                 onBandGainChange = { index, gain ->

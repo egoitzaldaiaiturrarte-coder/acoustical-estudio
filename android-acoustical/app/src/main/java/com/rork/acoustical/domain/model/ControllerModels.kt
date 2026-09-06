@@ -314,6 +314,8 @@ data class WorkConfig(
  */
 enum class InputType(val label: String) {
     MIC("Micrófono del móvil"),
+    APP_CAPTURE("Audio interno de apps"),
+    EXTERNAL("Entrada externa (otro móvil)"),
     USB("USB Audio"),
     CONSOLE_IN("Consola In"),
     FILE_REFERENCE("Archivo / Referencia")

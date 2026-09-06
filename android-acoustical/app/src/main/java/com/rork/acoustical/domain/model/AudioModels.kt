@@ -62,7 +62,8 @@ enum class BandCount(val count: Int, val label: String) {
  */
 @Serializable
 data class AudioConfig(
-    val sampleRate: SampleRate = SampleRate.SR_48000,
+    // 96 kHz is fixed by design — sampling is no longer a manual control
+    val sampleRate: SampleRate = SampleRate.SR_96000,
     val fftSize: FftSize = FftSize.SIZE_2048,
     val analysisInterval: AnalysisInterval = AnalysisInterval.NORMAL,
     val bandCount: BandCount = BandCount.BANDS_10,
@@ -70,7 +71,8 @@ data class AudioConfig(
     val maxGainDb: Float = 12f,
     val targetSpl: Float = 75f,
     val smoothingFactor: Float = 0.3f,
-    val noiseFloorDb: Float = -80f,
+    // Noise threshold fixed by design (120 dB reference) — no manual control
+    val noiseFloorDb: Float = -120f,
     val noiseSubtractionEnabled: Boolean = true,
     val audioDelayMs: Float = 25f,
     val geoAutoAdjust: Boolean = false,
@@ -96,7 +98,32 @@ data class AudioConfig(
 }
 
 /**
- * A single equalizer band with its center frequency and current gain.
+ * Free-frequency support band. Each automated EQ (normal and auto-check) gets
+ * four of these: the user picks any frequency and gain to reinforce a spot the
+ * fixed bands don't reach.
+ */
+@Serializable
+data class SupportBand(
+    val frequencyHz: Float = 1000f,
+    val gainDb: Float = 0f,
+    val q: Float = 2f
+) {
+    val label: String
+        get() = if (frequencyHz >= 1000f) "%.1fk".format(frequencyHz / 1000f) else "%.0f".format(frequencyHz)
+
+    companion object {
+        /** Default set: one support band per decade from 250 Hz up. */
+        fun defaults(): List<SupportBand> = listOf(
+            SupportBand(frequencyHz = 250f),
+            SupportBand(frequencyHz = 1000f),
+            SupportBand(frequencyHz = 4000f),
+            SupportBand(frequencyHz = 12000f)
+        )
+    }
+}
+
+/**
+ * A single EQ band with its center frequency and current gain.
  */
 @Serializable
 data class EqBand(

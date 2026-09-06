@@ -22,8 +22,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.SpeakerGroup
 import androidx.compose.material.icons.filled.Tune
@@ -78,6 +80,7 @@ import com.rork.acoustical.domain.model.OutputTarget
 import com.rork.acoustical.domain.model.ReferenceSource
 import com.rork.acoustical.ui.components.FineDelayControl
 import com.rork.acoustical.ui.components.GlassCard
+import com.rork.acoustical.ui.components.ProcessorsSection
 import com.rork.acoustical.ui.components.StatusPill
 import com.rork.acoustical.ui.theme.AbyssBlack
 import com.rork.acoustical.ui.theme.AmberAccent
@@ -532,6 +535,15 @@ fun RoutingMapScreen(
                     Text("Calibración", color = CyanPrimary, style = MaterialTheme.typography.labelLarge)
                 }
             }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // The three automated processors + simultaneous digital inputs
+            ProcessorsSection(
+                state = state,
+                viewModel = viewModel,
+                modifier = Modifier.fillMaxWidth()
+            )
 
             Spacer(modifier = Modifier.height(14.dp))
 
@@ -1063,6 +1075,8 @@ private fun InputDetailSheet(
 
 private fun inputDescription(type: InputType): String = when (type) {
     InputType.MIC -> "El micrófono del móvil mide la sala. Necesita el permiso de micrófono concedido."
+    InputType.APP_CAPTURE -> "Captura digital del audio interno de otras apps (Spotify, YouTube…). Pide permiso de proyección la primera vez."
+    InputType.EXTERNAL -> "Audio enviado desde otro móvil por la sesión. Actívalo cuando el otro dispositivo esté conectado."
     InputType.USB -> "Interface de audio por USB-OTG. Conéctala y actívala cuando Android la detecte."
     InputType.CONSOLE_IN -> "Entrada OSC de la consola por WiFi. Configura IP y puerto en la sección Consola."
     InputType.FILE_REFERENCE -> "Fuente de señal de referencia: archivo, loop de consola, secuencia o DAW."
@@ -1070,6 +1084,8 @@ private fun inputDescription(type: InputType): String = when (type) {
 
 private fun inputTypeIcon(type: InputType): ImageVector = when (type) {
     InputType.MIC -> Icons.Filled.Mic
+    InputType.APP_CAPTURE -> Icons.Filled.GraphicEq
+    InputType.EXTERNAL -> Icons.Filled.PhoneAndroid
     InputType.USB -> Icons.Filled.Usb
     InputType.CONSOLE_IN -> Icons.Filled.Tune
     InputType.FILE_REFERENCE -> Icons.Filled.Waves
