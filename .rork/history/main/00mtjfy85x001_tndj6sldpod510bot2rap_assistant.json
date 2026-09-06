@@ -211,7 +211,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"pattern\":\"fun startEngine|fun stopEngine|autoCheckJob|fun startAutoCheck|fun setBandCount|fun configure|fun setRunning|fun toggleEngine\",\"path\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/viewmodel\",\"include\":\"*.kt\"}",
       "createdAt": 1788313400729,
-      "completedAt": 1788313401660
+      "completedAt": 1788313401660,
+      "compactedAt": 1788733360398
     },
     {
       "type": "tool",
@@ -353,7 +354,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"pattern\":\"fun start|fun stop|fun configure|analysisInterval|onAnalysisUpdate|Record|AudioRecord\",\"path\":\"android-acoustical/app/src/main/java/com/rork/acoustical/domain/audio/AudioEngine.kt\",\"include\":\"*.kt\"}",
       "createdAt": 1788313401594,
-      "completedAt": 1788313401667
+      "completedAt": 1788313401667,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -380,7 +382,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/viewmodel/AudioEngineViewModel.kt\",\"limit\":70,\"offset\":540}",
       "createdAt": 1788313414003,
-      "completedAt": 1788313414479
+      "completedAt": 1788313414479,
+      "compactedAt": 1788733360398
     },
     {
       "type": "tool",
@@ -399,7 +402,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/viewmodel/AudioEngineViewModel.kt\",\"limit\":80,\"offset\":1190}",
       "createdAt": 1788313414467,
-      "completedAt": 1788313414485
+      "completedAt": 1788313414485,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -429,7 +433,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/domain/audio/AudioEngine.kt\"}",
       "createdAt": 1788313447638,
-      "completedAt": 1788313449348
+      "completedAt": 1788313449348,
+      "compactedAt": 1788733360398
     },
     {
       "type": "tool",
@@ -521,7 +526,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"include\":\"*.kt\",\"path\":\"android-acoustical/app/src/main/java\",\"pattern\":\"bandsL = |bandsR = |copy\\\\(bandsL|copy\\\\(bandsR|state\\\\.bands\\\\b|result\\\\.bands\"}",
       "createdAt": 1788313449329,
-      "completedAt": 1788313449366
+      "completedAt": 1788313449366,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -553,7 +559,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/viewmodel/AudioEngineViewModel.kt\",\"limit\":200,\"offset\":1340}",
       "createdAt": 1788313506046,
-      "completedAt": 1788313506770
+      "completedAt": 1788313506770,
+      "compactedAt": 1788733360398
     },
     {
       "type": "tool",
@@ -655,7 +662,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"include\":\"*.kt\",\"path\":\"android-acoustical/app/src/main/java/com/rork/acoustical/domain/model\",\"pattern\":\"effectiveSmoothingFactor|val Default = AudioConfig|maxGainDb\"}",
       "createdAt": 1788313506756,
-      "completedAt": 1788313506777
+      "completedAt": 1788313506777,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -685,7 +693,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/AndroidManifest.xml\"}",
       "createdAt": 1788313526697,
-      "completedAt": 1788313528146
+      "completedAt": 1788313528146,
+      "compactedAt": 1788733360398
     },
     {
       "type": "tool",
@@ -702,7 +711,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/service/AudioAnalysisService.kt\"}",
       "createdAt": 1788313527033,
-      "completedAt": 1788313528156
+      "completedAt": 1788313528156,
+      "compactedAt": 1788733360398
     },
     {
       "type": "tool",
@@ -774,7 +784,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"include\":\"*.kt\",\"path\":\"android-acoustical/app/src/main/java\",\"pattern\":\"RECORD_AUDIO|requestPermission|startAutoCheck\\\\(\\\\)|startNotificationUpdates\"}",
       "createdAt": 1788313527924,
-      "completedAt": 1788313528163
+      "completedAt": 1788313528163,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -805,7 +816,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/MainActivity.kt\",\"limit\":120}",
       "createdAt": 1788313652435,
-      "completedAt": 1788313653349
+      "completedAt": 1788313653349,
+      "compactedAt": 1788733360398
     },
     {
       "type": "tool",
@@ -824,7 +836,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/viewmodel/AudioEngineViewModel.kt\",\"limit\":60,\"offset\":1675}",
       "createdAt": 1788313653338,
-      "completedAt": 1788313653351
+      "completedAt": 1788313653351,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -959,7 +972,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"include\":\"*.kt\",\"path\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens\",\"pattern\":\"isRunning|toggleEngine|startEngine\"}",
       "createdAt": 1788313725151,
-      "completedAt": 1788313725171
+      "completedAt": 1788313725171,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -1000,7 +1014,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"edits\":[{\"newString\": \"    // Callback for UI updates\\n    var onAnalysisUpdate: ((AnalysisResult) -> Unit)? = null\\n    var onNoiseCaptureProgress: ((Float) -> Unit)? = null\\n    var onNoiseCaptureComplete: (() -> Unit)? = null\\n    /** Invoked when the engine cannot start (permission denied, mic unavailable). */\\n    var onStartFailed: ((String) -> Unit)? = null\", \"oldString\": \"    // Callback for UI updates\\n    var onAnalysisUpdate: ((AnalysisResult) -> Unit)? = null\\n    var onNoiseCaptureProgress: ((Float) -> Unit)? = null\\n    var onNoiseCaptureComplete: (() -> Unit)? = null\", \"replaceAll\": false}, {\"newString\": \"    /**\\n     * Start the audio analysis loop.\\n     * Requires RECORD_AUDIO permission.\\n     *\\n     * @return true if capture started, false if the microphone could not be opened\\n     */\\n    fun start(): Boolean {\\n        if (isRunning) return true\\n        isRunning = true\\n\\n        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)\\n\\n        ensureConfigured()\\n\\n        val sampleRate = config.sampleRate.hz\\n        val fftSize = config.fftSize.samples\\n        val bufferSize = maxOf(\\n            AudioRecord.getMinBufferSize(sampleRate, CHANNEL_IN, AUDIO_FORMAT),\\n            fftSize * 2\\n        )\\n\\n        try {\\n            audioRecord = AudioRecord(\\n                MediaRecorder.AudioSource.MIC,\\n                sampleRate,\\n                CHANNEL_IN,\\n                AUDIO_FORMAT,\\n                bufferSize\\n            )\\n        } catch (e: SecurityException) {\\n            Log.e(TAG, \\\"RECORD_AUDIO permission not granted\\\", e)\\n            isRunning = false\\n            onStartFailed?.invoke(\\\"Sin permiso de micrófono: concédelo para iniciar el análisis\\\")\\n            return false\\n        } catch (e: Exception) {\\n            Log.e(TAG, \\\"Failed to create AudioRecord\\\", e)\\n            isRunning = false\\n            onStartFailed?.invoke(\\\"No se pudo abrir el micrófono de este dispositivo\\\")\\n            return false\\n        }\\n\\n        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {\\n            Log.e(TAG, \\\"AudioRecord failed to initialize\\\")\\n            isRunning = false\\n            onStartFailed?.invoke(\\\"El micrófono no está disponible (¿otra app lo está usando?)\\\")\\n            return false\\n        }\\n\\n        audioRecord?.startRecording()\\n        startAnalysisLoop(bufferSize, fftSize, sampleRate)\\n        return true\\n    }\", \"oldString\": \"    /**\\n     * Start the audio analysis loop.\\n     * Requires RECORD_AUDIO permission.\\n     */\\n    fun start() {\\n        if (isRunning) return\\n        isRunning = true\\n\\n        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)\\n\\n        ensureConfigured()\\n\\n        val sampleRate = config.sampleRate.hz\\n        val fftSize = config.fftSize.samples\\n        val bufferSize = maxOf(\\n            AudioRecord.getMinBufferSize(sampleRate, CHANNEL_IN, AUDIO_FORMAT),\\n            fftSize * 2\\n        )\\n\\n        try {\\n            audioRecord = AudioRecord(\\n                MediaRecorder.AudioSource.MIC,\\n                sampleRate,\\n                CHANNEL_IN,\\n                AUDIO_FORMAT,\\n                bufferSize\\n            )\\n        } catch (e: SecurityException) {\\n            Log.e(TAG, \\\"RECORD_AUDIO permission not granted\\\", e)\\n            isRunning = false\\n            return\\n        } catch (e: Exception) {\\n            Log.e(TAG, \\\"Failed to create AudioRecord\\\", e)\\n            isRunning = false\\n            return\\n        }\\n\\n        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {\\n            Log.e(TAG, \\\"AudioRecord failed to initialize\\\")\\n            isRunning = false\\n            return\\n        }\\n\\n        audioRecord?.startRecording()\\n        startAnalysisLoop(bufferSize, fftSize, sampleRate)\\n    }\", \"replaceAll\": false}],\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/domain/audio/AudioEngine.kt\"}",
       "createdAt": 1788313751966,
-      "completedAt": 1788313751985
+      "completedAt": 1788313751985,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -1041,7 +1056,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/service/AudioAnalysisService.kt\",\"edits\":[{\"newString\": \"        @Volatile\\n        var engine: AudioEngine? = null\\n\\n        /** Set by the ViewModel: invoked when the notification's stop action fires. */\\n        @Volatile\\n        var onStopRequested: (() -> Unit)? = null\", \"oldString\": \"        @Volatile\\n        var engine: AudioEngine? = null\\n            private set\"}, {\"newString\": \"            ACTION_STOP -> {\\n                engine?.stop()\\n                stopForeground(STOP_FOREGROUND_REMOVE)\\n                stopSelf()\\n                onStopRequested?.invoke()\\n                return START_NOT_STICKY\\n            }\\n            ACTION_START -> {\\n                // Reuse the shared engine created by the ViewModel when present;\\n                // only fall back to our own instance after a sticky restart.\\n                if (engine == null) {\\n                    engine = AudioEngine()\\n                }\\n                engine?.start()\\n                startForeground(NOTIFICATION_ID, buildNotification(0f, 0f, 0L))\\n            }\", \"oldString\": \"            ACTION_STOP -> {\\n                engine?.stop()\\n                stopForeground(STOP_FOREGROUND_REMOVE)\\n                stopSelf()\\n                return START_NOT_STICKY\\n            }\\n            ACTION_START -> {\\n                if (engine == null) {\\n                    engine = AudioEngine()\\n                }\\n                engine?.start()\\n                startForeground(NOTIFICATION_ID, buildNotification(0f, 0f, 0L))\\n            }\"}]}",
       "createdAt": 1788313762103,
-      "completedAt": 1788313762201
+      "completedAt": 1788313762201,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -1092,7 +1108,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/viewmodel/AudioEngineViewModel.kt\",\"edits\":[{\"oldString\": \"    data class UiState(\\n        val isRunning: Boolean = false,\\n        val isCorrecting: Boolean = false,\", \"newString\": \"    data class UiState(\\n        val isRunning: Boolean = false,\\n        /** Non-null when the engine failed to start (permission, mic busy…). */\\n        val engineError: String? = null,\\n        val isCorrecting: Boolean = false,\", \"replaceAll\": false}, {\"oldString\": \"    init {\\n        initInputs()\\n        engine = AudioEngine().also { eng ->\\n            eng.configure(_uiState.value.config)\\n            eng.onAnalysisUpdate = { result ->\", \"newString\": \"    init {\\n        initInputs()\\n        engine = AudioEngine().also { eng ->\\n            eng.configure(_uiState.value.config)\\n            // Single engine shared with the foreground service — two AudioRecords\\n            // fighting for the mic is what left the analysis dead on device.\\n            AudioAnalysisService.engine = eng\\n            AudioAnalysisService.onStopRequested = { stopEngine() }\\n            eng.onStartFailed = { message ->\\n                _uiState.update { it.copy(isRunning = false, engineError = message) }\\n            }\\n            eng.onAnalysisUpdate = { result ->\", \"replaceAll\": false}, {\"oldString\": \"    fun startEngine() {\\n        val context = getApplication<Application>()\\n        val intent = Intent(context, AudioAnalysisService::class.java).apply {\\n            action = AudioAnalysisService.ACTION_START\\n        }\\n        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {\\n            context.startForegroundService(intent)\\n        } else {\\n            context.startService(intent)\\n        }\\n\\n        engine?.start()\\n        _uiState.update { it.copy(isRunning = true) }\\n        startNotificationUpdates()\\n    }\\n\\n    fun stopEngine() {\\n        val context = getApplication<Application>()\", \"newString\": \"    fun startEngine() {\\n        val context = getApplication<Application>()\\n\\n        // The engine is dead without the mic — fail fast with a visible reason\\n        val hasMicPermission = ContextCompat.checkSelfPermission(\\n            context, android.Manifest.permission.RECORD_AUDIO\\n        ) == PackageManager.PERMISSION_GRANTED\\n        if (!hasMicPermission) {\\n            _uiState.update {\\n                it.copy(\\n                    isRunning = false,\\n                    engineError = \\\"Concede el permiso de micrófono para iniciar el análisis\\\"\\n                )\\n            }\\n            return\\n        }\\n\\n        _uiState.update { it.copy(engineError = null) }\\n        AudioAnalysisService.engine = engine\\n        val intent = Intent(context, AudioAnalysisService::class.java).apply {\\n            action = AudioAnalysisService.ACTION_START\\n        }\\n        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {\\n            context.startForegroundService(intent)\\n        } else {\\n            context.startService(intent)\\n        }\\n\\n        val started = engine?.start() ?: false\\n        if (started) {\\n            _uiState.update { it.copy(isRunning = true) }\\n            startNotificationUpdates()\\n        } else {\\n            // engineError was already set by the engine's callback; make sure\\n            // the foreground service is not left running with a dead engine\\n            context.startService(\\n                Intent(context, AudioAnalysisService::class.java).apply {\\n                    action = AudioAnalysisService.ACTION_STOP\\n                }\\n            )\\n        }\\n    }\\n\\n    fun stopEngine() {\\n        if (!_uiState.value.isRunning) return\\n        val context = getApplication<Application>()\", \"replaceAll\": false}, {\"oldString\": \"    override fun onCleared() {\\n        super.onCleared()\\n        engine?.stop()\\n        engine = null\", \"newString\": \"    override fun onCleared() {\\n        super.onCleared()\\n        engine?.stop()\\n        engine = null\\n        AudioAnalysisService.engine = null\\n        AudioAnalysisService.onStopRequested = null\", \"replaceAll\": false}]}",
       "createdAt": 1788313779052,
-      "completedAt": 1788313779072
+      "completedAt": 1788313779072,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -1124,7 +1141,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/ControlScreen.kt\",\"limit\":70,\"offset\":100}",
       "createdAt": 1788313798086,
-      "completedAt": 1788313798091
+      "completedAt": 1788313798091,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -1160,7 +1178,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/viewmodel/AudioEngineViewModel.kt\",\"edits\":[{\"oldString\": \"import android.app.Application\\nimport android.content.Context\\nimport android.content.Intent\\nimport android.media.AudioDeviceInfo\\nimport android.media.AudioManager\\nimport androidx.lifecycle.AndroidViewModel\", \"newString\": \"import android.app.Application\\nimport android.content.Context\\nimport android.content.Intent\\nimport android.content.pm.PackageManager\\nimport android.media.AudioDeviceInfo\\nimport android.media.AudioManager\\nimport androidx.core.content.ContextCompat\\nimport androidx.lifecycle.AndroidViewModel\", \"replaceAll\": false}]}",
       "createdAt": 1788313815903,
-      "completedAt": 1788313818890
+      "completedAt": 1788313818890,
+      "compactedAt": 1788733360398
     },
     {
       "type": "tool",
@@ -1183,7 +1202,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/ControlScreen.kt\",\"edits\":[{\"oldString\": \"            Spacer(modifier = Modifier.height(8.dp))\\n\\n            // Agent mode selector (4 modes)\", \"newString\": \"            Spacer(modifier = Modifier.height(8.dp))\\n\\n            // Engine start failure — visible reason instead of a silently dead motor\\n            state.engineError?.let { error ->\\n                Text(\\n                    text = error,\\n                    style = MaterialTheme.typography.bodySmall,\\n                    color = CoralAlert,\\n                    fontWeight = FontWeight.SemiBold,\\n                    modifier = Modifier\\n                        .fillMaxWidth()\\n                        .clip(RoundedCornerShape(10.dp))\\n                        .background(CoralAlert.copy(alpha = 0.15f))\\n                        .padding(horizontal = 10.dp, vertical = 8.dp)\\n                )\\n                Spacer(modifier = Modifier.height(8.dp))\\n            }\\n\\n            // Agent mode selector (4 modes)\", \"replaceAll\": false}]}",
       "createdAt": 1788313818791,
-      "completedAt": 1788313818892
+      "completedAt": 1788313818892,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
@@ -1216,7 +1236,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"appPath\":\"android-acoustical\"}",
       "createdAt": 1788313825946,
-      "completedAt": 1788313921740
+      "completedAt": 1788313921740,
+      "compactedAt": 1788733360398
     },
     {
       "type": "reasoning",
