@@ -29,14 +29,16 @@ import kotlin.math.log10
  * vertical fader on one canvas — no horizontal scrolling. Drag vertically on a
  * band to move it; tap to select it and read its exact frequency and gain.
  * Key frequency marks (100 Hz, 1 kHz, 10 kHz) are the only labels, to save
- * room on small screens.
+ * room on small screens. Bands a dynamic EQ is working on right now are
+ * tinted with that EQ's accent color ([highlightBands]).
  */
 @Composable
 fun CompactEqCanvas(
     bands: List<EqBand>,
     maxGain: Float,
     onBandGainChange: (Int, Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    highlightBands: Map<Int, Color> = emptyMap()
 ) {
     var selected by remember { mutableIntStateOf(-1) }
 
@@ -91,9 +93,9 @@ fun CompactEqCanvas(
 
             bands.forEachIndexed { i, band ->
                 val x = (i + 0.5f) * w
-                // Track
+                // Track — tinted with the color of the dynamic EQ working on it
                 drawLine(
-                    color = Color.White.copy(alpha = 0.08f),
+                    color = highlightBands[i]?.copy(alpha = 0.55f) ?: Color.White.copy(alpha = 0.08f),
                     start = Offset(x, top),
                     end = Offset(x, bottom),
                     strokeWidth = trackWidth
@@ -116,6 +118,14 @@ fun CompactEqCanvas(
                         color = Color.White,
                         radius = barWidth,
                         center = Offset(x, y)
+                    )
+                }
+                // Dynamic EQ activity marker
+                highlightBands[i]?.let { hl ->
+                    drawCircle(
+                        color = hl,
+                        radius = barWidth * 1.4f,
+                        center = Offset(x, top + 2.dp.toPx())
                     )
                 }
             }

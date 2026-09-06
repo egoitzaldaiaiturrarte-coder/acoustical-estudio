@@ -8,38 +8,29 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.rork.acoustical.domain.audio.SweepDirection
 import com.rork.acoustical.domain.model.ProbeQuality
-import com.rork.acoustical.domain.model.SupportBand
 import com.rork.acoustical.ui.theme.AmberAccent
 import com.rork.acoustical.ui.theme.CyanGlow
 import com.rork.acoustical.ui.theme.CyanPrimary
 import com.rork.acoustical.ui.theme.LimeActive
 import com.rork.acoustical.ui.viewmodel.AudioEngineViewModel
-import kotlin.math.log10
-import kotlin.math.pow
 
 /**
- * The three automated processors, managed from Ruteos. All three are the same
- * free-frequency automatic corrector — a decision every 800 ms while the gain
- * values adjust every 10 ms — differing only in where they work:
- * 1. Auto ayuda — goes where it is most needed, with its own mixer.
- * 2. EQ normal — starts from the bass, keeps the L/R faders and 4 support bands.
- * 3. Auto-chequeo — starts from the treble, keeps its settings and 4 support bands.
+ * The three dynamic EQs, managed from Ruteos: the same automatic free-frequency
+ * corrector repeated three times with different settings (direction, interval,
+ * gain, speed, extra sweeps and support bands — configured in Ajustes).
  * Also hosts the simultaneous digital input controls (internal app capture,
  * external phone input).
  */
@@ -50,7 +41,7 @@ fun ProcessorsSection(
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        // --- Inputs digitales (varias a la vez) ---
+        // --- Entradas digitales (varias a la vez) ---
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
@@ -118,174 +109,82 @@ fun ProcessorsSection(
             }
         }
 
-        // --- Proceso 1: Auto ayuda ---
-        GlassCard(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            "Auto ayuda",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            "Decide cada 800 ms · corrige cada 10 ms · va donde más se necesita",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = state.autoHelpActive,
-                        onCheckedChange = { viewModel.setAutoHelpEnabled(it) }
-                    )
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                SweepStatusText(
-                    active = state.autoHelpActive,
-                    isRunning = state.isRunning,
-                    status = state.sweepHelp
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                MixerSlider(
-                    label = "Mezclador propio",
-                    level = state.autoHelpMixerLevel,
-                    onChange = { viewModel.setAutoHelpMixerLevel(it) }
-                )
-            }
-        }
-
-        // --- Proceso 2: EQ normal + bandas de apoyo ---
-        GlassCard(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            "EQ normal",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            "Automático — empieza por los graves · faders L/R y Link en EQ",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+        // --- Los tres ecuas dinámicos (idénticos, con distintos ajustes) ---
+        state.dynamicEqs.forEachIndexed { index, eq ->
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                "Ecu dinámico ${index + 1}",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                directionSubtitle(eq.config.startFrom),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = eq.enabled,
+                            onCheckedChange = { viewModel.setDynamicEqEnabled(index, it) }
                         )
                     }
-                    Switch(
-                        checked = state.normalSweepActive,
-                        onCheckedChange = { viewModel.setNormalSweepEnabled(it) }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    SweepStatusText(
+                        active = eq.enabled,
+                        isRunning = state.isRunning,
+                        status = eq.status
                     )
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                SweepStatusText(
-                    active = state.normalSweepActive,
-                    isRunning = state.isRunning,
-                    status = state.sweepNormal
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                MixerSlider(
-                    label = "Mezclador propio",
-                    level = state.normalMixerLevel,
-                    onChange = { viewModel.setNormalSweepMixerLevel(it) }
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    "Bandas de apoyo (frecuencia libre)",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = CyanGlow
-                )
-                state.supportBandsEq.forEachIndexed { index, band ->
-                    SupportBandRow(
-                        index = index,
-                        band = band,
-                        onChange = { freq, gain -> viewModel.setSupportBandEq(index, freq, gain) }
-                    )
-                }
-            }
-        }
-
-        // --- Proceso 3: Auto-chequeo + bandas de apoyo ---
-        GlassCard(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            "Auto-chequeo",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            "Automático — empieza por los agudos · verifica con sus propios ajustes",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = state.workConfig.autoCheck.enabled,
-                        onCheckedChange = { viewModel.setAutoCheckEnabled(it) }
-                    )
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                SweepStatusText(
-                    active = state.workConfig.autoCheck.enabled,
-                    isRunning = state.isRunning,
-                    status = state.sweepCheck
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                MixerSlider(
-                    label = "Mezclador propio",
-                    level = state.checkMixerLevel,
-                    onChange = { viewModel.setCheckSweepMixerLevel(it) }
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    "Ciclo de verificación",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = CyanGlow
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(15, 30, 60, 120).forEach { seconds ->
-                        ChipSelector(
-                            label = "${seconds}s",
-                            selected = state.workConfig.autoCheck.intervalSeconds == seconds
+                    if (index == 2) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            viewModel.setAutoCheckInterval(seconds)
+                            Text(
+                                "Verificación automática",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = CyanGlow
+                            )
+                            Switch(
+                                checked = state.workConfig.autoCheck.enabled,
+                                onCheckedChange = { viewModel.setAutoCheckEnabled(it) }
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(15, 30, 60, 120).forEach { seconds ->
+                                ChipSelector(
+                                    label = "${seconds}s",
+                                    selected = state.workConfig.autoCheck.intervalSeconds == seconds
+                                ) {
+                                    viewModel.setAutoCheckInterval(seconds)
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            ProbeQuality.entries.forEach { quality ->
+                                ChipSelector(
+                                    label = quality.label,
+                                    selected = state.workConfig.autoCheck.quality == quality
+                                ) {
+                                    viewModel.setAutoCheckQuality(quality)
+                                }
+                            }
                         }
                     }
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ProbeQuality.entries.forEach { quality ->
-                        ChipSelector(
-                            label = quality.label,
-                            selected = state.workConfig.autoCheck.quality == quality
-                        ) {
-                            viewModel.setAutoCheckQuality(quality)
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    "Bandas de apoyo (frecuencia libre)",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = CyanGlow
-                )
-                state.supportBandsCheck.forEachIndexed { index, band ->
-                    SupportBandRow(
-                        index = index,
-                        band = band,
-                        onChange = { freq, gain -> viewModel.setSupportBandCheck(index, freq, gain) }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Parámetros, mezclador y bandas de apoyo: en Ajustes",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -293,37 +192,13 @@ fun ProcessorsSection(
     }
 }
 
-/** One free-frequency support band: log frequency slider + gain slider. */
-@Composable
-private fun SupportBandRow(
-    index: Int,
-    band: SupportBand,
-    onChange: (Float, Float) -> Unit
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            "Apoyo ${index + 1} · ${band.label} Hz · %+.1f dB".format(band.gainDb),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        // Log frequency slider: 20 Hz → 20 kHz
-        val position = (log10((band.frequencyHz.coerceAtLeast(20f) / 20f).toDouble()) / 3.0).toFloat()
-        Slider(
-            value = position.coerceIn(0f, 1f),
-            onValueChange = { p ->
-                val freq = (20f * 10f.pow(3f * p)).coerceIn(20f, 20000f)
-                onChange(freq, band.gainDb)
-            }
-        )
-        Slider(
-            value = band.gainDb,
-            onValueChange = { onChange(band.frequencyHz, it) },
-            valueRange = -12f..12f
-        )
-    }
+private fun directionSubtitle(direction: SweepDirection): String = when (direction) {
+    SweepDirection.NEED_BASED -> "Va donde más se necesita"
+    SweepDirection.BOTTOM_UP -> "Empieza por los graves"
+    SweepDirection.TOP_DOWN -> "Empieza por los agudos"
 }
 
-/** Live status line of one automated processor. */
+/** Live status line of one dynamic EQ. */
 @Composable
 private fun SweepStatusText(
     active: Boolean,
@@ -344,15 +219,4 @@ private fun SweepStatusText(
         style = MaterialTheme.typography.labelSmall,
         color = if (active && isRunning) LimeActive else CyanGlow
     )
-}
-
-/** A processor's own mixer level (0..1). */
-@Composable
-private fun MixerSlider(label: String, level: Float, onChange: (Float) -> Unit) {
-    Text(
-        "$label: ${(level * 100).toInt()}%",
-        style = MaterialTheme.typography.labelSmall,
-        color = CyanGlow
-    )
-    Slider(value = level, onValueChange = onChange, valueRange = 0f..1f)
 }

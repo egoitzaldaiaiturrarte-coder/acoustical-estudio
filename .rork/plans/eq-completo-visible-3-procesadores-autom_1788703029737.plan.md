@@ -17,20 +17,22 @@ Rediseño del ecualizador para ver las 124 bandas a la vez en tu Redmi, tres pro
 - [x] En general: **botones más grandes y textos informativos más pequeños** en las pantallas de EQ, para manejo con una mano.
 - [x] Se mantiene Link/Unlink L/R y los ajustes independientes por canal.
 
-## 2. Tres procesadores automatizados
-- [x] **Los tres procesos son el mismo corrector automático de frecuencias libres** (como el que ya había), que se autoajusta por necesidad. Cada uno **decide cada 800 ms** a qué banda corregir, mientras **los valores se ajustan cada 10 ms** hacia su objetivo.
-- [x] **Proceso 1 — Auto ayuda**: va siempre donde más se necesita (recorta la banda con más SPL, sube la más baja, rastreo por ranking). Con **su propio mezclador** (0–1).
-- [x] **Proceso 2 — EQ normal**: lo mismo con parámetros auto ajustados, **empezando por los graves** (recorre el espectro de abajo arriba). Mantiene faders L/R, Link y **4 bandas de apoyo de frecuencia libre**.
-- [x] **Proceso 3 — Auto-chequeo**: lo mismo **empezando por los agudos** (recorre de arriba abajo), con sus propios ajustes (ciclo 15/30/60/120 s, calidad) y **4 bandas de apoyo de frecuencia libre**.
-- [x] **Suavizado automático por frecuencia**: rápido en agudos (~4 ms), relajado hacia los graves. Sin controles manuales.
+## 2. Tres ecuas dinámicos idénticos con distintos ajustes
+- [x] **El mismo corrector automático de frecuencias libres, repetido tres veces** (Ecu dinámico 1/2/3) con el mismo ecualizador gráfico pero distintos ajustes: más control y proceso más acelerado.
+- [x] Cada uno decide a su intervalo (por defecto 800 ms, ajustable 100–2000 ms) mientras **los valores se ajustan cada 10 ms** hacia su objetivo.
+- [x] Direcciones: EQ 1 va donde más se necesita, EQ 2 empieza por los graves, EQ 3 empieza por los agudos.
+- [x] **Barridos extra** configurables por EQ (0–6 pares de bandas por decisión) para acelerar el proceso.
+- [x] **Varias bandas de apoyo de frecuencia libre en cada EQ** (slider logarítmico 20 Hz–20 kHz, ±12 dB).
+- [x] Cada EQ con **mezclador propio** (0–100%) y **ganancia máxima propia** (1–50 dB).
+- [x] **Suavizado automático por frecuencia** (rápido en agudos, relajado en graves) con multiplicador de velocidad ×0.5/×1/×2/×4.
+- [x] **Modo L o R**: cada EQ aplica sus parámetros por canal (los canales alternan la corrección) y **las bandas cambian de color** para que se aprecie.
+- [x] **Todo el proceso se refleja**: tres mini-EQs en vivo debajo del EQ principal (cian, ámbar, magenta) con marcador en la banda que corrige ahora; las bandas del EQ principal se tiñen con el color del EQ que está trabajando en ellas.
 - [x] Tras cada captura (ruido o referencia), las correcciones se reinician y relanzan solas.
-- [x] **Fijo y sin control**: frecuencia de muestreo siempre 96 kHz; umbral de ruido fijo en 120 (desaparece ese slider de Ajustes).
-- [x] Cada proceso muestra su estado en vivo (activo, a qué banda está corrigiendo ahora) y tiene su propio mezclador.
 
-## 3. Ajustes manuales → Ruteos
-- [x] Se quitan de Ajustes todos los parámetros que pasan a automático o fijo (muestreo, FFT, intervalo, límite de ganancia, suavizado, umbral).
-- [x] Lo que queda de manual se concentra en la pantalla **Ruteos**: activación de cada proceso, sus mezcladores, bandas de apoyo, retardos y ganancias.
-- [x] Ajustes queda como pantalla de estado, no de configuración.
+## 3. Menú de Ajustes restaurado, con sección por ecu dinámico
+- [x] **Menú de Ajustes restaurado** con los parámetros generales: muestreo, FFT, intervalo de análisis, ganancia máxima, suavizado y umbral de ruido.
+- [x] **Sección específica para cada ecu dinámico**: intervalo de decisión, ganancia máxima, mezclador propio, velocidad del suavizado, barridos extra y sus bandas de apoyo de frecuencia libre.
+- [x] Ruteos queda con la activación de cada ecu y su estado en vivo (más el ciclo de verificación del tercero).
 
 ## 4. Entradas y salidas digitales
 - [x] **Entradas nuevas, varias a la vez (mezcladas)**:

@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
@@ -32,11 +34,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.rork.acoustical.domain.audio.SweepDirection
 import com.rork.acoustical.domain.model.EqChannel
 import com.rork.acoustical.ui.components.CompactEqCanvas
+import com.rork.acoustical.ui.components.DynamicEqCanvas
+import com.rork.acoustical.ui.components.DynamicEqColors
 import com.rork.acoustical.ui.components.EqChannelBar
 import com.rork.acoustical.ui.components.SpectrumAnalyzer
 import com.rork.acoustical.ui.components.StatusPill
+import com.rork.acoustical.ui.components.bandIndexForFrequency
 import com.rork.acoustical.ui.theme.AbyssBlack
 import com.rork.acoustical.ui.theme.AmberAccent
 import com.rork.acoustical.ui.theme.CyanGlow
@@ -55,6 +61,7 @@ fun FullEqScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(AbyssBlack)
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 8.dp)
     ) {
         // Top bar with close button
@@ -151,6 +158,22 @@ fun FullEqScreen(
 
         // Full EQ — every band visible at once, drag to adjust
         val activeBands = if (state.eqChannel == EqChannel.RIGHT) state.bandsR else state.bandsL
+        // Bands a dynamic EQ is correcting right now — tinted with its color
+        val highlights = if (activeBands.isNotEmpty()) {
+            buildMap {
+                state.dynamicEqs.forEachIndexed { i, eq ->
+                    val st = eq.status
+                    if (eq.enabled && st != null && st.bandHz > 0f) {
+                        put(
+                            bandIndexForFrequency(st.bandHz, activeBands.size),
+                            DynamicEqColors[i % DynamicEqColors.size]
+                        )
+                    }
+                }
+            }
+        } else {
+            emptyMap()
+        }
         if (activeBands.isNotEmpty()) {
             CompactEqCanvas(
                 bands = activeBands,
@@ -158,7 +181,8 @@ fun FullEqScreen(
                 onBandGainChange = { index, gain ->
                     viewModel.setEqBandGain(state.eqChannel, index, gain)
                 },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                highlightBands = highlights
             )
         } else {
             Box(
@@ -173,8 +197,40 @@ fun FullEqScreen(
             }
         }
 
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // The three dynamic EQs — identical, consecutive, each with its own settings
+        Text(
+            text = "Ecuas dinámicos",
+            style = MaterialTheme.typography.titleSmall,
+            color = CyanGlow,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        state.dynamicEqs.forEachIndexed { i, eq ->
+            DynamicEqCanvas(
+                index = i,
+                title = "Ecu dinámico ${i + 1} — ${directionLabel(eq.config.startFrom)}",
+                active = eq.enabled && state.isRunning,
+                status = eq.status,
+                gainsL = eq.gainsL,
+                gainsR = eq.gainsR,
+                linked = state.eqLinked,
+                showRight = state.eqChannel == EqChannel.RIGHT,
+                maxGain = eq.config.maxGainDb,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
     }
+}
+
+private fun directionLabel(direction: SweepDirection): String = when (direction) {
+    SweepDirection.NEED_BASED -> "donde más se necesita"
+    SweepDirection.BOTTOM_UP -> "desde los graves"
+    SweepDirection.TOP_DOWN -> "desde los agudos"
 }
 
 @Composable
