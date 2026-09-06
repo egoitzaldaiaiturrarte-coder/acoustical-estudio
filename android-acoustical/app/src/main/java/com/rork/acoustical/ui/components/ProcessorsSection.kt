@@ -34,10 +34,12 @@ import kotlin.math.log10
 import kotlin.math.pow
 
 /**
- * The three automated processors, managed from Ruteos:
- * 1. Auto ayuda — 10 ms sweeper with its own mixer, speed/smoothing auto by frequency.
- * 2. EQ normal — the user EQ with 4 free-frequency support bands.
- * 3. Auto-chequeo — verification processor with its own settings and support bands.
+ * The three automated processors, managed from Ruteos. All three are the same
+ * free-frequency automatic corrector — a decision every 800 ms while the gain
+ * values adjust every 10 ms — differing only in where they work:
+ * 1. Auto ayuda — goes where it is most needed, with its own mixer.
+ * 2. EQ normal — starts from the bass, keeps the L/R faders and 4 support bands.
+ * 3. Auto-chequeo — starts from the treble, keeps its settings and 4 support bands.
  * Also hosts the simultaneous digital input controls (internal app capture,
  * external phone input).
  */
@@ -131,7 +133,7 @@ fun ProcessorsSection(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            "Barrido 10 ms · velocidad y suavizado automáticos por frecuencia",
+                            "Decide cada 800 ms · corrige cada 10 ms · va donde más se necesita",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -142,32 +144,16 @@ fun ProcessorsSection(
                     )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
-                val statusText = if (state.autoHelpActive && state.isRunning && state.sweepBandHz > 0f) {
-                    val freq = if (state.sweepBandHz >= 1000f) "%.2fk".format(state.sweepBandHz / 1000f)
-                    else "%.0f".format(state.sweepBandHz)
-                    "Corrigiendo $freq Hz · %+.1f dB · barrido %.2f ms · suavizado %.1f ms".format(
-                        state.sweepGainDb, state.sweepIntervalMs, state.sweepSmoothingMs
-                    )
-                } else if (state.autoHelpActive && !state.isRunning) {
-                    "Activo — arranca con el motor"
-                } else {
-                    "Inactivo"
-                }
-                Text(
-                    statusText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (state.autoHelpActive && state.isRunning) LimeActive else CyanGlow
+                SweepStatusText(
+                    active = state.autoHelpActive,
+                    isRunning = state.isRunning,
+                    status = state.sweepHelp
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    "Mezclador propio: ${(state.autoHelpMixerLevel * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CyanGlow
-                )
-                Slider(
-                    value = state.autoHelpMixerLevel,
-                    onValueChange = { viewModel.setAutoHelpMixerLevel(it) },
-                    valueRange = 0f..1f
+                MixerSlider(
+                    label = "Mezclador propio",
+                    level = state.autoHelpMixerLevel,
+                    onChange = { viewModel.setAutoHelpMixerLevel(it) }
                 )
             }
         }
@@ -187,13 +173,28 @@ fun ProcessorsSection(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            if (state.isCorrecting) "Corrigiendo — faders L/R y Link en EQ"
-                            else "Faders L/R y Link en la pestaña EQ",
+                            "Automático — empieza por los graves · faders L/R y Link en EQ",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (state.isCorrecting) LimeActive else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    Switch(
+                        checked = state.normalSweepActive,
+                        onCheckedChange = { viewModel.setNormalSweepEnabled(it) }
+                    )
                 }
+                Spacer(modifier = Modifier.height(4.dp))
+                SweepStatusText(
+                    active = state.normalSweepActive,
+                    isRunning = state.isRunning,
+                    status = state.sweepNormal
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                MixerSlider(
+                    label = "Mezclador propio",
+                    level = state.normalMixerLevel,
+                    onChange = { viewModel.setNormalSweepMixerLevel(it) }
+                )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     "Bandas de apoyo (frecuencia libre)",
@@ -225,7 +226,7 @@ fun ProcessorsSection(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            "Verificación automática con sus propios ajustes",
+                            "Automático — empieza por los agudos · verifica con sus propios ajustes",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -235,6 +236,18 @@ fun ProcessorsSection(
                         onCheckedChange = { viewModel.setAutoCheckEnabled(it) }
                     )
                 }
+                Spacer(modifier = Modifier.height(4.dp))
+                SweepStatusText(
+                    active = state.workConfig.autoCheck.enabled,
+                    isRunning = state.isRunning,
+                    status = state.sweepCheck
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                MixerSlider(
+                    label = "Mezclador propio",
+                    level = state.checkMixerLevel,
+                    onChange = { viewModel.setCheckSweepMixerLevel(it) }
+                )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     "Ciclo de verificación",
@@ -308,4 +321,38 @@ private fun SupportBandRow(
             valueRange = -12f..12f
         )
     }
+}
+
+/** Live status line of one automated processor. */
+@Composable
+private fun SweepStatusText(
+    active: Boolean,
+    isRunning: Boolean,
+    status: AudioEngineViewModel.SweepStatus?
+) {
+    val text = when {
+        active && isRunning -> status?.let { st ->
+            val freq = if (st.bandHz >= 1000f) "%.2fk".format(st.bandHz / 1000f)
+            else "%.0f".format(st.bandHz)
+            "Corrigiendo $freq Hz · %+.1f dB · suavizado %.1f ms".format(st.gainDb, st.smoothingMs)
+        } ?: "Activo — esperando señal"
+        active -> "Activo — arranca con el motor"
+        else -> "Inactivo"
+    }
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        color = if (active && isRunning) LimeActive else CyanGlow
+    )
+}
+
+/** A processor's own mixer level (0..1). */
+@Composable
+private fun MixerSlider(label: String, level: Float, onChange: (Float) -> Unit) {
+    Text(
+        "$label: ${(level * 100).toInt()}%",
+        style = MaterialTheme.typography.labelSmall,
+        color = CyanGlow
+    )
+    Slider(value = level, onValueChange = onChange, valueRange = 0f..1f)
 }

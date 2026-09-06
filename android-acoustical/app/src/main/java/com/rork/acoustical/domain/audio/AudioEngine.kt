@@ -49,7 +49,9 @@ class AudioEngine {
     private var roomCorrector: RoomCorrector? = null
     private var splMeter: SplMeter? = null
     private var noiseProfiler: NoiseProfiler? = null
-    private var sweeper: SweeperProcessor? = null
+    private var sweeperHelp: SweeperProcessor? = null
+    private var sweeperNormal: SweeperProcessor? = null
+    private var sweeperCheck: SweeperProcessor? = null
     private var sweeperJob: Job? = null
 
     private var config: AudioConfig = AudioConfig.Default
@@ -66,11 +68,13 @@ class AudioEngine {
     var onNoiseCaptureComplete: (() -> Unit)? = null
     /** Invoked when the engine cannot start (permission denied, mic unavailable). */
     var onStartFailed: ((String) -> Unit)? = null
-    /** Invoked on every "Auto ayuda" sweep step (10 ms cadence). */
-    var onSweepUpdate: ((SweeperProcessor.SweepStep) -> Unit)? = null
+    /** Invoked on every processor decision (decide every 800 ms, values adjust every 10 ms). */
+    var onSweepUpdate: ((SweepProcess, SweeperProcessor.SweepStep) -> Unit)? = null
 
     // Shared state between the analysis loop and the sweeper loop
     @Volatile private var autoHelpEnabled: Boolean = false
+    @Volatile private var normalSweepEnabled: Boolean = false
+    @Volatile private var checkSweepEnabled: Boolean = false
     @Volatile private var lastMeasuredLevels: FloatArray? = null
     @Volatile private var appCaptureLevels: FloatArray? = null
     @Volatile private var supportBandsEq: List<SupportBand> = emptyList()
@@ -117,7 +121,9 @@ class AudioEngine {
             maxCaptureFrames = 50,
             gateRange = 6f
         )
-        sweeper = SweeperProcessor(bandFrequencies, newConfig.maxGainDb)
+        sweeperHelp = SweeperProcessor(bandFrequencies, newConfig.maxGainDb, SweepDirection.NEED_BASED)
+        sweeperNormal = SweeperProcessor(bandFrequencies, newConfig.maxGainDb, SweepDirection.BOTTOM_UP)
+        sweeperCheck = SweeperProcessor(bandFrequencies, newConfig.maxGainDb, SweepDirection.TOP_DOWN)
         bands = bandFrequencies.mapIndexed { i, freq ->
             EqBand(index = i, centerFreq = freq, gainDb = 0f, targetGainDb = 0f)
         }.toMutableList()
@@ -173,7 +179,7 @@ class AudioEngine {
 
         audioRecord?.startRecording()
         startAnalysisLoop(bufferSize, fftSize, sampleRate)
-        if (autoHelpEnabled) startSweeperLoop()
+        if (autoHelpEnabled || normalSweepEnabled || checkSweepEnabled) startSweeperLoop()
         return true
     }
 
@@ -209,7 +215,7 @@ class AudioEngine {
         isReferenceCaptured = true
         // Sweeps and corrections restart automatically after every capture
         corrector.reset()
-        sweeper?.reset()
+        resetSweepers()
     }
 
     /**
@@ -222,27 +228,64 @@ class AudioEngine {
 
     fun isReferenceCaptured(): Boolean = isReferenceCaptured
 
-    // === Auto ayuda (fast sweeper with its own mixer) ===
+    // === The three automated processors (same corrector, different direction) ===
 
+    /** "Auto ayuda" — goes where it is most needed. */
     fun setAutoHelpEnabled(enabled: Boolean) {
         autoHelpEnabled = enabled
-        if (enabled) startSweeperLoop() else stopSweeperLoop()
+        refreshSweeperLoop()
     }
 
     fun setAutoHelpMixerLevel(level: Float) {
-        sweeper?.mixerLevel = level.coerceIn(0f, 1f)
+        sweeperHelp?.mixerLevel = level.coerceIn(0f, 1f)
     }
 
     fun isAutoHelpEnabled(): Boolean = autoHelpEnabled
 
+    /** "EQ normal" — automatic correction starting from the bass. */
+    fun setNormalSweepEnabled(enabled: Boolean) {
+        normalSweepEnabled = enabled
+        refreshSweeperLoop()
+    }
+
+    fun setNormalSweepMixerLevel(level: Float) {
+        sweeperNormal?.mixerLevel = level.coerceIn(0f, 1f)
+    }
+
+    /** "Auto-chequeo" — automatic correction starting from the treble. */
+    fun setCheckSweepEnabled(enabled: Boolean) {
+        checkSweepEnabled = enabled
+        refreshSweeperLoop()
+    }
+
+    fun setCheckSweepMixerLevel(level: Float) {
+        sweeperCheck?.mixerLevel = level.coerceIn(0f, 1f)
+    }
+
+    private fun isAnySweeperEnabled(): Boolean =
+        autoHelpEnabled || normalSweepEnabled || checkSweepEnabled
+
+    private fun refreshSweeperLoop() {
+        if (isAnySweeperEnabled()) startSweeperLoop() else stopSweeperLoop()
+    }
+
     private fun startSweeperLoop() {
         if (!isRunning || sweeperJob?.isActive == true) return
-        val sweeper = sweeper ?: return
+        val help = sweeperHelp ?: return
+        val normal = sweeperNormal ?: return
+        val check = sweeperCheck ?: return
         sweeperJob = scope?.launch(Dispatchers.Default) {
-            while (isActive && isRunning && autoHelpEnabled) {
+            while (isActive && isRunning) {
                 lastMeasuredLevels?.let { levels ->
-                    sweeper.step(levels, System.currentTimeMillis())?.let { step ->
-                        onSweepUpdate?.invoke(step)
+                    val now = System.currentTimeMillis()
+                    if (autoHelpEnabled) {
+                        help.step(levels, now)?.let { onSweepUpdate?.invoke(SweepProcess.AUTO_HELP, it) }
+                    }
+                    if (normalSweepEnabled) {
+                        normal.step(levels, now)?.let { onSweepUpdate?.invoke(SweepProcess.EQ_NORMAL, it) }
+                    }
+                    if (checkSweepEnabled) {
+                        check.step(levels, now)?.let { onSweepUpdate?.invoke(SweepProcess.AUTO_CHECK, it) }
                     }
                 }
                 delay(SweeperProcessor.TICK_MS)
@@ -253,6 +296,12 @@ class AudioEngine {
     private fun stopSweeperLoop() {
         sweeperJob?.cancel()
         sweeperJob = null
+    }
+
+    private fun resetSweepers() {
+        sweeperHelp?.reset()
+        sweeperNormal?.reset()
+        sweeperCheck?.reset()
     }
 
     // === Free support bands (EQ + auto-check processors) ===
@@ -398,7 +447,7 @@ class AudioEngine {
                 onNoiseCaptureComplete?.invoke()
                 // Sweeps and corrections restart automatically after captures
                 roomCorrector?.reset()
-                sweeper?.reset()
+                resetSweepers()
             }
         }
 

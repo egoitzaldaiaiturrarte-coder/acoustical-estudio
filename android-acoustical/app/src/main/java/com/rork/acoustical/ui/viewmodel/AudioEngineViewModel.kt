@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rork.acoustical.domain.audio.AudioEngine
+import com.rork.acoustical.domain.audio.SweepProcess
 import com.rork.acoustical.domain.audio.LocationProvider
 import com.rork.acoustical.domain.audio.AudioOutputInfo
 import com.rork.acoustical.domain.audio.BluetoothAudioManager
@@ -172,10 +173,12 @@ class AudioEngineViewModel(
         // Processors: Auto ayuda / EQ normal / Auto-chequeo
         val autoHelpActive: Boolean = true,
         val autoHelpMixerLevel: Float = 0.8f,
-        val sweepBandHz: Float = 0f,
-        val sweepGainDb: Float = 0f,
-        val sweepIntervalMs: Float = 0f,
-        val sweepSmoothingMs: Float = 0f,
+        val normalSweepActive: Boolean = false,
+        val normalMixerLevel: Float = 0.8f,
+        val checkMixerLevel: Float = 0.8f,
+        val sweepHelp: SweepStatus? = null,
+        val sweepNormal: SweepStatus? = null,
+        val sweepCheck: SweepStatus? = null,
         val supportBandsEq: List<SupportBand> = SupportBand.defaults(),
         val supportBandsCheck: List<SupportBand> = SupportBand.defaults(),
         // Simultaneous digital inputs
@@ -196,6 +199,13 @@ class AudioEngineViewModel(
                 else -> "Paso normal"
             }
     }
+
+    /** Live status of one automated processor (decision every 800 ms, values every 10 ms). */
+    data class SweepStatus(
+        val bandHz: Float,
+        val gainDb: Float,
+        val smoothingMs: Float
+    )
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -285,17 +295,21 @@ class AudioEngineViewModel(
                     )
                 }
             }
-            eng.onSweepUpdate = { step ->
+            eng.onSweepUpdate = { process, step ->
                 val now = System.currentTimeMillis()
                 if (now - lastSweepUiMs >= 100) {
                     lastSweepUiMs = now
+                    val status = SweepStatus(
+                        bandHz = step.centerFreqHz,
+                        gainDb = step.gainDb,
+                        smoothingMs = step.smoothingMs
+                    )
                     _uiState.update { st ->
-                        st.copy(
-                            sweepBandHz = step.centerFreqHz,
-                            sweepGainDb = step.gainDb,
-                            sweepIntervalMs = step.sweepIntervalMs,
-                            sweepSmoothingMs = step.smoothingMs
-                        )
+                        when (process) {
+                            SweepProcess.AUTO_HELP -> st.copy(sweepHelp = status)
+                            SweepProcess.EQ_NORMAL -> st.copy(sweepNormal = status)
+                            SweepProcess.AUTO_CHECK -> st.copy(sweepCheck = status)
+                        }
                     }
                 }
             }
@@ -597,6 +611,8 @@ class AudioEngineViewModel(
     fun setAutoCheckEnabled(enabled: Boolean) {
         _uiState.update { it.copy(workConfig = it.workConfig.copy(autoCheck = it.workConfig.autoCheck.copy(enabled = enabled))) }
         if (enabled) startAutoCheck() else stopAutoCheck()
+        // Its automatic correction starts from the treble
+        engine?.setCheckSweepEnabled(enabled && _uiState.value.isRunning)
     }
 
     fun setAutoCheckInterval(seconds: Int) {
@@ -726,11 +742,35 @@ class AudioEngineViewModel(
         }
     }
 
-    /** The sweeper's own mixer level (0..1), independent from the rest. */
+    /** The Auto ayuda mixer level (0..1), independent from the rest. */
     fun setAutoHelpMixerLevel(level: Float) {
         val clamped = level.coerceIn(0f, 1f)
         _uiState.update { it.copy(autoHelpMixerLevel = clamped) }
         engine?.setAutoHelpMixerLevel(clamped)
+    }
+
+    /** Toggle the "EQ normal" automatic correction (starts from the bass). */
+    fun setNormalSweepEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(normalSweepActive = enabled) }
+        if (enabled && !_uiState.value.isRunning) {
+            startEngine()
+        } else {
+            engine?.setNormalSweepEnabled(enabled && _uiState.value.isRunning)
+        }
+    }
+
+    /** The EQ normal mixer level (0..1). */
+    fun setNormalSweepMixerLevel(level: Float) {
+        val clamped = level.coerceIn(0f, 1f)
+        _uiState.update { it.copy(normalMixerLevel = clamped) }
+        engine?.setNormalSweepMixerLevel(clamped)
+    }
+
+    /** The Auto-chequeo mixer level (0..1). */
+    fun setCheckSweepMixerLevel(level: Float) {
+        val clamped = level.coerceIn(0f, 1f)
+        _uiState.update { it.copy(checkMixerLevel = clamped) }
+        engine?.setCheckSweepMixerLevel(clamped)
     }
 
     /** Edit one of the EQ processor's four free-frequency support bands. */
@@ -1394,6 +1434,8 @@ class AudioEngineViewModel(
             syncBandsFromEngine()
             engine?.setSupportBands(_uiState.value.supportBandsEq, _uiState.value.supportBandsCheck)
             engine?.setAutoHelpEnabled(_uiState.value.autoHelpActive)
+            engine?.setNormalSweepEnabled(_uiState.value.normalSweepActive)
+            engine?.setCheckSweepEnabled(_uiState.value.workConfig.autoCheck.enabled)
             _uiState.update { it.copy(isRunning = true) }
             startNotificationUpdates()
         } else {
@@ -1427,7 +1469,10 @@ class AudioEngineViewModel(
                 isNoiseCapturing = false,
                 noiseCaptureProgress = 0f,
                 splHistoryMeasured = emptyList(),
-                splHistoryCorrected = emptyList()
+                splHistoryCorrected = emptyList(),
+                sweepHelp = null,
+                sweepNormal = null,
+                sweepCheck = null
             )
         }
         notificationUpdateJob?.cancel()
