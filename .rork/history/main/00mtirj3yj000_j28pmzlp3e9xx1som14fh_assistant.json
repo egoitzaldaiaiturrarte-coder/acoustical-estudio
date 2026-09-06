@@ -308,7 +308,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/FullEqScreen.kt\"}",
       "createdAt": 1788271300018,
-      "completedAt": 1788271300034
+      "completedAt": 1788271300034,
+      "compactedAt": 1788702309875
     },
     {
       "type": "reasoning",
@@ -333,7 +334,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/SettingsScreen.kt\"}",
       "createdAt": 1788271307149,
-      "completedAt": 1788271307736
+      "completedAt": 1788271307736,
+      "compactedAt": 1788702309875
     },
     {
       "type": "tool",
@@ -350,7 +352,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/EqualizerScreen.kt\"}",
       "createdAt": 1788271307724,
-      "completedAt": 1788271307740
+      "completedAt": 1788271307740,
+      "compactedAt": 1788702309875
     },
     {
       "type": "reasoning",
@@ -490,7 +493,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"include\":\"*.kt\",\"path\":\"android-acoustical/app/src/main/java/com/rork/acoustical\",\"pattern\":\"testingOutputId|isClamped|routingNodes|routingConnections\"}",
       "createdAt": 1788271412504,
-      "completedAt": 1788271413144
+      "completedAt": 1788271413144,
+      "compactedAt": 1788702309875
     },
     {
       "type": "tool",
@@ -509,7 +513,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/CalibrationScreen.kt\",\"offset\":240,\"limit\":120}",
       "createdAt": 1788271413127,
-      "completedAt": 1788271413145
+      "completedAt": 1788271413145,
+      "compactedAt": 1788702309875
     },
     {
       "type": "reasoning",
@@ -535,7 +540,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/RoutingMapScreen.kt\",\"limit\":400}",
       "createdAt": 1788271426099,
-      "completedAt": 1788271426108
+      "completedAt": 1788271426108,
+      "compactedAt": 1788702309875
     },
     {
       "type": "reasoning",
@@ -567,7 +573,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/RoutingMapScreen.kt\",\"offset\":540,\"limit\":260}",
       "createdAt": 1788271531523,
-      "completedAt": 1788271532158
+      "completedAt": 1788271532158,
+      "compactedAt": 1788702309875
     },
     {
       "type": "tool",
@@ -598,7 +605,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"pattern\":\"enum class DeviceType|enum class DeviceState\",\"path\":\"android-acoustical/app/src/main/java/com/rork/acoustical/domain/model/ControllerModels.kt\"}",
       "createdAt": 1788271532079,
-      "completedAt": 1788271532166
+      "completedAt": 1788271532166,
+      "compactedAt": 1788702309875
     },
     {
       "type": "reasoning",
@@ -624,7 +632,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/ui/screens/RoutingMapScreen.kt\",\"offset\":830}",
       "createdAt": 1788271540613,
-      "completedAt": 1788271541327
+      "completedAt": 1788271541327,
+      "compactedAt": 1788702309875
     },
     {
       "type": "tool",
@@ -643,7 +652,8 @@
       "state": "output-available",
       "inputArgsStr": "{\"filePath\":\"android-acoustical/app/src/main/java/com/rork/acoustical/domain/model/ControllerModels.kt\",\"limit\":130,\"offset\":14}",
       "createdAt": 1788271541224,
-      "completedAt": 1788271541331
+      "completedAt": 1788271541331,
+      "compactedAt": 1788702309875
     },
     {
       "type": "reasoning",
