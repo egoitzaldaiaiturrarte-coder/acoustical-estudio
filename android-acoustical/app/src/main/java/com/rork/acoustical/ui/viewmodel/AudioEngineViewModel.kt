@@ -11,6 +11,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rork.acoustical.domain.audio.AudioEngine
+import com.rork.acoustical.domain.audio.DynamicEqConfig
+import com.rork.acoustical.domain.audio.SweepDirection
 import com.rork.acoustical.domain.audio.SweepProcess
 import com.rork.acoustical.domain.audio.LocationProvider
 import com.rork.acoustical.domain.audio.AudioOutputInfo
@@ -35,7 +37,9 @@ import com.rork.acoustical.domain.model.AppMode
 import com.rork.acoustical.domain.model.AgentAdvice
 import com.rork.acoustical.domain.model.AgentMode
 import com.rork.acoustical.domain.model.AgentSeverity
+import com.rork.acoustical.domain.model.AnalysisInterval
 import com.rork.acoustical.domain.model.AudioConfig
+import com.rork.acoustical.domain.model.FftSize
 import com.rork.acoustical.domain.model.AutoCheckConfig
 import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.BitDepth
@@ -170,17 +174,8 @@ class AudioEngineViewModel(
         val bandsR: List<EqBand> = emptyList(),
         val eqLinked: Boolean = true,
         val eqChannel: EqChannel = EqChannel.LEFT,
-        // Processors: Auto ayuda / EQ normal / Auto-chequeo
-        val autoHelpActive: Boolean = true,
-        val autoHelpMixerLevel: Float = 0.8f,
-        val normalSweepActive: Boolean = false,
-        val normalMixerLevel: Float = 0.8f,
-        val checkMixerLevel: Float = 0.8f,
-        val sweepHelp: SweepStatus? = null,
-        val sweepNormal: SweepStatus? = null,
-        val sweepCheck: SweepStatus? = null,
-        val supportBandsEq: List<SupportBand> = SupportBand.defaults(),
-        val supportBandsCheck: List<SupportBand> = SupportBand.defaults(),
+        // The three dynamic EQs (same corrector, different settings)
+        val dynamicEqs: List<DynamicEqUi> = emptyList(),
         // Simultaneous digital inputs
         val isAppCaptureActive: Boolean = false,
         val isExternalInputActive: Boolean = false
@@ -200,11 +195,29 @@ class AudioEngineViewModel(
             }
     }
 
-    /** Live status of one automated processor (decision every 800 ms, values every 10 ms). */
+    /** Live status of one dynamic EQ (decision at its interval, values every 10 ms). */
     data class SweepStatus(
         val bandHz: Float,
         val gainDb: Float,
-        val smoothingMs: Float
+        val smoothingMs: Float,
+        val channel: String = "L+R"
+    )
+
+    /** One dynamic EQ: its settings, live status, support bands and gain curves. */
+    data class DynamicEqUi(
+        val config: DynamicEqConfig,
+        val enabled: Boolean = false,
+        val status: SweepStatus? = null,
+        val supportBands: List<SupportBand> = SupportBand.defaults(),
+        val gainsL: FloatArray = FloatArray(0),
+        val gainsR: FloatArray = FloatArray(0)
+    )
+
+    /** Defaults: EQ 1 goes where needed, EQ 2 from the bass, EQ 3 from the treble. */
+    private fun defaultDynamicEqs(): List<DynamicEqUi> = listOf(
+        DynamicEqUi(config = DynamicEqConfig(startFrom = SweepDirection.NEED_BASED), enabled = true),
+        DynamicEqUi(config = DynamicEqConfig(startFrom = SweepDirection.BOTTOM_UP)),
+        DynamicEqUi(config = DynamicEqConfig(startFrom = SweepDirection.TOP_DOWN))
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -233,6 +246,7 @@ class AudioEngineViewModel(
     private var lastSweepUiMs = 0L
 
     init {
+        _uiState.update { it.copy(dynamicEqs = defaultDynamicEqs()) }
         initInputs()
         engine = AudioEngine().also { eng ->
             eng.configure(_uiState.value.config)
@@ -262,6 +276,11 @@ class AudioEngineViewModel(
                         measuredSpectrum = result.measuredSpectrum,
                         correctedSpectrum = result.correctedSpectrum,
                         bands = result.bands,
+                        dynamicEqs = state.dynamicEqs.mapIndexed { i, eq ->
+                            val l = result.dynamicEqGainsL.getOrNull(i)
+                            val r = result.dynamicEqGainsR.getOrNull(i)
+                            if (l != null && r != null) eq.copy(gainsL = l, gainsR = r) else eq
+                        },
                         correctionIntensity = result.correctionIntensity,
                         framesAnalyzed = result.framesAnalyzed,
                         isCorrecting = result.correctionIntensity > 0.01f,
@@ -302,14 +321,16 @@ class AudioEngineViewModel(
                     val status = SweepStatus(
                         bandHz = step.centerFreqHz,
                         gainDb = step.gainDb,
-                        smoothingMs = step.smoothingMs
+                        smoothingMs = step.smoothingMs,
+                        channel = step.channel
                     )
+                    val index = process.ordinal
                     _uiState.update { st ->
-                        when (process) {
-                            SweepProcess.AUTO_HELP -> st.copy(sweepHelp = status)
-                            SweepProcess.EQ_NORMAL -> st.copy(sweepNormal = status)
-                            SweepProcess.AUTO_CHECK -> st.copy(sweepCheck = status)
-                        }
+                        st.copy(
+                            dynamicEqs = st.dynamicEqs.mapIndexed { i, eq ->
+                                if (i == index) eq.copy(status = status) else eq
+                            }
+                        )
                     }
                 }
             }
@@ -318,8 +339,11 @@ class AudioEngineViewModel(
         // Show the EQ faders immediately (flat) instead of an empty placeholder
         syncBandsFromEngine()
 
-        // Publish the default support bands and keep the app-capture feed alive
-        engine?.setSupportBands(_uiState.value.supportBandsEq, _uiState.value.supportBandsCheck)
+        // Publish the initial dynamic EQ setup and keep the app-capture feed alive
+        _uiState.value.dynamicEqs.forEachIndexed { i, eq ->
+            engine?.setDynamicEqConfig(i, eq.config)
+            engine?.setSupportBands(i, eq.supportBands)
+        }
         viewModelScope.launch(Dispatchers.Default) {
             while (isActive) {
                 engine?.setAppCaptureLevels(
@@ -611,8 +635,6 @@ class AudioEngineViewModel(
     fun setAutoCheckEnabled(enabled: Boolean) {
         _uiState.update { it.copy(workConfig = it.workConfig.copy(autoCheck = it.workConfig.autoCheck.copy(enabled = enabled))) }
         if (enabled) startAutoCheck() else stopAutoCheck()
-        // Its automatic correction starts from the treble
-        engine?.setCheckSweepEnabled(enabled && _uiState.value.isRunning)
     }
 
     fun setAutoCheckInterval(seconds: Int) {
@@ -730,76 +752,68 @@ class AudioEngineViewModel(
         }
     }
 
-    // === Processors: Auto ayuda / EQ normal / Auto-chequeo ===
+    // === The three dynamic EQs ===
 
-    /** Toggle the fast sweeper ("Auto ayuda"). Starts the engine if stopped. */
-    fun setAutoHelpEnabled(enabled: Boolean) {
-        _uiState.update { it.copy(autoHelpActive = enabled) }
-        if (enabled && !_uiState.value.isRunning) {
-            startEngine()
-        } else {
-            engine?.setAutoHelpEnabled(enabled && _uiState.value.isRunning)
-        }
-    }
-
-    /** The Auto ayuda mixer level (0..1), independent from the rest. */
-    fun setAutoHelpMixerLevel(level: Float) {
-        val clamped = level.coerceIn(0f, 1f)
-        _uiState.update { it.copy(autoHelpMixerLevel = clamped) }
-        engine?.setAutoHelpMixerLevel(clamped)
-    }
-
-    /** Toggle the "EQ normal" automatic correction (starts from the bass). */
-    fun setNormalSweepEnabled(enabled: Boolean) {
-        _uiState.update { it.copy(normalSweepActive = enabled) }
-        if (enabled && !_uiState.value.isRunning) {
-            startEngine()
-        } else {
-            engine?.setNormalSweepEnabled(enabled && _uiState.value.isRunning)
-        }
-    }
-
-    /** The EQ normal mixer level (0..1). */
-    fun setNormalSweepMixerLevel(level: Float) {
-        val clamped = level.coerceIn(0f, 1f)
-        _uiState.update { it.copy(normalMixerLevel = clamped) }
-        engine?.setNormalSweepMixerLevel(clamped)
-    }
-
-    /** The Auto-chequeo mixer level (0..1). */
-    fun setCheckSweepMixerLevel(level: Float) {
-        val clamped = level.coerceIn(0f, 1f)
-        _uiState.update { it.copy(checkMixerLevel = clamped) }
-        engine?.setCheckSweepMixerLevel(clamped)
-    }
-
-    /** Edit one of the EQ processor's four free-frequency support bands. */
-    fun setSupportBandEq(index: Int, frequencyHz: Float, gainDb: Float) {
+    /** Toggle one dynamic EQ. Starts the engine if stopped. */
+    fun setDynamicEqEnabled(index: Int, enabled: Boolean) {
         _uiState.update { st ->
             st.copy(
-                supportBandsEq = st.supportBandsEq.mapIndexed { i, band ->
-                    if (i == index) band.copy(frequencyHz = frequencyHz, gainDb = gainDb) else band
+                dynamicEqs = st.dynamicEqs.mapIndexed { i, eq ->
+                    if (i == index) eq.copy(enabled = enabled) else eq
                 }
             )
         }
-        pushSupportBands()
+        if (enabled && !_uiState.value.isRunning) {
+            startEngine()
+        } else {
+            engine?.setDynamicEqEnabled(index, enabled && _uiState.value.isRunning)
+        }
     }
 
-    /** Edit one of the auto-check processor's four free-frequency support bands. */
-    fun setSupportBandCheck(index: Int, frequencyHz: Float, gainDb: Float) {
+    /** Change one dynamic EQ's parameters (interval, gain, speed, extra sweeps…). */
+    fun setDynamicEqConfig(index: Int, transform: (DynamicEqConfig) -> DynamicEqConfig) {
+        var pushed: DynamicEqConfig? = null
         _uiState.update { st ->
             st.copy(
-                supportBandsCheck = st.supportBandsCheck.mapIndexed { i, band ->
-                    if (i == index) band.copy(frequencyHz = frequencyHz, gainDb = gainDb) else band
+                dynamicEqs = st.dynamicEqs.mapIndexed { i, eq ->
+                    if (i == index) {
+                        val cfg = transform(eq.config)
+                        pushed = cfg
+                        eq.copy(config = cfg)
+                    } else eq
                 }
             )
         }
-        pushSupportBands()
+        pushed?.let { engine?.setDynamicEqConfig(index, it) }
     }
 
-    private fun pushSupportBands() {
-        val st = _uiState.value
-        engine?.setSupportBands(st.supportBandsEq, st.supportBandsCheck)
+    /** Quick mixer trim for one dynamic EQ (kept in its config). */
+    fun setDynamicEqMixerLevel(index: Int, level: Float) {
+        val clamped = level.coerceIn(0f, 1f)
+        setDynamicEqConfig(index) { it.copy(mixerLevel = clamped) }
+        engine?.setDynamicEqMixerLevel(index, clamped)
+    }
+
+    /** Edit one free-frequency support band of one dynamic EQ. */
+    fun setDynamicEqSupportBand(eqIndex: Int, bandIndex: Int, frequencyHz: Float, gainDb: Float) {
+        _uiState.update { st ->
+            st.copy(
+                dynamicEqs = st.dynamicEqs.mapIndexed { i, eq ->
+                    if (i == eqIndex) {
+                        eq.copy(
+                            supportBands = eq.supportBands.mapIndexed { bi, band ->
+                                if (bi == bandIndex) {
+                                    band.copy(frequencyHz = frequencyHz, gainDb = gainDb)
+                                } else band
+                            }
+                        )
+                    } else eq
+                }
+            )
+        }
+        _uiState.value.dynamicEqs.getOrNull(eqIndex)?.let {
+            engine?.setSupportBands(eqIndex, it.supportBands)
+        }
     }
 
     // === Internal app-audio capture (one of the simultaneous inputs) ===
@@ -1432,10 +1446,12 @@ class AudioEngineViewModel(
         Log.d("AudioEngineVM", "startEngine: started=$started")
         if (started) {
             syncBandsFromEngine()
-            engine?.setSupportBands(_uiState.value.supportBandsEq, _uiState.value.supportBandsCheck)
-            engine?.setAutoHelpEnabled(_uiState.value.autoHelpActive)
-            engine?.setNormalSweepEnabled(_uiState.value.normalSweepActive)
-            engine?.setCheckSweepEnabled(_uiState.value.workConfig.autoCheck.enabled)
+            engine?.setEqChannelLinked(_uiState.value.eqLinked)
+            _uiState.value.dynamicEqs.forEachIndexed { i, eq ->
+                engine?.setDynamicEqConfig(i, eq.config)
+                engine?.setSupportBands(i, eq.supportBands)
+                engine?.setDynamicEqEnabled(i, eq.enabled)
+            }
             _uiState.update { it.copy(isRunning = true) }
             startNotificationUpdates()
         } else {
@@ -1470,9 +1486,9 @@ class AudioEngineViewModel(
                 noiseCaptureProgress = 0f,
                 splHistoryMeasured = emptyList(),
                 splHistoryCorrected = emptyList(),
-                sweepHelp = null,
-                sweepNormal = null,
-                sweepCheck = null
+                dynamicEqs = it.dynamicEqs.map { eq ->
+                    eq.copy(status = null, gainsL = FloatArray(0), gainsR = FloatArray(0))
+                }
             )
         }
         notificationUpdateJob?.cancel()
@@ -1499,6 +1515,7 @@ class AudioEngineViewModel(
     fun setFftSize(size: com.rork.acoustical.domain.model.FftSize) = updateConfig { it.copy(fftSize = size) }
     fun setAnalysisInterval(interval: com.rork.acoustical.domain.model.AnalysisInterval) = updateConfig { it.copy(analysisInterval = interval) }
     fun setBandCount(count: BandCount) = updateConfig { it.copy(bandCount = count) }
+
     fun setMaxGainDb(gain: Float) = updateConfig { it.copy(maxGainDb = gain) }
     fun setTargetSpl(spl: Float) = updateConfig { it.copy(targetSpl = spl) }
     fun setSmoothingFactor(factor: Float) = updateConfig { it.copy(smoothingFactor = factor) }
@@ -1654,7 +1671,9 @@ class AudioEngineViewModel(
     }
 
     fun toggleEqLink() {
-        _uiState.update { it.copy(eqLinked = !it.eqLinked) }
+        val linked = !_uiState.value.eqLinked
+        _uiState.update { it.copy(eqLinked = linked) }
+        engine?.setEqChannelLinked(linked)
     }
 
     fun setEqChannel(channel: EqChannel) {

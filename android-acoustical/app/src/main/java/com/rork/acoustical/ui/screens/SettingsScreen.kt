@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.rork.acoustical.domain.audio.SweepDirection
 import com.rork.acoustical.domain.model.AnalysisInterval
 import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.FftSize
@@ -42,6 +43,7 @@ import com.rork.acoustical.domain.model.SampleRate
 import com.rork.acoustical.ui.components.ChipSelector
 import com.rork.acoustical.ui.components.FineDelayControl
 import com.rork.acoustical.ui.components.GlassCard
+import com.rork.acoustical.ui.components.SupportBandRow
 import com.rork.acoustical.ui.theme.AmberAccent
 import com.rork.acoustical.ui.theme.CyanGlow
 import com.rork.acoustical.ui.theme.CyanPrimary
@@ -85,19 +87,197 @@ fun SettingsScreen(
         ) {
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Motor — valores fijos: todo lo automático ya no se toca
+            // Motor de audio — parámetros generales restaurados
             GlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("Motor — valores fijos", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Muestreo: 96 kHz fijo · Nyquist 48 kHz", style = MaterialTheme.typography.labelSmall, color = CyanGlow)
-                    Text("Umbral de ruido: 120 (fijo, sin control)", style = MaterialTheme.typography.labelSmall, color = CyanGlow)
-                    Text("Barrido y suavizado: automáticos por frecuencia", style = MaterialTheme.typography.labelSmall, color = CyanGlow)
-                    Text("Procesos, mezcladores y bandas de apoyo: en Ruteos", style = MaterialTheme.typography.labelSmall, color = AmberAccent)
+                    Text("Motor de audio", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Muestreo", style = MaterialTheme.typography.labelMedium, color = CyanGlow)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        SampleRate.entries.forEach { sr ->
+                            ChipSelector(sr.label, config.sampleRate == sr) { viewModel.setSampleRate(sr) }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Tamaño de FFT", style = MaterialTheme.typography.labelMedium, color = CyanGlow)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FftSize.entries.forEach { fs ->
+                            ChipSelector(fs.label, config.fftSize == fs) { viewModel.setFftSize(fs) }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Intervalo de análisis", style = MaterialTheme.typography.labelMedium, color = CyanGlow)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        AnalysisInterval.entries.forEach { ai ->
+                            ChipSelector(ai.label, config.analysisInterval == ai) { viewModel.setAnalysisInterval(ai) }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Ganancia máxima: %.0f dB".format(config.maxGainDb),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CyanGlow
+                    )
+                    Slider(
+                        value = config.maxGainDb,
+                        onValueChange = { viewModel.setMaxGainDb(it) },
+                        valueRange = 1f..50f
+                    )
+                    Text(
+                        "Suavizado: %.2f".format(config.smoothingFactor),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CyanGlow
+                    )
+                    Slider(
+                        value = config.smoothingFactor,
+                        onValueChange = { viewModel.setSmoothingFactor(it) },
+                        valueRange = 0.05f..0.8f
+                    )
+                    Text(
+                        "Umbral de ruido: %.0f".format(config.noiseFloorDb),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CyanGlow
+                    )
+                    Slider(
+                        value = config.noiseFloorDb,
+                        onValueChange = { viewModel.setNoiseFloorDb(it) },
+                        valueRange = -140f..-60f
+                    )
                 }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
+
+            // Ecualizadores dinámicos — intro
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("Ecualizadores dinámicos", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        "El mismo corrector automático tres veces con distintos ajustes: más control y proceso más rápido. Cada uno con barridos extra y bandas de frecuencia libre.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Una sección específica por cada ecu dinámico
+            state.dynamicEqs.forEachIndexed { index, eq ->
+                GlassCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    "Ecu dinámico ${index + 1}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    directionLabel(eq.config.startFrom),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = eq.enabled,
+                                onCheckedChange = { viewModel.setDynamicEqEnabled(index, it) }
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            "Intervalo de decisión: ${eq.config.decisionIntervalMs} ms · los valores se ajustan cada 10 ms",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CyanGlow
+                        )
+                        Slider(
+                            value = eq.config.decisionIntervalMs.toFloat(),
+                            onValueChange = { v ->
+                                viewModel.setDynamicEqConfig(index) { c -> c.copy(decisionIntervalMs = v.toInt()) }
+                            },
+                            valueRange = 100f..2000f
+                        )
+                        Text(
+                            "Ganancia máxima: %.0f dB".format(eq.config.maxGainDb),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CyanGlow
+                        )
+                        Slider(
+                            value = eq.config.maxGainDb,
+                            onValueChange = { v ->
+                                viewModel.setDynamicEqConfig(index) { c -> c.copy(maxGainDb = v) }
+                            },
+                            valueRange = 1f..50f
+                        )
+                        Text(
+                            "Mezclador propio: ${(eq.config.mixerLevel * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CyanGlow
+                        )
+                        Slider(
+                            value = eq.config.mixerLevel,
+                            onValueChange = { viewModel.setDynamicEqMixerLevel(index, it) },
+                            valueRange = 0f..1f
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Velocidad del suavizado", style = MaterialTheme.typography.labelMedium, color = CyanGlow)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(0.5f, 1f, 2f, 4f).forEach { s ->
+                                ChipSelector(
+                                    label = "×" + if (s < 1f) "0.5" else s.toInt().toString(),
+                                    selected = eq.config.speedMultiplier == s
+                                ) {
+                                    viewModel.setDynamicEqConfig(index) { c -> c.copy(speedMultiplier = s) }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Barridos extra por decisión", style = MaterialTheme.typography.labelMedium, color = CyanGlow)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(0, 1, 2, 3, 4, 6).forEach { n ->
+                                ChipSelector(
+                                    label = "$n",
+                                    selected = eq.config.extraSweeps == n
+                                ) {
+                                    viewModel.setDynamicEqConfig(index) { c -> c.copy(extraSweeps = n) }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("Bandas de apoyo (frecuencia libre)", style = MaterialTheme.typography.labelMedium, color = CyanGlow)
+                        eq.supportBands.forEachIndexed { bandIndex, band ->
+                            SupportBandRow(
+                                index = bandIndex,
+                                band = band,
+                                onChange = { freq, gain ->
+                                    viewModel.setDynamicEqSupportBand(index, bandIndex, freq, gain)
+                                }
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             // Band Count
             GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -208,3 +388,8 @@ fun SettingsScreen(
     }
 }
 
+private fun directionLabel(direction: SweepDirection): String = when (direction) {
+    SweepDirection.NEED_BASED -> "Va donde más se necesita"
+    SweepDirection.BOTTOM_UP -> "Empieza por los graves"
+    SweepDirection.TOP_DOWN -> "Empieza por los agudos"
+}

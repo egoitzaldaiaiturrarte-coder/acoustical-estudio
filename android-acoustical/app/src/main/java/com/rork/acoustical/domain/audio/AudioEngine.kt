@@ -39,6 +39,7 @@ class AudioEngine {
         private const val TAG = "AudioEngine"
         private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        private const val DYNAMIC_EQ_COUNT = 3
     }
 
     private var scope: CoroutineScope? = null
@@ -49,9 +50,14 @@ class AudioEngine {
     private var roomCorrector: RoomCorrector? = null
     private var splMeter: SplMeter? = null
     private var noiseProfiler: NoiseProfiler? = null
-    private var sweeperHelp: SweeperProcessor? = null
-    private var sweeperNormal: SweeperProcessor? = null
-    private var sweeperCheck: SweeperProcessor? = null
+    private val sweepers = arrayOfNulls<SweeperProcessor>(DYNAMIC_EQ_COUNT)
+    private val dynamicCfgs = arrayOf(
+        DynamicEqConfig(startFrom = SweepDirection.NEED_BASED),
+        DynamicEqConfig(startFrom = SweepDirection.BOTTOM_UP),
+        DynamicEqConfig(startFrom = SweepDirection.TOP_DOWN)
+    )
+    private val sweeperEnabled = BooleanArray(DYNAMIC_EQ_COUNT)
+    private val supportBandsByEq = Array(DYNAMIC_EQ_COUNT) { emptyList<SupportBand>() }
     private var sweeperJob: Job? = null
 
     private var config: AudioConfig = AudioConfig.Default
@@ -72,13 +78,8 @@ class AudioEngine {
     var onSweepUpdate: ((SweepProcess, SweeperProcessor.SweepStep) -> Unit)? = null
 
     // Shared state between the analysis loop and the sweeper loop
-    @Volatile private var autoHelpEnabled: Boolean = false
-    @Volatile private var normalSweepEnabled: Boolean = false
-    @Volatile private var checkSweepEnabled: Boolean = false
     @Volatile private var lastMeasuredLevels: FloatArray? = null
     @Volatile private var appCaptureLevels: FloatArray? = null
-    @Volatile private var supportBandsEq: List<SupportBand> = emptyList()
-    @Volatile private var supportBandsCheck: List<SupportBand> = emptyList()
 
     private var framesAnalyzed: Long = 0L
     private var isRunning: Boolean = false
@@ -96,7 +97,10 @@ class AudioEngine {
         val correctionIntensity: Float,
         val cpuLoadPercent: Float,
         val framesAnalyzed: Long,
-        val noiseSpectrum: SpectrumFrame? = null
+        val noiseSpectrum: SpectrumFrame? = null,
+        /** Per dynamic-EQ gain curves (auto corrections + its own support bands). */
+        val dynamicEqGainsL: List<FloatArray> = emptyList(),
+        val dynamicEqGainsR: List<FloatArray> = emptyList()
     )
 
     /**
@@ -121,9 +125,9 @@ class AudioEngine {
             maxCaptureFrames = 50,
             gateRange = 6f
         )
-        sweeperHelp = SweeperProcessor(bandFrequencies, newConfig.maxGainDb, SweepDirection.NEED_BASED)
-        sweeperNormal = SweeperProcessor(bandFrequencies, newConfig.maxGainDb, SweepDirection.BOTTOM_UP)
-        sweeperCheck = SweeperProcessor(bandFrequencies, newConfig.maxGainDb, SweepDirection.TOP_DOWN)
+        for (i in 0 until DYNAMIC_EQ_COUNT) {
+            sweepers[i] = SweeperProcessor(bandFrequencies, dynamicCfgs[i])
+        }
         bands = bandFrequencies.mapIndexed { i, freq ->
             EqBand(index = i, centerFreq = freq, gainDb = 0f, targetGainDb = 0f)
         }.toMutableList()
@@ -179,7 +183,7 @@ class AudioEngine {
 
         audioRecord?.startRecording()
         startAnalysisLoop(bufferSize, fftSize, sampleRate)
-        if (autoHelpEnabled || normalSweepEnabled || checkSweepEnabled) startSweeperLoop()
+        if (sweeperEnabled.any { it }) startSweeperLoop()
         return true
     }
 
@@ -228,64 +232,54 @@ class AudioEngine {
 
     fun isReferenceCaptured(): Boolean = isReferenceCaptured
 
-    // === The three automated processors (same corrector, different direction) ===
+    // === The three dynamic EQs (same corrector, different settings) ===
 
-    /** "Auto ayuda" — goes where it is most needed. */
-    fun setAutoHelpEnabled(enabled: Boolean) {
-        autoHelpEnabled = enabled
+    /** Change one dynamic EQ's parameters (interval, gain, speed, extra sweeps…). */
+    fun setDynamicEqConfig(index: Int, cfg: DynamicEqConfig) {
+        if (index !in 0 until DYNAMIC_EQ_COUNT) return
+        dynamicCfgs[index] = cfg
+        sweepers[index]?.applyConfig(cfg)
+    }
+
+    /** Enable or disable one dynamic EQ. */
+    fun setDynamicEqEnabled(index: Int, enabled: Boolean) {
+        if (index !in 0 until DYNAMIC_EQ_COUNT) return
+        sweeperEnabled[index] = enabled
         refreshSweeperLoop()
     }
 
-    fun setAutoHelpMixerLevel(level: Float) {
-        sweeperHelp?.mixerLevel = level.coerceIn(0f, 1f)
+    fun setDynamicEqMixerLevel(index: Int, level: Float) {
+        if (index !in 0 until DYNAMIC_EQ_COUNT) return
+        sweepers[index]?.mixerLevel = level.coerceIn(0f, 1f)
     }
 
-    fun isAutoHelpEnabled(): Boolean = autoHelpEnabled
-
-    /** "EQ normal" — automatic correction starting from the bass. */
-    fun setNormalSweepEnabled(enabled: Boolean) {
-        normalSweepEnabled = enabled
-        refreshSweeperLoop()
+    /** Linked = each EQ corrects L and R together; unlinked = channels alternate. */
+    fun setEqChannelLinked(linked: Boolean) {
+        sweepers.forEach { it?.channelLinked = linked }
     }
 
-    fun setNormalSweepMixerLevel(level: Float) {
-        sweeperNormal?.mixerLevel = level.coerceIn(0f, 1f)
+    /** One dynamic EQ's free-frequency support bands. */
+    fun setSupportBands(index: Int, bands: List<SupportBand>) {
+        if (index !in 0 until DYNAMIC_EQ_COUNT) return
+        supportBandsByEq[index] = bands
     }
-
-    /** "Auto-chequeo" — automatic correction starting from the treble. */
-    fun setCheckSweepEnabled(enabled: Boolean) {
-        checkSweepEnabled = enabled
-        refreshSweeperLoop()
-    }
-
-    fun setCheckSweepMixerLevel(level: Float) {
-        sweeperCheck?.mixerLevel = level.coerceIn(0f, 1f)
-    }
-
-    private fun isAnySweeperEnabled(): Boolean =
-        autoHelpEnabled || normalSweepEnabled || checkSweepEnabled
 
     private fun refreshSweeperLoop() {
-        if (isAnySweeperEnabled()) startSweeperLoop() else stopSweeperLoop()
+        if (sweeperEnabled.any { it }) startSweeperLoop() else stopSweeperLoop()
     }
 
     private fun startSweeperLoop() {
         if (!isRunning || sweeperJob?.isActive == true) return
-        val help = sweeperHelp ?: return
-        val normal = sweeperNormal ?: return
-        val check = sweeperCheck ?: return
+        if (sweepers.any { it == null }) return
         sweeperJob = scope?.launch(Dispatchers.Default) {
             while (isActive && isRunning) {
                 lastMeasuredLevels?.let { levels ->
                     val now = System.currentTimeMillis()
-                    if (autoHelpEnabled) {
-                        help.step(levels, now)?.let { onSweepUpdate?.invoke(SweepProcess.AUTO_HELP, it) }
-                    }
-                    if (normalSweepEnabled) {
-                        normal.step(levels, now)?.let { onSweepUpdate?.invoke(SweepProcess.EQ_NORMAL, it) }
-                    }
-                    if (checkSweepEnabled) {
-                        check.step(levels, now)?.let { onSweepUpdate?.invoke(SweepProcess.AUTO_CHECK, it) }
+                    for (i in 0 until DYNAMIC_EQ_COUNT) {
+                        if (!sweeperEnabled[i]) continue
+                        sweepers[i]?.step(levels, now)?.let { step ->
+                            onSweepUpdate?.invoke(SweepProcess.entries[i], step)
+                        }
                     }
                 }
                 delay(SweeperProcessor.TICK_MS)
@@ -299,21 +293,14 @@ class AudioEngine {
     }
 
     private fun resetSweepers() {
-        sweeperHelp?.reset()
-        sweeperNormal?.reset()
-        sweeperCheck?.reset()
+        sweepers.forEach { it?.reset() }
     }
 
-    // === Free support bands (EQ + auto-check processors) ===
+    // === Free support bands (one set per dynamic EQ) ===
 
-    fun setSupportBands(eq: List<SupportBand>, check: List<SupportBand>) {
-        supportBandsEq = eq
-        supportBandsCheck = check
-    }
-
-    /** Sum the free support bands into a spectrum (simulated corrected output). */
+    /** Sum every dynamic EQ's support bands into a spectrum (simulated corrected output). */
     private fun applySupportBands(spectrum: SpectrumFrame): SpectrumFrame {
-        if (supportBandsEq.isEmpty() && supportBandsCheck.isEmpty()) return spectrum
+        if (supportBandsByEq.all { it.isEmpty() }) return spectrum
         val corrected = spectrum.magnitudesDb.copyOf()
         for (i in spectrum.frequencies.indices) {
             corrected[i] += supportGainAt(spectrum.frequencies[i])
@@ -323,9 +310,22 @@ class AudioEngine {
 
     private fun supportGainAt(freqHz: Float): Float {
         var gain = 0f
-        for (band in supportBandsEq) gain += supportTaper(freqHz, band)
-        for (band in supportBandsCheck) gain += supportTaper(freqHz, band)
+        for (eqBands in supportBandsByEq) {
+            for (band in eqBands) gain += supportTaper(freqHz, band)
+        }
         return gain
+    }
+
+    /** Sum a dynamic EQ's free support bands into its per-band gain curve. */
+    private fun addSupportGains(gains: FloatArray, supportBands: List<SupportBand>): FloatArray {
+        if (supportBands.isEmpty()) return gains
+        val out = gains.copyOf()
+        for (b in out.indices) {
+            var extra = 0f
+            for (band in supportBands) extra += supportTaper(bandFrequencies[b], band)
+            out[b] = (out[b] + extra).coerceIn(-DynamicEqConfig.MAX_GAIN_DB, DynamicEqConfig.MAX_GAIN_DB)
+        }
+        return out
     }
 
     private fun supportTaper(freqHz: Float, band: SupportBand): Float {
@@ -503,6 +503,16 @@ class AudioEngine {
         }
         correctedSpectrum = correctedSpectrum?.let { applySupportBands(it) }
 
+        // Per dynamic-EQ gain curves (auto corrections + its own support bands)
+        val eqGainsL = ArrayList<FloatArray>(DYNAMIC_EQ_COUNT)
+        val eqGainsR = ArrayList<FloatArray>(DYNAMIC_EQ_COUNT)
+        for (i in 0 until DYNAMIC_EQ_COUNT) {
+            val autoL = sweepers[i]?.gainsL() ?: FloatArray(bandFrequencies.size)
+            val autoR = sweepers[i]?.gainsR() ?: FloatArray(bandFrequencies.size)
+            eqGainsL.add(addSupportGains(autoL, supportBandsByEq[i]))
+            eqGainsR.add(addSupportGains(autoR, supportBandsByEq[i]))
+        }
+
         return AnalysisResult(
             measuredSpectrum = spectrum,
             correctedSpectrum = correctedSpectrum,
@@ -513,7 +523,9 @@ class AudioEngine {
             correctionIntensity = correctionIntensity,
             cpuLoadPercent = 0f,
             framesAnalyzed = framesAnalyzed,
-            noiseSpectrum = noiseSpectrum
+            noiseSpectrum = noiseSpectrum,
+            dynamicEqGainsL = eqGainsL,
+            dynamicEqGainsR = eqGainsR
         )
     }
 
