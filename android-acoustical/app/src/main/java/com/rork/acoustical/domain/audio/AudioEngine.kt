@@ -9,6 +9,7 @@ import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.EqBand
 import com.rork.acoustical.domain.model.SpectrumFrame
 import com.rork.acoustical.domain.model.StandardFrequencies
+import com.rork.acoustical.domain.model.SupportBand
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -48,6 +49,8 @@ class AudioEngine {
     private var roomCorrector: RoomCorrector? = null
     private var splMeter: SplMeter? = null
     private var noiseProfiler: NoiseProfiler? = null
+    private var sweeper: SweeperProcessor? = null
+    private var sweeperJob: Job? = null
 
     private var config: AudioConfig = AudioConfig.Default
     private var bandFrequencies: FloatArray = StandardFrequencies.tenBand
@@ -63,6 +66,15 @@ class AudioEngine {
     var onNoiseCaptureComplete: (() -> Unit)? = null
     /** Invoked when the engine cannot start (permission denied, mic unavailable). */
     var onStartFailed: ((String) -> Unit)? = null
+    /** Invoked on every "Auto ayuda" sweep step (10 ms cadence). */
+    var onSweepUpdate: ((SweeperProcessor.SweepStep) -> Unit)? = null
+
+    // Shared state between the analysis loop and the sweeper loop
+    @Volatile private var autoHelpEnabled: Boolean = false
+    @Volatile private var lastMeasuredLevels: FloatArray? = null
+    @Volatile private var appCaptureLevels: FloatArray? = null
+    @Volatile private var supportBandsEq: List<SupportBand> = emptyList()
+    @Volatile private var supportBandsCheck: List<SupportBand> = emptyList()
 
     private var framesAnalyzed: Long = 0L
     private var isRunning: Boolean = false
@@ -105,6 +117,7 @@ class AudioEngine {
             maxCaptureFrames = 50,
             gateRange = 6f
         )
+        sweeper = SweeperProcessor(bandFrequencies, newConfig.maxGainDb)
         bands = bandFrequencies.mapIndexed { i, freq ->
             EqBand(index = i, centerFreq = freq, gainDb = 0f, targetGainDb = 0f)
         }.toMutableList()
@@ -160,6 +173,7 @@ class AudioEngine {
 
         audioRecord?.startRecording()
         startAnalysisLoop(bufferSize, fftSize, sampleRate)
+        if (autoHelpEnabled) startSweeperLoop()
         return true
     }
 
@@ -170,6 +184,9 @@ class AudioEngine {
         isRunning = false
         analysisJob?.cancel()
         analysisJob = null
+        sweeperJob?.cancel()
+        sweeperJob = null
+        lastMeasuredLevels = null
         try {
             audioRecord?.stop()
         } catch (e: Exception) {
@@ -190,6 +207,9 @@ class AudioEngine {
         val levels = corrector.getCurrentBandLevels()
         referenceLevels = levels.copyOf()
         isReferenceCaptured = true
+        // Sweeps and corrections restart automatically after every capture
+        corrector.reset()
+        sweeper?.reset()
     }
 
     /**
@@ -201,6 +221,80 @@ class AudioEngine {
     }
 
     fun isReferenceCaptured(): Boolean = isReferenceCaptured
+
+    // === Auto ayuda (fast sweeper with its own mixer) ===
+
+    fun setAutoHelpEnabled(enabled: Boolean) {
+        autoHelpEnabled = enabled
+        if (enabled) startSweeperLoop() else stopSweeperLoop()
+    }
+
+    fun setAutoHelpMixerLevel(level: Float) {
+        sweeper?.mixerLevel = level.coerceIn(0f, 1f)
+    }
+
+    fun isAutoHelpEnabled(): Boolean = autoHelpEnabled
+
+    private fun startSweeperLoop() {
+        if (!isRunning || sweeperJob?.isActive == true) return
+        val sweeper = sweeper ?: return
+        sweeperJob = scope?.launch(Dispatchers.Default) {
+            while (isActive && isRunning && autoHelpEnabled) {
+                lastMeasuredLevels?.let { levels ->
+                    sweeper.step(levels, System.currentTimeMillis())?.let { step ->
+                        onSweepUpdate?.invoke(step)
+                    }
+                }
+                delay(SweeperProcessor.TICK_MS)
+            }
+        }
+    }
+
+    private fun stopSweeperLoop() {
+        sweeperJob?.cancel()
+        sweeperJob = null
+    }
+
+    // === Free support bands (EQ + auto-check processors) ===
+
+    fun setSupportBands(eq: List<SupportBand>, check: List<SupportBand>) {
+        supportBandsEq = eq
+        supportBandsCheck = check
+    }
+
+    /** Sum the free support bands into a spectrum (simulated corrected output). */
+    private fun applySupportBands(spectrum: SpectrumFrame): SpectrumFrame {
+        if (supportBandsEq.isEmpty() && supportBandsCheck.isEmpty()) return spectrum
+        val corrected = spectrum.magnitudesDb.copyOf()
+        for (i in spectrum.frequencies.indices) {
+            corrected[i] += supportGainAt(spectrum.frequencies[i])
+        }
+        return spectrum.copy(magnitudesDb = corrected)
+    }
+
+    private fun supportGainAt(freqHz: Float): Float {
+        var gain = 0f
+        for (band in supportBandsEq) gain += supportTaper(freqHz, band)
+        for (band in supportBandsCheck) gain += supportTaper(freqHz, band)
+        return gain
+    }
+
+    private fun supportTaper(freqHz: Float, band: SupportBand): Float {
+        if (band.gainDb == 0f || band.frequencyHz <= 0f) return 0f
+        val octaves = kotlin.math.abs(kotlin.math.log10(freqHz / band.frequencyHz))
+        val width = 1f / band.q.coerceAtLeast(0.5f)
+        return if (octaves < width) band.gainDb * (1f - octaves / width) else 0f
+    }
+
+    // === Mixed inputs ===
+
+    /**
+     * Publish the latest band levels captured from internal app audio so they
+     * can be mixed with the microphone (all active inputs sound at once).
+     */
+    fun setAppCaptureLevels(levels: FloatArray?) {
+        appCaptureLevels = levels
+    }
 
     fun getBands(): List<EqBand> = bands.toList()
 
@@ -302,6 +396,9 @@ class AudioEngine {
             onNoiseCaptureProgress?.invoke(profiler.getCaptureProgress())
             if (captureDone) {
                 onNoiseCaptureComplete?.invoke()
+                // Sweeps and corrections restart automatically after captures
+                roomCorrector?.reset()
+                sweeper?.reset()
             }
         }
 
@@ -322,6 +419,16 @@ class AudioEngine {
 
         // Aggregate into perceptual bands
         val measuredLevels = corrector.aggregateBands(magnitudesDb, binFreqs)
+        lastMeasuredLevels = measuredLevels
+
+        // Mix every active input: each band level is the strongest of the
+        // microphone and the captured app audio (all inputs sound at once).
+        val capture = appCaptureLevels
+        val effectiveLevels = if (capture != null && capture.size == measuredLevels.size) {
+            FloatArray(measuredLevels.size) { maxOf(measuredLevels[it], capture[it]) }
+        } else {
+            measuredLevels
+        }
 
         // Compute corrections if we have a reference
         var correctedBands = bands.toList()
@@ -329,21 +436,23 @@ class AudioEngine {
         var correctionIntensity = 0f
 
         if (config.correctionEnabled && isReferenceCaptured) {
-            val refLevels = referenceLevels ?: measuredLevels
-            correctedBands = corrector.computeCorrections(refLevels, measuredLevels, bands)
+            val refLevels = referenceLevels ?: effectiveLevels
+            correctedBands = corrector.computeCorrections(refLevels, effectiveLevels, bands)
             bands.clear()
             bands.addAll(correctedBands)
             correctedSpectrum = corrector.applyGainsToSpectrum(spectrum, correctedBands)
             correctionIntensity = corrector.correctionIntensity(correctedBands)
         } else if (config.correctionEnabled && !isReferenceCaptured) {
-            // Without a reference, use a flat target (0 dB across all bands)
+            // Without a reference the corrector falls back to the mean of the
+            // active bands as its neutral point (see RoomCorrector).
             val flatRef = FloatArray(bandFrequencies.size) { 0f }
-            correctedBands = corrector.computeCorrections(flatRef, measuredLevels, bands)
+            correctedBands = corrector.computeCorrections(flatRef, effectiveLevels, bands)
             bands.clear()
             bands.addAll(correctedBands)
             correctedSpectrum = corrector.applyGainsToSpectrum(spectrum, correctedBands)
             correctionIntensity = corrector.correctionIntensity(correctedBands)
         }
+        correctedSpectrum = correctedSpectrum?.let { applySupportBands(it) }
 
         return AnalysisResult(
             measuredSpectrum = spectrum,

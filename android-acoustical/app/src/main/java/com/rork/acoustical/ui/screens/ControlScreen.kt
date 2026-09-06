@@ -490,7 +490,7 @@ fun ControlScreen(
             ) {
                 Button(
                     onClick = { viewModel.toggleEngine() },
-                    modifier = Modifier.weight(1f).height(48.dp),
+                    modifier = Modifier.weight(1f).height(56.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (state.isRunning) CoralAlert else CyanPrimary,
@@ -507,7 +507,7 @@ fun ControlScreen(
                 }
                 Button(
                     onClick = { showAutoCheck = true },
-                    modifier = Modifier.weight(1f).height(48.dp),
+                    modifier = Modifier.weight(1f).height(56.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,

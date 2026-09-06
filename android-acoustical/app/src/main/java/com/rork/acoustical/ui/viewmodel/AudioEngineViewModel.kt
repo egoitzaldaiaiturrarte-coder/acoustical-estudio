@@ -56,6 +56,7 @@ import com.rork.acoustical.domain.model.SplCalibration
 import com.rork.acoustical.domain.model.SplCompensation
 import com.rork.acoustical.domain.model.StereoMode
 import com.rork.acoustical.domain.model.SpectrumFrame
+import com.rork.acoustical.domain.model.SupportBand
 import com.rork.acoustical.domain.model.WorkConfig
 import com.rork.acoustical.domain.model.WorkDevice
 import com.rork.acoustical.domain.model.WorkEnvironmentType
@@ -68,6 +69,7 @@ import com.rork.acoustical.domain.model.DistanceMeasurement
 import com.rork.acoustical.domain.model.DistanceStep
 import com.rork.acoustical.domain.model.GpsPoint
 import com.rork.acoustical.service.AudioAnalysisService
+import com.rork.acoustical.service.InternalCaptureService
 import com.rork.acoustical.service.ProfileStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -166,7 +168,19 @@ class AudioEngineViewModel(
         val bandsL: List<EqBand> = emptyList(),
         val bandsR: List<EqBand> = emptyList(),
         val eqLinked: Boolean = true,
-        val eqChannel: EqChannel = EqChannel.LEFT
+        val eqChannel: EqChannel = EqChannel.LEFT,
+        // Processors: Auto ayuda / EQ normal / Auto-chequeo
+        val autoHelpActive: Boolean = true,
+        val autoHelpMixerLevel: Float = 0.8f,
+        val sweepBandHz: Float = 0f,
+        val sweepGainDb: Float = 0f,
+        val sweepIntervalMs: Float = 0f,
+        val sweepSmoothingMs: Float = 0f,
+        val supportBandsEq: List<SupportBand> = SupportBand.defaults(),
+        val supportBandsCheck: List<SupportBand> = SupportBand.defaults(),
+        // Simultaneous digital inputs
+        val isAppCaptureActive: Boolean = false,
+        val isExternalInputActive: Boolean = false
     ) {
         val sweepFactor: Float
             get() = when {
@@ -205,6 +219,8 @@ class AudioEngineViewModel(
     // Manual per-channel EQ trims on top of the engine's correction gains
     private val eqOffsetsL = mutableListOf<Float>()
     private val eqOffsetsR = mutableListOf<Float>()
+    // Throttle for the 100 Hz sweeper status updates
+    private var lastSweepUiMs = 0L
 
     init {
         initInputs()
@@ -269,10 +285,37 @@ class AudioEngineViewModel(
                     )
                 }
             }
+            eng.onSweepUpdate = { step ->
+                val now = System.currentTimeMillis()
+                if (now - lastSweepUiMs >= 100) {
+                    lastSweepUiMs = now
+                    _uiState.update { st ->
+                        st.copy(
+                            sweepBandHz = step.centerFreqHz,
+                            sweepGainDb = step.gainDb,
+                            sweepIntervalMs = step.sweepIntervalMs,
+                            sweepSmoothingMs = step.smoothingMs
+                        )
+                    }
+                }
+            }
         }
 
         // Show the EQ faders immediately (flat) instead of an empty placeholder
         syncBandsFromEngine()
+
+        // Publish the default support bands and keep the app-capture feed alive
+        engine?.setSupportBands(_uiState.value.supportBandsEq, _uiState.value.supportBandsCheck)
+        viewModelScope.launch(Dispatchers.Default) {
+            while (isActive) {
+                engine?.setAppCaptureLevels(
+                    if (_uiState.value.isAppCaptureActive && InternalCaptureService.isCapturing) {
+                        InternalCaptureService.latestLevels
+                    } else null
+                )
+                delay(50)
+            }
+        }
 
         // Initialize console manager
         consoleManager = ConsoleManager().also { cm ->
@@ -593,6 +636,8 @@ class AudioEngineViewModel(
     private fun initInputs() {
         val inputs = listOf(
             InputTarget("in_mic", InputType.MIC, "Micrófono del móvil", isActive = true, subtitle = "Motor parado"),
+            InputTarget("in_app", InputType.APP_CAPTURE, "Audio interno de apps", isActive = false, subtitle = "Spotify, YouTube… (captura digital)"),
+            InputTarget("in_external", InputType.EXTERNAL, "Entrada externa (otro móvil)", isActive = false, subtitle = "Disponible con sesión activa"),
             InputTarget("in_usb", InputType.USB, "USB Audio", isActive = false, subtitle = "Interface USB"),
             InputTarget("in_console", InputType.CONSOLE_IN, "Consola In", isActive = false, subtitle = "Entrada OSC"),
             InputTarget("in_ref", InputType.FILE_REFERENCE, "Archivo / Referencia", isActive = true, subtitle = "Fuente de señal")
@@ -608,6 +653,18 @@ class AudioEngineViewModel(
                     when (input.id) {
                         "in_mic" -> input.copy(
                             subtitle = if (state.isRunning) "Motor activo" else "Motor parado"
+                        )
+                        "in_app" -> input.copy(
+                            isActive = state.isAppCaptureActive,
+                            subtitle = if (state.isAppCaptureActive) "Capturando audio interno" else "Toca Capturar en Procesos"
+                        )
+                        "in_external" -> input.copy(
+                            isActive = state.isExternalInputActive && state.session.isActive,
+                            subtitle = when {
+                                !state.session.isActive -> "Requiere sesión activa"
+                                state.isExternalInputActive -> "Recibiendo de otro móvil"
+                                else -> "Disponible"
+                            }
                         )
                         "in_usb" -> input.copy(
                             isActive = input.isActive && (
@@ -631,6 +688,11 @@ class AudioEngineViewModel(
 
     /** Activate or deactivate an input from the routing screen. */
     fun toggleInputActive(id: String) {
+        if (id == "in_external") {
+            _uiState.update { it.copy(isExternalInputActive = !it.isExternalInputActive) }
+            updateInputs()
+            return
+        }
         _uiState.update { state ->
             state.copy(
                 inputs = state.inputs.map { input ->
@@ -650,6 +712,93 @@ class AudioEngineViewModel(
                 }
             )
         }
+    }
+
+    // === Processors: Auto ayuda / EQ normal / Auto-chequeo ===
+
+    /** Toggle the fast sweeper ("Auto ayuda"). Starts the engine if stopped. */
+    fun setAutoHelpEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(autoHelpActive = enabled) }
+        if (enabled && !_uiState.value.isRunning) {
+            startEngine()
+        } else {
+            engine?.setAutoHelpEnabled(enabled && _uiState.value.isRunning)
+        }
+    }
+
+    /** The sweeper's own mixer level (0..1), independent from the rest. */
+    fun setAutoHelpMixerLevel(level: Float) {
+        val clamped = level.coerceIn(0f, 1f)
+        _uiState.update { it.copy(autoHelpMixerLevel = clamped) }
+        engine?.setAutoHelpMixerLevel(clamped)
+    }
+
+    /** Edit one of the EQ processor's four free-frequency support bands. */
+    fun setSupportBandEq(index: Int, frequencyHz: Float, gainDb: Float) {
+        _uiState.update { st ->
+            st.copy(
+                supportBandsEq = st.supportBandsEq.mapIndexed { i, band ->
+                    if (i == index) band.copy(frequencyHz = frequencyHz, gainDb = gainDb) else band
+                }
+            )
+        }
+        pushSupportBands()
+    }
+
+    /** Edit one of the auto-check processor's four free-frequency support bands. */
+    fun setSupportBandCheck(index: Int, frequencyHz: Float, gainDb: Float) {
+        _uiState.update { st ->
+            st.copy(
+                supportBandsCheck = st.supportBandsCheck.mapIndexed { i, band ->
+                    if (i == index) band.copy(frequencyHz = frequencyHz, gainDb = gainDb) else band
+                }
+            )
+        }
+        pushSupportBands()
+    }
+
+    private fun pushSupportBands() {
+        val st = _uiState.value
+        engine?.setSupportBands(st.supportBandsEq, st.supportBandsCheck)
+    }
+
+    // === Internal app-audio capture (one of the simultaneous inputs) ===
+
+    /** The consent intent for capturing internal app audio (Android 10+). */
+    fun captureRequestIntent(): Intent? {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return null
+        val manager = getApplication<Application>()
+            .getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? android.media.projection.MediaProjectionManager
+        return manager?.createScreenCaptureIntent()
+    }
+
+    /** Called from Ruteos with the projection consent result. */
+    fun onCaptureResult(resultCode: Int, data: Intent?) {
+        val context = getApplication<Application>()
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q || data == null) return
+        val intent = Intent(context, InternalCaptureService::class.java).apply {
+            action = InternalCaptureService.ACTION_START
+            putExtra(InternalCaptureService.EXTRA_RESULT_CODE, resultCode)
+            putExtra(InternalCaptureService.EXTRA_DATA, data)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+        _uiState.update { it.copy(isAppCaptureActive = true) }
+        updateInputs()
+    }
+
+    fun stopAppCapture() {
+        val context = getApplication<Application>()
+        context.startService(
+            Intent(context, InternalCaptureService::class.java).apply {
+                action = InternalCaptureService.ACTION_STOP
+            }
+        )
+        _uiState.update { it.copy(isAppCaptureActive = false) }
+        updateInputs()
     }
 
     // === Output Management ===
@@ -1243,6 +1392,8 @@ class AudioEngineViewModel(
         Log.d("AudioEngineVM", "startEngine: started=$started")
         if (started) {
             syncBandsFromEngine()
+            engine?.setSupportBands(_uiState.value.supportBandsEq, _uiState.value.supportBandsCheck)
+            engine?.setAutoHelpEnabled(_uiState.value.autoHelpActive)
             _uiState.update { it.copy(isRunning = true) }
             startNotificationUpdates()
         } else {

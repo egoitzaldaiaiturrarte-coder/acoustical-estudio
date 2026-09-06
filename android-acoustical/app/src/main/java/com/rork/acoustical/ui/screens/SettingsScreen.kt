@@ -39,6 +39,7 @@ import com.rork.acoustical.domain.model.AnalysisInterval
 import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.FftSize
 import com.rork.acoustical.domain.model.SampleRate
+import com.rork.acoustical.ui.components.ChipSelector
 import com.rork.acoustical.ui.components.FineDelayControl
 import com.rork.acoustical.ui.components.GlassCard
 import com.rork.acoustical.ui.theme.AmberAccent
@@ -84,64 +85,15 @@ fun SettingsScreen(
         ) {
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Sample Rate
+            // Motor — valores fijos: todo lo automático ya no se toca
             GlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("Frecuencia de muestreo", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text("Hasta 96 kHz. Mayor = más detalle espectral.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        SampleRate.entries.forEach { rate ->
-                            ChipSelector(rate.label, config.sampleRate == rate) { viewModel.setSampleRate(rate) }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text("Nyquist: ${config.sampleRate.nyquist / 1000} kHz", style = MaterialTheme.typography.labelSmall, color = CyanGlow)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // FFT Size
-            GlassCard(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("Tamaño FFT", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text("Mayor = mejor resolución en frecuencia.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        FftSize.entries.forEach { fft ->
-                            ChipSelector(fft.label, config.fftSize == fft) { viewModel.setFftSize(fft) }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text("${config.fftSize.binCount} bins de frecuencia", style = MaterialTheme.typography.labelSmall, color = CyanGlow)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Analysis Interval
-            GlassCard(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("Intervalo de análisis", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text("Controla el consumo de recursos.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        AnalysisInterval.entries.forEach { interval ->
-                            ChipSelector(interval.label, config.analysisInterval == interval, modifier = Modifier.fillMaxWidth()) {
-                                viewModel.setAnalysisInterval(interval)
-                            }
-                        }
-                    }
+                    Text("Motor — valores fijos", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Muestreo: 96 kHz fijo · Nyquist 48 kHz", style = MaterialTheme.typography.labelSmall, color = CyanGlow)
+                    Text("Umbral de ruido: 120 (fijo, sin control)", style = MaterialTheme.typography.labelSmall, color = CyanGlow)
+                    Text("Barrido y suavizado: automáticos por frecuencia", style = MaterialTheme.typography.labelSmall, color = CyanGlow)
+                    Text("Procesos, mezcladores y bandas de apoyo: en Ruteos", style = MaterialTheme.typography.labelSmall, color = AmberAccent)
                 }
             }
 
@@ -226,93 +178,6 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Max Gain
-            GlassCard(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("Ganancia máxima", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text("Límite de corrección por banda.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("0 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("±%.0f dB".format(config.maxGainDb), style = MaterialTheme.typography.titleSmall, color = CyanGlow, fontWeight = FontWeight.SemiBold)
-                        Text("50 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Slider(
-                        value = config.maxGainDb,
-                        onValueChange = { viewModel.setMaxGainDb(it) },
-                        valueRange = 0f..50f,
-                        steps = 49
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Smoothing
-            GlassCard(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("Suavizado", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text("Evita saltos bruscos en la corrección.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Lento", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("%.2f".format(config.smoothingFactor), style = MaterialTheme.typography.titleSmall, color = CyanGlow, fontWeight = FontWeight.SemiBold)
-                        Text("Rápido", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Slider(
-                        value = config.smoothingFactor,
-                        onValueChange = { viewModel.setSmoothingFactor(it) },
-                        valueRange = 0.05f..1f
-                    )
-                    if (config.needsExtendedSmoothing) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "Suavizado efectivo: %.3f — extendido automáticamente por el límite alto (%.0f dB)".format(
-                                config.effectiveSmoothingFactor,
-                                config.maxGainDb
-                            ),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = AmberAccent
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Noise Floor
-            GlassCard(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("Umbral de ruido", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text("Nivel por debajo del cual se ignora la señal.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("-120 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("%.0f dB".format(config.noiseFloorDb), style = MaterialTheme.typography.titleSmall, color = CyanGlow, fontWeight = FontWeight.SemiBold)
-                        Text("-40 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Slider(
-                        value = config.noiseFloorDb,
-                        onValueChange = { viewModel.setNoiseFloorDb(it) },
-                        valueRange = -120f..-40f
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
             // Noise Subtraction
             GlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -343,28 +208,3 @@ fun SettingsScreen(
     }
 }
 
-@Composable
-private fun ChipSelector(
-    label: String,
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    val containerColor = if (selected) CyanPrimary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-    val textColor = if (selected) CyanGlow else MaterialTheme.colorScheme.onSurfaceVariant
-
-    androidx.compose.material3.Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(10.dp),
-        color = containerColor,
-        modifier = modifier
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = textColor,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-        )
-    }
-}
