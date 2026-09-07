@@ -1,4 +1,22 @@
-# Cómo compilar Acoustical Estudio (Windows)
+# Cómo instalar Acoustical Estudio (Windows)
+
+## Opción A — sin compilar nada (recomendada)
+
+1. El proyecto incluye un flujo de CI (`.github/workflows/build-windows.yml`, en
+   la raíz del repositorio) que compila **todo en la nube**: app, plugin VST,
+   driver ASIO 32/64 bits y el instalador todo-en-uno.
+2. Entra en la pestaña **Actions** del repositorio → workflow "Compilar
+   Acoustical Estudio (Windows)" → **Run workflow** (o crea una etiqueta `v1.0.0`
+   para que además se publique en **Releases**).
+3. Descarga `AcousticalEstudioSetup.exe` (y su `.sha256`) del artefacto o del
+   release, y ejecútalo. Windows pedirá permiso de administrador; dentro,
+   el instalador configura app + plugin + driver ASIO + drivers ADB.
+4. A partir de ahí **nunca más**: cuando actualices la app del móvil, en
+   Ajustes > PC/Windows descargas el paquete nuevo (con el enlace del
+   instalador) y el PC se actualiza solo al conectarlo por USB (verifica el
+   SHA-256 y pide permiso de Windows). Sin compilar jamás.
+
+## Opción B — compilar en tu propio PC (opcional)
 
 ## Lo que necesitas (una sola vez)
 

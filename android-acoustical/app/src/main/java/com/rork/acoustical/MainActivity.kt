@@ -33,6 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.rork.acoustical.service.PhoneSyncManager
 import com.rork.acoustical.ui.navigation.AppNavigation
 import com.rork.acoustical.ui.theme.AppTheme
 import com.rork.acoustical.ui.theme.AmberAccent
@@ -78,6 +79,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Servidor de sincronización/actualización por USB (solo loopback + adb)
+        PhoneSyncManager.get(applicationContext).start()
         updateMissingPermissions()
         requestPendingPermissions()
         handleShortcutIntent(intent)
