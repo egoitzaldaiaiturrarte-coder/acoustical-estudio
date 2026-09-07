@@ -37,16 +37,28 @@ $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path "$dist\app", "$dist\plugin", `
     "$dist\bridge\x64", "$dist\bridge\x86" | Out-Null
 
-Copy-Item "build\app\Release\AcousticalEstudio.exe" "$dist\app\" -Force
+# JUCE deja los artefactos en <target>_artefacts\<config>; buscamos en todo build\
+$appExe = Get-ChildItem "build" -Recurse -Filter "AcousticalEstudio.exe" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
+if (-not $appExe) { throw "No se encontró AcousticalEstudio.exe en build\" }
+Copy-Item $appExe.FullName "$dist\app\" -Force
 # adb incluido (si está en tools\adb, se copia con todo)
 if (Test-Path "tools\adb") { Copy-Item "tools\adb" "$dist\app\adb" -Recurse -Force }
 
-Get-ChildItem "build\plugin" -Recurse -Include *.vst3,*.dll |
-    Where-Object { $_.Name -like "Acoustical*" } |
-    Copy-Item -Destination "$dist\plugin\" -Force -ErrorAction SilentlyContinue
+# Plugin VST3 (carpeta-bundle) y VST2 (dll), si se compiló
+$vst3 = Get-ChildItem "build" -Recurse -Directory -Filter "*.vst3" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
+if ($vst3) { Copy-Item $vst3.FullName "$dist\plugin\" -Recurse -Force }
+$vst2 = Get-ChildItem "build" -Recurse -Filter "AcousticalDynamicEq.dll" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
+if ($vst2) { Copy-Item $vst2.FullName "$dist\plugin\" -Force }
 
-Copy-Item "build-bridge64\asio-bridge\Release\AcousticalBridge.dll" "$dist\bridge\x64\" -Force
-Copy-Item "build-bridge32\asio-bridge\Release\AcousticalBridge.dll" "$dist\bridge\x86\" -Force
+$bridge64 = Get-ChildItem "build-bridge64" -Recurse -Filter "AcousticalBridge.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+$bridge32 = Get-ChildItem "build-bridge32" -Recurse -Filter "AcousticalBridge.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $bridge64) { throw "No se encontró AcousticalBridge.dll x64" }
+if (-not $bridge32) { throw "No se encontró AcousticalBridge.dll Win32" }
+Copy-Item $bridge64.FullName "$dist\bridge\x64\" -Force
+Copy-Item $bridge32.FullName "$dist\bridge\x86\" -Force
 
 Write-Host ""
 Write-Host "=== Todo compilado en dist\ ===" -ForegroundColor Green

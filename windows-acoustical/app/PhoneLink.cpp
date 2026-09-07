@@ -1,8 +1,12 @@
 #include "PhoneLink.h"
 
+#include <juce_cryptography/juce_cryptography.h>
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
+
+#include <algorithm>
 
 bool installAdbDriverOnce(const juce::File& driverFolder) {
 #ifdef _WIN32
@@ -22,6 +26,11 @@ bool installAdbDriverOnce(const juce::File& driverFolder) {
 
 PhoneLink::PhoneLink(juce::File adbExecutable) : adb_(std::move(adbExecutable)) {}
 
+PhoneLink::~PhoneLink() {
+    stopWatchdog();
+    if (updateThread_.joinable()) updateThread_.join();
+}
+
 void PhoneLink::startWatchdog() {
     startTimerHz(1);   // ~cada 1 s; el propio sondeo de adb no necesita más
 }
@@ -38,11 +47,21 @@ juce::String PhoneLink::runAdb(const juce::String& args, int timeoutMs) {
 
 void PhoneLink::timerCallback() { pollDevices(); }
 
+void PhoneLink::setStatus(const juce::String& s) {
+    const juce::ScopedLock lock(statusLock_);
+    lastInfo_ = s;
+}
+
+juce::String PhoneLink::lastSyncInfo() const {
+    const juce::ScopedLock lock(statusLock_);
+    return lastInfo_;
+}
+
 void PhoneLink::pollDevices() {
     if (!adb_.existsAsFile()) {
         if (state_.load() != State::NoAdb) {
             state_.store(State::NoAdb);
-            lastInfo_ = "adb no encontrado";
+            setStatus("adb no encontrado");
         }
         return;
     }
@@ -61,7 +80,7 @@ void PhoneLink::pollDevices() {
     if (serial.isEmpty()) {
         deviceSerial_ = {};
         state_.store(State::WaitingForPhone);
-        lastInfo_ = "Esperando el móvil…";
+        setStatus("Esperando el móvil…");
         driverAttempted_ = false;
         return;
     }
@@ -73,8 +92,9 @@ void PhoneLink::pollDevices() {
         runAdb("-s " + serial + " forward tcp:" + juce::String(SYNC_PORT)
                + " tcp:" + juce::String(SYNC_PORT));
         state_.store(State::Connected);
-        lastInfo_ = "Móvil conectado: " + serial;
+        setStatus("Móvil conectado: " + serial);
         requestSync();
+        checkForUpdate();
     }
 }
 
@@ -99,7 +119,6 @@ bool PhoneLink::connectAndExchange(const juce::var& send, juce::var& reply) {
 
 bool PhoneLink::pushSync(const juce::var& payload) {
     juce::var reply;
-    auto msg = juce::DynamicObject::ObjectMap{};
     auto obj = new juce::DynamicObject();
     obj->setProperty("type", "push");
     obj->setProperty("payload", payload);
@@ -107,7 +126,7 @@ bool PhoneLink::pushSync(const juce::var& payload) {
         state_.store(State::SyncError);
         return false;
     }
-    lastInfo_ = "Ajustes enviados al móvil";
+    setStatus("Ajustes enviados al móvil");
     return true;
 }
 
@@ -117,10 +136,239 @@ bool PhoneLink::requestSync() {
     obj->setProperty("type", "pull");
     if (!connectAndExchange(juce::var(obj), reply)) {
         state_.store(State::SyncError);
-        lastInfo_ = "Abre Acoustical en el móvil para sincronizar";
+        setStatus("Abre Acoustical en el móvil para sincronizar");
         return false;
     }
-    lastInfo_ = "Sincronizado con el móvil";
+    setStatus("Sincronizado con el móvil");
     if (onSync) onSync(reply);
     return true;
+}
+
+// ============================================================
+// Actualización automática desde el móvil
+// ============================================================
+
+PhoneLink::WindowsUpdateInfo PhoneLink::lastUpdateInfo() const {
+    const std::lock_guard<std::mutex> lock(updateMutex_);
+    return updateInfo_;
+}
+
+void PhoneLink::checkForUpdate() {
+    if (!updateRunning_.compare_exchange_strong(false, true)) return;
+    if (updateThread_.joinable()) updateThread_.join();
+    updateThread_ = std::thread([this] {
+        runUpdateCheck();
+        updateRunning_.store(false);
+    });
+}
+
+/** GET por el túnel adb; devuelve las cabeceras ("" si falla) y el cuerpo. */
+juce::String PhoneLink::httpGet(const juce::String& path, juce::MemoryBlock& body, int timeoutMs) {
+    body.setSize(0);
+    juce::StreamingSocket socket;
+    if (!socket.connect("127.0.0.1", SYNC_PORT, timeoutMs)) return {};
+    const auto request = "GET " + path + " HTTP/1.0\r\nHost: phone\r\nConnection: close\r\n\r\n";
+    const auto utf8 = request.toUTF8();
+    if (!socket.write(utf8.getAddress(), static_cast<int>(utf8.sizeInBytes() - 1))) {
+        socket.close();
+        return {};
+    }
+
+    juce::MemoryBlock raw;
+    char buffer[16384];
+    for (;;) {
+        const int n = socket.read(buffer, sizeof(buffer), false);
+        if (n <= 0) break;
+        raw.append(buffer, static_cast<size_t>(n));
+    }
+    socket.close();
+
+    const char* p = static_cast<const char*>(raw.getData());
+    const int size = static_cast<int>(raw.getSize());
+    int headerEnd = -1;
+    for (int i = 0; i + 3 < size; ++i) {
+        if (p[i] == '\r' && p[i + 1] == '\n' && p[i + 2] == '\r' && p[i + 3] == '\n') {
+            headerEnd = i;
+            break;
+        }
+    }
+    if (headerEnd < 0) return {};
+
+    const auto headers = juce::String::fromUTF8(p, headerEnd);
+    const int status = headers.fromFirstOccurrenceOf(" ", false, false)
+                            .upToFirstOccurrenceOf(" ", false, false).getIntValue();
+    if (status != 200) return {};
+    body.append(p + headerEnd + 4, static_cast<size_t>(size - headerEnd - 4));
+    return headers;
+}
+
+/** Descarga en streaming (ideal para un instalador de decenas de MB). */
+bool PhoneLink::httpDownloadToFile(const juce::String& path, const juce::File& dest, juce::int64 maxBytes) {
+    juce::StreamingSocket socket;
+    if (!socket.connect("127.0.0.1", SYNC_PORT, 3000)) return false;
+    const auto request = "GET " + path + " HTTP/1.0\r\nHost: phone\r\nConnection: close\r\n\r\n";
+    const auto utf8 = request.toUTF8();
+    if (!socket.write(utf8.getAddress(), static_cast<int>(utf8.sizeInBytes() - 1))) {
+        socket.close();
+        return false;
+    }
+
+    juce::MemoryBlock pending;
+    char buffer[65536];
+    int headerEnd = -1;
+    while (headerEnd < 0) {
+        const int n = socket.read(buffer, sizeof(buffer), false);
+        if (n <= 0) break;
+        pending.append(buffer, static_cast<size_t>(n));
+        const char* p = static_cast<const char*>(pending.getData());
+        const int size = static_cast<int>(pending.getSize());
+        for (int i = 0; i + 3 < size; ++i) {
+            if (p[i] == '\r' && p[i + 1] == '\n' && p[i + 2] == '\r' && p[i + 3] == '\n') {
+                headerEnd = i;
+                break;
+            }
+        }
+        if (headerEnd < 0 && size > 1024 * 1024) { socket.close(); return false; }
+    }
+    if (headerEnd < 0) { socket.close(); return false; }
+
+    const char* p = static_cast<const char*>(pending.getData());
+    const auto headers = juce::String::fromUTF8(p, headerEnd);
+    const int status = headers.fromFirstOccurrenceOf(" ", false, false)
+                            .upToFirstOccurrenceOf(" ", false, false).getIntValue();
+    if (status != 200) { socket.close(); return false; }
+
+    juce::FileOutputStream out(dest);
+    if (!out.openedOk()) { socket.close(); return false; }
+
+    const int preBody = static_cast<int>(pending.getSize()) - (headerEnd + 4);
+    juce::int64 total = 0;
+    if (preBody > 0) {
+        out.write(p + headerEnd + 4, static_cast<size_t>(preBody));
+        total += preBody;
+    }
+    while (total < maxBytes) {
+        const int n = socket.read(buffer, sizeof(buffer), false);
+        if (n <= 0) break;
+        out.write(buffer, static_cast<size_t>(n));
+        total += n;
+    }
+    out.flush();
+    socket.close();
+    return total > 0;
+}
+
+juce::String PhoneLink::installedVersion() const {
+#ifdef JUCE_WINDOWS
+    auto v = juce::WindowsRegistry::getValue("HKLM\\SOFTWARE\\Acoustical\\Version");
+    if (v.isEmpty())
+        v = juce::WindowsRegistry::getValue("HKLM\\SOFTWARE\\WOW6432Node\\Acoustical\\Version");
+    return v.isEmpty() ? juce::String("0.0.0") : v.trim();
+#else
+    return "0.0.0";
+#endif
+}
+
+int PhoneLink::compareVersions(const juce::String& a, const juce::String& b) {
+    const auto ta = juce::StringArray::fromTokens(a, ".", {});
+    const auto tb = juce::StringArray::fromTokens(b, ".", {});
+    const int n = std::max(ta.size(), tb.size());
+    for (int i = 0; i < n; ++i) {
+        const int va = i < ta.size() ? ta[i].getIntValue() : 0;
+        const int vb = i < tb.size() ? tb[i].getIntValue() : 0;
+        if (va != vb) return va < vb ? -1 : 1;
+    }
+    return 0;
+}
+
+/** Lanza el instalador con permisos de administrador: Windows muestra el UAC,
+ *  así que el usuario siempre da el visto bueno final. */
+bool PhoneLink::launchInstaller(const juce::File& installer) const {
+#ifdef JUCE_WINDOWS
+    const auto path = installer.getFullPathName();
+    const auto params = juce::String(
+        "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS");
+    SHELLEXECUTEINFOW sei {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_DEFAULT;
+    sei.lpVerb = L"runas";
+    sei.lpFile = path.toWideCharPointer();
+    sei.lpParameters = params.toWideCharPointer();
+    sei.nShow = SW_SHOWNORMAL;
+    return ShellExecuteExW(&sei) != FALSE;
+#else
+    juce::ignoreUnused(installer);
+    return false;
+#endif
+}
+
+void PhoneLink::runUpdateCheck() {
+    setStatus("Comprobando versión con el móvil…");
+    juce::MemoryBlock body;
+    if (httpGet("/manifest", body).isEmpty()) return; // el móvil aún no sirve HTTP: silencio
+
+    const auto manifest = juce::JSON::parse(
+        juce::String::fromUTF8(static_cast<const char*>(body.getData()), static_cast<int>(body.getSize())));
+    auto* obj = manifest.getDynamicObject();
+    if (obj == nullptr) { setStatus("Respuesta del móvil no válida"); return; }
+
+    WindowsUpdateInfo info;
+    if (auto* wObj = obj->getProperty("windows").getDynamicObject()) {
+        info.version = wObj->getProperty("version").toString();
+        info.sha256 = wObj->getProperty("sha256").toString();
+        info.sizeBytes = static_cast<juce::int64>(static_cast<double>(wObj->getProperty("size", 0.0)));
+        info.hasPayload = static_cast<bool>(wObj->getProperty("hasPayload", false));
+        info.url = wObj->getProperty("url").toString();
+    }
+    {
+        const std::lock_guard<std::mutex> lock(updateMutex_);
+        updateInfo_ = info;
+    }
+
+    const auto local = installedVersion();
+    if (info.version.isEmpty() || compareVersions(info.version, local) <= 0) {
+        setStatus("Acoustical al día (v" + local + ")");
+        return;
+    }
+
+    if (!info.hasPayload || info.sha256.isEmpty()) {
+        setStatus("Versión " + info.version + " en el móvil: descárgala en la app (Ajustes > PC/Windows)");
+        return;
+    }
+
+    // Todo a una carpeta temporal dedicada; nunca se ejecuta nada más que el
+    // instalador verificado con su SHA-256.
+    setStatus("Actualizando a " + info.version + ": descargando por USB…");
+    const auto tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                             .getChildFile("AcousticalUpdate");
+    tempDir.deleteRecursively();
+    if (!tempDir.createDirectory().wasOk()) {
+        setStatus("No se pudo preparar la actualización");
+        return;
+    }
+    const auto installer = tempDir.getChildFile("AcousticalEstudioSetup.exe");
+    if (!httpDownloadToFile("/payload", installer, MAX_PAYLOAD_BYTES)) {
+        setStatus("Descarga fallida: vuelve a conectar el móvil");
+        tempDir.deleteRecursively();
+        return;
+    }
+
+    // Verificación estricta antes de ejecutar: tamaño y SHA-256 del manifest
+    if (info.sizeBytes > 0 && installer.getSize() != info.sizeBytes) {
+        setStatus("Actualización cancelada: tamaño incorrecto");
+        tempDir.deleteRecursively();
+        return;
+    }
+    const auto hash = juce::SHA256(installer).toHexString();
+    if (hash.equalsIgnoreCase(info.sha256) == false) {
+        setStatus("Actualización cancelada: la verificación SHA-256 no coincide");
+        tempDir.deleteRecursively();
+        return;
+    }
+
+    setStatus("Instalando " + info.version + "… (Windows pedirá permiso)");
+    if (launchInstaller(installer))
+        setStatus("Versión " + info.version + " instalándose: Acoustical se reiniciará");
+    else
+        setStatus("No se pudo iniciar el instalador (falta el permiso de administrador)");
 }

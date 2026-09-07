@@ -20,6 +20,7 @@ target_link_libraries(AcousticalEstudio PRIVATE
     juce::juce_gui_extra
     juce::juce_audio_devices
     juce::juce_audio_utils
+    juce::juce_cryptography
     acoustical_engine
     PUBLIC
     juce::juce_recommended_config_flags

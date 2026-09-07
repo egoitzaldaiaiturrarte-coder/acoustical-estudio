@@ -53,6 +53,12 @@ Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Registry]
+; Versión instalada: el vigilante USB la compara con la que anuncia el móvil
+; para saber si hay actualización (escrita en ambas vistas, 64 y 32 bits)
+Root: HKLM64; Subkey: "SOFTWARE\Acoustical"; ValueType: string; ValueName: "Version"; \
+  ValueData: "{#AppVersion}"; Flags: uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\Acoustical"; ValueType: string; ValueName: "Version"; \
+  ValueData: "{#AppVersion}"; Flags: uninsdeletekey
 ; Arranque automático: la app arranca al iniciar Windows y su vigilante USB
 ; abre/sincroniza en cuanto se conecta el móvil
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \

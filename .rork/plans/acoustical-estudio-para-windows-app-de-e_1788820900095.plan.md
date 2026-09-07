@@ -47,6 +47,9 @@ Versión de escritorio de Acoustical para Windows 10: se instala sola al conecta
 - Sistema de presets con nombre, exportable e importable, sincronizados con el móvil.
 - Atajos de teclado (activar ecuas, congelar corrección, cambiar de preset) y modo oscuro profundo estilo "Deep Ocean", en español, igual que el móvil.
 
-## 8. Cómo se entrega y se valida
-- Código fuente completo de la app, del driver ASIO virtual, del cable virtual y del plugin VST, más el instalador todo-en-uno, listos para compilar en tu PC Windows con instrucciones de un solo paso.
-- Aviso importante: en este entorno solo hay compiladores de móvil y web, no de Windows, así que no puedo compilar ni probar el ejecutable de Windows aquí. La compilación final se hará en tu PC siguiendo una guía sencilla que te dejaré preparada; si algo falla al compilarlo, lo corregimos juntos.
+## 8. Cómo se entrega y se valida (actualizado: sin compilar nunca en Windows)
+- El instalador todo-en-uno se compila automáticamente en la nube (flujo de CI en `.github/workflows/build-windows.yml`): el usuario solo descarga `AcousticalEstudioSetup.exe` de Actions/Releases y lo ejecuta una vez. En el PC no se compila nada, nunca.
+- A partir de ahí, la actualización es automática desde el móvil: la app Android lleva una tarjeta "PC / Windows" en Ajustes donde se descarga el paquete nuevo (instalador con versión en el nombre); el móvil lo guarda verificado con SHA-256 y lo sirve al PC por USB.
+- El programa residente de Windows, al detectar el móvil, pregunta la versión al móvil (manifest), se descarga el instalador por el propio cable, verifica tamaño y SHA-256 antes de ejecutar nada, y lanza la instalación silenciosa con el aviso de permiso de Windows (UAC). El usuario siempre da el visto bueno final.
+- El móvil solo sirve su servidor en 127.0.0.1 (loopback): accesible únicamente por el reenvío de puertos de adb (cable), nunca por Wi-Fi.
+- Lo compilable aquí queda verificado: la app Android compila en verde y el motor C++ pasa la comprobación de sintaxis. El ejecutable de Windows final lo produce la nube; si el CI reporta un fallo de compilación, se corrige y se repite.
