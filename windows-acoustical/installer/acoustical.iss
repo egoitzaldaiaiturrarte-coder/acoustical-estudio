@@ -4,7 +4,7 @@
 
 #define AppName "Acoustical Estudio"
 #define AppVersion "1.0.0"
-#define AppExe "AcousticalEstudio.exe"
+#define AppExe "Acoustical Estudio.exe"
 
 [Setup]
 AppId={{A7C3E8F1-5B2D-4A9C-8E1F-Acoustical01}}
@@ -39,7 +39,7 @@ Source: "..\dist\app\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "..\dist\plugin\Acoustical Dynamic EQ.vst3"; DestDir: "{cf}\VST3"; \
   Flags: recursesubdirs ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
 ; Plugin VST2 (x64), si se compiló
-Source: "..\dist\plugin\AcousticalDynamicEq.dll"; DestDir: "{cf}\Steinberg\VstPlugins"; \
+Source: "..\dist\plugin\Acoustical Dynamic EQ.dll"; DestDir: "{cf}\Steinberg\VstPlugins"; \
   Flags: ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
 ; Driver ASIO x64 y x86 (Cubase 5 de 32 y 64 bits)
 Source: "..\dist\bridge\x64\AcousticalBridge.dll"; DestDir: "{app}\bridge\x64"; Flags: ignoreversion
