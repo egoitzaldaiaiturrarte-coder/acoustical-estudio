@@ -5,6 +5,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <AcousticalEngine.h>
+#include "Theme.h"
 
 class EqCanvas : public juce::Component {
 public:
