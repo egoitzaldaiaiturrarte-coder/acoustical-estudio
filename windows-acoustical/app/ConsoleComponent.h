@@ -79,7 +79,9 @@ public:
         // === Pestañas ===
         spectrumView_ = std::make_unique<SpectrumView>();
         routingMatrix_ = std::make_unique<RoutingMatrix>(deviceManager_);
-        settingsPanel_ = std::make_unique<SettingsPanel>(engine_);
+        settingsPanel_ = std::make_unique<SettingsPanel>(engine_, [this](bool active) {
+            generatorActive_.store(active);
+        });
         tabs_ = std::make_unique<juce::TabbedComponent>(juce::TabbedButtonBar::TabsAtTop);
         tabs_->addTab("EQ", theme::surface, eqCanvas_.get(), false);
         tabs_->addTab("Ecuas dinámicos", theme::surface, &eqCardsPanel_, false);
