@@ -38,9 +38,9 @@ New-Item -ItemType Directory -Force -Path "$dist\app", "$dist\plugin", `
     "$dist\bridge\x64", "$dist\bridge\x86" | Out-Null
 
 # JUCE deja los artefactos en <target>_artefacts\<config>; buscamos en todo build\
-$appExe = Get-ChildItem "build" -Recurse -Filter "AcousticalEstudio.exe" -ErrorAction SilentlyContinue |
+$appExe = Get-ChildItem "build" -Recurse -Filter "Acoustical*Estudio*.exe" -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
-if (-not $appExe) { throw "No se encontró AcousticalEstudio.exe en build\" }
+if (-not $appExe) { throw "No se encontró el ejecutable de Acoustical Estudio en build\" }
 Copy-Item $appExe.FullName "$dist\app\" -Force
 # adb incluido (si está en tools\adb, se copia con todo)
 if (Test-Path "tools\adb") { Copy-Item "tools\adb" "$dist\app\adb" -Recurse -Force }
@@ -49,7 +49,7 @@ if (Test-Path "tools\adb") { Copy-Item "tools\adb" "$dist\app\adb" -Recurse -For
 $vst3 = Get-ChildItem "build" -Recurse -Directory -Filter "*.vst3" -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
 if ($vst3) { Copy-Item $vst3.FullName "$dist\plugin\" -Recurse -Force }
-$vst2 = Get-ChildItem "build" -Recurse -Filter "AcousticalDynamicEq.dll" -ErrorAction SilentlyContinue |
+$vst2 = Get-ChildItem "build" -Recurse -Filter "Acoustical*Dynamic*EQ*.dll" -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
 if ($vst2) { Copy-Item $vst2.FullName "$dist\plugin\" -Force }
 
