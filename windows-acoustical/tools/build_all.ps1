@@ -1,11 +1,11 @@
-# build_all.ps1 — compilación de un paso para Windows.
+\xef\xbb\xbf# build_all.ps1 - compilación de un paso para Windows.
 # Descarga JUCE si falta, compila app + plugin (x64) y el driver ASIO (x64 + Win32),
 # y deja todo listo para el instalador en dist\.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-Write-Host "=== Acoustical Estudio — build de un paso ===" -ForegroundColor Cyan
+Write-Host "=== Acoustical Estudio - build de un paso ===" -ForegroundColor Cyan
 
 # 1. Configurar + compilar app, engine y plugin (x64)
 Write-Host "== App + plugin (x64) ==" -ForegroundColor Yellow

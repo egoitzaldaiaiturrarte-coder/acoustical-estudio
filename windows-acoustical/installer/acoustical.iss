@@ -1,4 +1,4 @@
-; acoustical.iss — instalador todo-en-uno de Acoustical Estudio.
+\xef\xbb\xbf; acoustical.iss - instalador todo-en-uno de Acoustical Estudio.
 ; Compilar con Inno Setup 6:  ISCC acoustical.iss
 ; Espera en dist\ lo generado por tools\build_all.ps1.
 
@@ -35,7 +35,7 @@ Name: "cable"; Description: "Instalar el cable virtual de audio (pide aceptar el
 [Files]
 ; App de escritorio + adb + drivers ADB
 Source: "..\dist\app\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
-; Plugin VST3 (x64) — Cubase 5 lo busca en Common Files\VST3
+; Plugin VST3 (x64) - Cubase 5 lo busca en Common Files\VST3
 Source: "..\dist\plugin\Acoustical Dynamic EQ.vst3"; DestDir: "{cf}\VST3"; \
   Flags: recursesubdirs ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
 ; Plugin VST2 (x64), si se compiló
@@ -70,7 +70,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
 Filename: "pnputil"; Parameters: "/add-driver ""{app}\adb\android_winusb.inf"" /install"; \
   Description: "Registrando drivers USB del móvil…"; Flags: runhidden; Check: HasAdbDrivers
 
-; 2. Registrar el driver ASIO (x64) con regsvr32 — escribe SOFTWARE\ASIO\Acoustical Bridge
+; 2. Registrar el driver ASIO (x64) con regsvr32 - escribe SOFTWARE\ASIO\Acoustical Bridge
 Filename: "regsvr32"; Parameters: "/s ""{app}\bridge\x64\AcousticalBridge.dll"""; \
   StatusMsg: "Registrando Acoustical Bridge (ASIO 64 bits)…"; Check: Is64BitInstallMode
 Filename: "regsvr32"; Parameters: "/s ""{app}\bridge\x86\AcousticalBridge.dll"""; \
