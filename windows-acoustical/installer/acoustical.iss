@@ -37,7 +37,7 @@ Name: "cable"; Description: "Instalar el cable virtual de audio (pide aceptar el
 Source: "..\dist\app\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 ; Plugin VST3 (x64) — Cubase 5 lo busca en Common Files\VST3
 Source: "..\dist\plugin\Acoustical Dynamic EQ.vst3"; DestDir: "{cf}\VST3"; \
-  Flags: recursesubdirs ignoreversion; Check: Is64BitInstallMode
+  Flags: recursesubdirs ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
 ; Plugin VST2 (x64), si se compiló
 Source: "..\dist\plugin\AcousticalDynamicEq.dll"; DestDir: "{cf}\Steinberg\VstPlugins"; \
   Flags: ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
@@ -45,7 +45,7 @@ Source: "..\dist\plugin\AcousticalDynamicEq.dll"; DestDir: "{cf}\Steinberg\VstPl
 Source: "..\dist\bridge\x64\AcousticalBridge.dll"; DestDir: "{app}\bridge\x64"; Flags: ignoreversion
 Source: "..\dist\bridge\x86\AcousticalBridge.dll"; DestDir: "{app}\bridge\x86"; Flags: ignoreversion
 ; Cable virtual (opcional)
-Source: "..\dist\cable\*"; DestDir: "{app}\cable"; Flags: recursesubdirs ignoreversion; \
+Source: "..\dist\cable\*"; DestDir: "{app}\cable"; Flags: recursesubdirs ignoreversion skipifsourcedoesntexist; \
   Tasks: cable
 
 [Icons]
@@ -68,7 +68,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
 [Run]
 ; 1. Registrar los drivers ADB incluidos (firmados por Google) para el móvil
 Filename: "pnputil"; Parameters: "/add-driver ""{app}\adb\android_winusb.inf"" /install"; \
-  Description: "Registrando drivers USB del móvil…"; Flags: runhidden
+  Description: "Registrando drivers USB del móvil…"; Flags: runhidden; Check: HasAdbDrivers
 
 ; 2. Registrar el driver ASIO (x64) con regsvr32 — escribe SOFTWARE\ASIO\Acoustical Bridge
 Filename: "regsvr32"; Parameters: "/s ""{app}\bridge\x64\AcousticalBridge.dll"""; \
@@ -78,7 +78,7 @@ Filename: "regsvr32"; Parameters: "/s ""{app}\bridge\x86\AcousticalBridge.dll"""
 
 ; 3. Cable virtual (opcional)
 Filename: "pnputil"; Parameters: "/add-driver ""{app}\cable\AcousticalCable.inf"" /install"; \
-  StatusMsg: "Instalando el cable virtual de audio…"; Tasks: cable
+  StatusMsg: "Instalando el cable virtual de audio…"; Tasks: cable; Check: HasCableDriver
 
 Filename: "{app}\{#AppExe}"; Description: "Abrir {#AppName}"; Flags: nowait postinstall skipifsilent
 
@@ -88,3 +88,16 @@ Filename: "regsvr32"; Parameters: "/s /u ""{app}\bridge\x86\AcousticalBridge.dll
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\cable"
+
+[Code]
+; El paquete de adb y el cable virtual son opcionales: solo se registran si
+; están dentro del instalador
+function HasAdbDrivers(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\adb\android_winusb.inf'));
+end;
+
+function HasCableDriver(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\cable\AcousticalCable.inf'));
+end;
