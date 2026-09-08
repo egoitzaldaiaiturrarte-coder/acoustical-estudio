@@ -14,7 +14,7 @@ public:
         selector_->setBackgroundColour(theme::surface);
 
         addAndMakeVisible(statusLabel_);
-        statusLabel_.setFont(juce::Font(juce::FontOptions(13.0f)));
+        statusLabel_.setFont(juce::Font(13.0f));
         statusLabel_.setColour(juce::Label::textColourId, theme::textDim);
         statusLabel_.setJustificationType(juce::Justification::topLeft);
 

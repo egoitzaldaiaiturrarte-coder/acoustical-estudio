@@ -54,7 +54,7 @@ public:
         syncButton_.onClick = [this] { phoneLink_.requestSync(); };
 
         addAndMakeVisible(phoneLabel_);
-        phoneLabel_.setFont(juce::Font(juce::FontOptions(12.0f)));
+        phoneLabel_.setFont(juce::Font(12.0f));
         phoneLabel_.setColour(juce::Label::textColourId, theme::textDim);
 
         // === Los tres ecuas dinámicos, idénticos y seguidos ===

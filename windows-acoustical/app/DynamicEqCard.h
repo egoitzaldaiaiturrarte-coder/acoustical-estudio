@@ -45,10 +45,10 @@ public:
         // Cabecera: título + estado
         auto header = bounds.removeFromTop(26.0f).reduced(10.0f, 4.0f);
         g.setColour(snap.enabled ? snap.accent : theme::textDim);
-        g.setFont(juce::Font(juce::FontOptions(13.0f, juce::Font::bold)));
+        g.setFont(juce::Font(13.0f, juce::Font::bold));
         g.drawText(snap.title, header.removeFromLeft(header.getWidth() * 0.5f),
                    juce::Justification::centredLeft);
-        g.setFont(juce::Font(juce::FontOptions(11.0f)));
+        g.setFont(juce::Font(11.0f));
         g.setColour(theme::textDim);
         g.drawText(snap.directionLabel, header, juce::Justification::centredRight);
 
@@ -90,7 +90,7 @@ public:
 
         // Pie: estado en vivo + badge de canal L/R
         auto footer = bounds.removeFromBottom(16.0f).reduced(10.0f, 2.0f);
-        g.setFont(juce::Font(juce::FontOptions(10.5f)));
+        g.setFont(juce::Font(10.5f));
         g.setColour(theme::textDim);
         g.drawText(snap.statusText, footer, juce::Justification::centredLeft);
         if (snap.channelBadge.isNotEmpty()) {

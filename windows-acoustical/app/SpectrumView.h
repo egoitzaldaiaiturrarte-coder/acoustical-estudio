@@ -90,11 +90,11 @@ public:
         g.fillRoundedRectangle(meter.removeFromLeft(meter.getWidth() * norm), 4.0f);
 
         g.setColour(theme::textPrimary);
-        g.setFont(juce::Font(juce::FontOptions(30.0f, juce::Font::bold)));
+        g.setFont(juce::Font(30.0f, juce::Font::bold));
         auto labels = splArea;
         g.drawText(juce::String(spl, 1) + " dB SPL", labels.removeFromTop(40.0f),
                    juce::Justification::centredLeft);
-        g.setFont(juce::Font(juce::FontOptions(13.0f)));
+        g.setFont(juce::Font(13.0f));
         g.setColour(theme::textDim);
         g.drawText("Pico " + juce::String(peak, 1) + " · Medio " + juce::String(avg, 1),
                    labels, juce::Justification::centredLeft);
