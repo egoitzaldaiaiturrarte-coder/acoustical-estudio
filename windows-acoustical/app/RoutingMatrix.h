@@ -6,12 +6,12 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "Theme.h"
 
-class RoutingMatrix : public juce::Component {
+class RoutingMatrix : public juce::Component, private juce::Timer {
 public:
     explicit RoutingMatrix(juce::AudioDeviceManager& dm) : deviceManager_(dm) {
-        addAndMakeVisible(selector_ = std::make_unique<juce::AudioDeviceSelectorComponent>(
-            dm, 1, 2, 1, 8, true, true, true, false));
-        selector_->setBackgroundColour(theme::surface);
+        selector_ = std::make_unique<juce::AudioDeviceSelectorComponent>(
+            dm, 1, 2, 1, 8, true, true, true, false);
+        addAndMakeVisible(*selector_);
 
         addAndMakeVisible(statusLabel_);
         statusLabel_.setFont(juce::Font(13.0f));
@@ -20,10 +20,10 @@ public:
 
         addAndMakeVisible(gainSlider_);
         gainSlider_.setRange(0.0, 1.0, 0.01);
-        gainSlider_.setValue(deviceManager_.getMainGain());
+        gainSlider_.setValue(mainGain_, juce::dontSendNotification);
         gainSlider_.setTextValueSuffix(" · volumen general");
         gainSlider_.onValueChange = [this] {
-            deviceManager_.setMainGain(static_cast<float>(gainSlider_.getValue()));
+            mainGain_ = static_cast<float>(gainSlider_.getValue());
         };
         addAndMakeVisible(gainLabel_);
         gainLabel_.attachToComponent(&gainSlider_, true);
@@ -68,4 +68,5 @@ private:
     std::unique_ptr<juce::AudioDeviceSelectorComponent> selector_;
     juce::Label statusLabel_, gainLabel_;
     juce::Slider gainSlider_;
+    float mainGain_ = 1.0f;
 };

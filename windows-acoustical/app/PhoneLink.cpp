@@ -154,7 +154,8 @@ PhoneLink::WindowsUpdateInfo PhoneLink::lastUpdateInfo() const {
 }
 
 void PhoneLink::checkForUpdate() {
-    if (!updateRunning_.compare_exchange_strong(false, true)) return;
+    bool expected = false;
+    if (!updateRunning_.compare_exchange_strong(expected, true)) return;
     if (updateThread_.joinable()) updateThread_.join();
     updateThread_ = std::thread([this] {
         runUpdateCheck();
@@ -316,8 +317,10 @@ void PhoneLink::runUpdateCheck() {
     if (auto* wObj = obj->getProperty("windows").getDynamicObject()) {
         info.version = wObj->getProperty("version").toString();
         info.sha256 = wObj->getProperty("sha256").toString();
-        info.sizeBytes = static_cast<juce::int64>(static_cast<double>(wObj->getProperty("size", 0.0)));
-        info.hasPayload = static_cast<bool>(wObj->getProperty("hasPayload", false));
+        const auto sizeVar = wObj->getProperty("size");
+        info.sizeBytes = sizeVar.isVoid() ? 0 : static_cast<juce::int64>(static_cast<double>(sizeVar));
+        const auto payloadVar = wObj->getProperty("hasPayload");
+        info.hasPayload = payloadVar.isVoid() ? false : static_cast<bool>(payloadVar);
         info.url = wObj->getProperty("url").toString();
     }
     {

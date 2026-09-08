@@ -34,7 +34,6 @@ public:
     bool moreThanOneInstanceAllowed() override { return false; }
 
     void initialise(const juce::String&) override {
-        theme::apply(*this);
         mainWindow_ = std::make_unique<MainWindow>(deviceManager, engine);
     }
 
