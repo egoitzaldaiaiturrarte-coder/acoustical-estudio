@@ -51,7 +51,7 @@ private:
         auto* s = new juce::Slider(juce::Slider::LinearHorizontal,
                                    juce::Slider::TextBoxRight);
         auto range = juce::NormalisableRange<double>(minV, maxV, step);
-        if (skew != 1.0) range.setSkewForCentre((minV + maxV) / 2.0, skew);
+        if (skew != 1.0) range.skew = skew;  // p. ej. 0.25 = escala logarítmica
         s->setNormalisableRange(range);
         s->setValue(value, juce::dontSendNotification);
         s->onValueChange = [s, onChange] { onChange(s->getValue()); };
