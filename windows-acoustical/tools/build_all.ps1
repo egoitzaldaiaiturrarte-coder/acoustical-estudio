@@ -1,4 +1,4 @@
-\xef\xbb\xbf# build_all.ps1 - compilación de un paso para Windows.
+﻿# build_all.ps1 - compilación de un paso para Windows.
 # Descarga JUCE si falta, compila app + plugin (x64) y el driver ASIO (x64 + Win32),
 # y deja todo listo para el instalador en dist\.
 $ErrorActionPreference = "Stop"
@@ -10,7 +10,7 @@ Write-Host "=== Acoustical Estudio - build de un paso ===" -ForegroundColor Cyan
 # 1. Configurar + compilar app, engine y plugin (x64)
 Write-Host "== App + plugin (x64) ==" -ForegroundColor Yellow
 if (-not (Test-Path "build")) {
-    cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+    cmake -S . -B build -A x64
 }
 cmake --build build --config Release --parallel
 if ($LASTEXITCODE -ne 0) { throw "Fallo compilando la app o el plugin" }
@@ -18,7 +18,7 @@ if ($LASTEXITCODE -ne 0) { throw "Fallo compilando la app o el plugin" }
 # 2. Driver ASIO x64
 Write-Host "== Acoustical Bridge (x64) ==" -ForegroundColor Yellow
 if (-not (Test-Path "build-bridge64")) {
-    cmake -S asio-bridge -B build-bridge64 -G "Visual Studio 17 2022" -A x64
+    cmake -S asio-bridge -B build-bridge64 -A x64
 }
 cmake --build build-bridge64 --config Release
 if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el bridge x64" }
@@ -26,7 +26,7 @@ if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el bridge x64" }
 # 3. Driver ASIO Win32 (Cubase 5 de 32 bits)
 Write-Host "== Acoustical Bridge (Win32) ==" -ForegroundColor Yellow
 if (-not (Test-Path "build-bridge32")) {
-    cmake -S asio-bridge -B build-bridge32 -G "Visual Studio 17 2022" -A Win32
+    cmake -S asio-bridge -B build-bridge32 -A Win32
 }
 cmake --build build-bridge32 --config Release
 if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el bridge Win32" }
