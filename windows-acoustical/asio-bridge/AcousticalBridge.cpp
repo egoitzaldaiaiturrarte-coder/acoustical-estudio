@@ -10,6 +10,9 @@
 #include <mmdeviceapi.h>
 #include <timeapi.h>
 #include <cstring>
+#include <cstdio>
+#include <string>
+#include <algorithm>
 #include <new>
 #include <atomic>
 
@@ -22,8 +25,8 @@ std::atomic<long> g_refCount{0};
 
 class AcousticalBridge final : public IASIO {
 public:
-    AcousticalBridge() { InterlockedIncrement(&g_refCount); }
-    ~AcousticalBridge() { InterlockedDecrement(&g_refCount); }
+    AcousticalBridge() { g_refCount.fetch_add(1); }
+    ~AcousticalBridge() { g_refCount.fetch_sub(1); }
 
     // === IUnknown ===
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
@@ -319,7 +322,7 @@ private:
     void FillFromPlaybackRing(long channel, float* dest, long frames) {
         if (!shared_) { std::fill_n(dest, frames, 0.0f); return; }
         const uint64_t w = shared_->playbackWriteIndex;
-        uint64_t& r = shared_->playbackReadIndex;
+        volatile uint64_t& r = shared_->playbackReadIndex;
         if (w < r + static_cast<uint64_t>(frames)) {
             // Subrun (la app va por detrás): silencio y resincroniza al final
             std::fill_n(dest, frames, 0.0f);
