@@ -3,6 +3,9 @@
 cmake_minimum_required(VERSION 3.22)
 project(AcousticalBridge LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 add_library(AcousticalBridge MODULE
     AcousticalBridge.cpp
 )
@@ -14,7 +17,6 @@ set_target_properties(AcousticalBridge PROPERTIES
 
 target_compile_definitions(AcousticalBridge PRIVATE
     UNICODE _UNICODE
-    WIN32_LEAN_AND_MEAN
     NOMINMAX
 )
 

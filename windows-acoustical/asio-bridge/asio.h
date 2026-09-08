@@ -3,6 +3,10 @@
 #pragma once
 #include <cstdint>
 
+#ifdef _WIN32
+#include <unknwn.h>
+#endif
+
 typedef int32_t ASIOSamples;
 typedef int64_t ASIOTimeStampValue;
 
@@ -52,7 +56,7 @@ struct ASIOCallbacks {
 };
 
 // Interfaz COM del driver (mismos orden de métodos que el SDK oficial)
-struct IASIO : public IUnknown {
+struct __declspec(uuid("B7A9E3D1-2C45-4F0A-8D63-1E5A0B7C9F42")) IASIO : public IUnknown {
     virtual ASIOBool init(void* sysHandle) = 0;
     virtual void getDriverName(char* name) = 0;
     virtual long getDriverVersion() = 0;
