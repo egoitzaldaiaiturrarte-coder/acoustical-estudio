@@ -410,7 +410,7 @@ private fun WindowsPcCard() {
     val payloadReady by sync.payloadReady.collectAsState()
     val downloading by sync.downloading.collectAsState()
     val syncStatus by sync.status.collectAsState()
-    var url by remember { mutableStateOf(sync.windowsPayloadUrl()) }
+    var url by remember { mutableStateOf(sync.configuredRepo().ifEmpty { sync.windowsPayloadUrl() }) }
 
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -441,12 +441,12 @@ private fun WindowsPcCard() {
                 OutlinedTextField(
                     value = url,
                     onValueChange = { url = it },
-                    label = { Text("Enlace del instalador de Windows") },
+                    label = { Text("Repositorio de GitHub o enlace del instalador") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(
-                    "El enlace debe incluir la versión, p. ej. AcousticalEstudioSetup-1.1.0.exe",
+                    "Ej.: github.com/usuario/acoustical-estudio — después el móvil busca y baja las versiones nuevas solo",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -458,11 +458,19 @@ private fun WindowsPcCard() {
                     if (downloading) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     } else {
-                        Text("Descargar paquete para Windows")
+                        Text("Descargar ahora")
                     }
                 }
             } else {
                 Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Automático: comprueba cada 30 min github.com/${sync.configuredRepo().ifEmpty { "(repositorio no configurado)" }}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(onClick = { sync.checkForWindowsUpdate() }, enabled = !downloading) {
+                    Text("Buscar actualización ahora")
+                }
                 TextButton(onClick = { sync.clearWindowsPayload() }, enabled = !downloading) {
                     Text("Eliminar paquete")
                 }
