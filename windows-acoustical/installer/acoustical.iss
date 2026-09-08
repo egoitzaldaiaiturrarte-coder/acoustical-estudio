@@ -1,4 +1,4 @@
-\xef\xbb\xbf; acoustical.iss - instalador todo-en-uno de Acoustical Estudio.
+﻿; acoustical.iss - instalador todo-en-uno de Acoustical Estudio.
 ; Compilar con Inno Setup 6:  ISCC acoustical.iss
 ; Espera en dist\ lo generado por tools\build_all.ps1.
 

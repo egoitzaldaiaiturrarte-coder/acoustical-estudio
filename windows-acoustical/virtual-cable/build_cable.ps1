@@ -1,4 +1,4 @@
-\xef\xbb\xbf# build_cable.ps1 — construye el "Acoustical Cable" a partir del ejemplo
+﻿# build_cable.ps1 — construye el "Acoustical Cable" a partir del ejemplo
 # sysvad de Microsoft, renombrando el dispositivo y preparando el paquete
 # firmado para el instalador. Requiere WDK + Visual Studio 2022.
 $ErrorActionPreference = "Stop"
