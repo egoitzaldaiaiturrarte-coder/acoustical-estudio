@@ -90,8 +90,8 @@ Filename: "regsvr32"; Parameters: "/s /u ""{app}\bridge\x86\AcousticalBridge.dll
 Type: filesandordirs; Name: "{app}\cable"
 
 [Code]
-; El paquete de adb y el cable virtual son opcionales: solo se registran si
-; están dentro del instalador
+// El paquete de adb y el cable virtual son opcionales: solo se registran si
+// están dentro del instalador
 function HasAdbDrivers(): Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\adb\android_winusb.inf'));
