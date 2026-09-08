@@ -51,7 +51,7 @@ public:
 
         addAndMakeVisible(syncButton_);
         syncButton_.setButtonText("Sincronizar móvil");
-        syncButton_.onClick = [this] { phoneLink_.requestSync(); };
+        syncButton_.onClick = [this] { if (phoneLink_) phoneLink_->requestSync(); };
 
         addAndMakeVisible(phoneLabel_);
         phoneLabel_.setFont(juce::Font(12.0f));
@@ -142,8 +142,10 @@ private:
         dynamicEqEnabled_[index] = target;
     }
 
-    void audioDeviceIOCallback(const float** input, int numInputs, float** output,
-                               int numOutputs, int numSamples) override {
+    void audioDeviceIOCallbackWithContext(const float* const* input, int numInputs,
+                                          float* const* output, int numOutputs,
+                                          int numSamples,
+                                          const juce::AudioIODeviceCallbackContext&) override {
         std::vector<float> mono(static_cast<size_t>(numSamples), 0.0f);
         for (int ch = 0; ch < numInputs; ++ch)
             if (const auto* in = input[ch])
