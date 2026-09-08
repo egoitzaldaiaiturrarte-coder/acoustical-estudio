@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -39,9 +40,10 @@ import java.security.MessageDigest
  *  2. Saber si lleva una versión nueva de Windows: GET /manifest.
  *  3. Descargarse el instalador de esa versión por el propio cable: GET /payload.
  *
- * El paquete de Windows se descarga una vez desde Ajustes > PC/Windows y
- * queda verificado (SHA-256) en el móvil; así el PC se actualiza solo,
- * incluso sin internet.
+ * El paquete de Windows se configura una vez en Ajustes > PC/Windows (tu
+ * repositorio de GitHub o un enlace directo) y queda verificado (SHA-256) en
+ * el móvil: las versiones nuevas se detectan y descargan solas, y el PC se
+ * actualiza al conectarlo por el cable, incluso sin internet.
  */
 class PhoneSyncManager private constructor(context: Context) {
 
@@ -74,6 +76,7 @@ class PhoneSyncManager private constructor(context: Context) {
         thread.isDaemon = true
         serverThread = thread
         thread.start()
+        maybeAutoCheck()
     }
 
     // === Servidor ===
@@ -298,7 +301,7 @@ class PhoneSyncManager private constructor(context: Context) {
             put("type", "manifest")
             put("ok", true)
             putJsonObject("app") {
-                put("name", "AcoustiCal")
+                put("name", "Acoustical")
                 put("versionCode", BuildConfig.VERSION_CODE)
                 put("versionName", BuildConfig.VERSION_NAME)
             }
@@ -318,71 +321,186 @@ class PhoneSyncManager private constructor(context: Context) {
 
     fun windowsPayloadUrl(): String = prefs.getString(KEY_URL, "") ?: ""
 
+    fun configuredRepo(): String = prefs.getString(KEY_REPO, "") ?: ""
+
     fun installedPayloadVersion(): String? = prefs.getString(KEY_VERSION, null)
 
     /**
      * Descarga el instalador de Windows y lo deja verificado (SHA-256) en el
-     * almacenamiento del móvil para servirlo al PC por USB. El enlace debe
-     * incluir la versión (p. ej. .../AcousticalEstudioSetup-1.1.0.exe).
+     * almacenamiento del móvil para servirlo al PC por USB.
+     *
+     * Acepta dos formatos:
+     *  - Repositorio de GitHub (github.com/usuario/repo o usuario/repo): busca el
+     *    último release publicado, baja su instalador y recuerda el repositorio
+     *    para las comprobaciones automáticas.
+     *  - Enlace directo al .exe (debe incluir la versión, p. ej. Setup-1.1.0.exe).
      */
     fun downloadWindowsPayload(urlInput: String) {
-        val url = urlInput.trim()
-        if (url.isEmpty()) {
-            _status.value = "Pega primero el enlace del instalador de Windows"
-            return
-        }
-        val version = VERSION_REGEX.find(url)?.value
-        if (version == null) {
-            _status.value = "El enlace debe incluir la versión (p. ej. Setup-1.1.0.exe)"
+        val input = urlInput.trim()
+        if (input.isEmpty()) {
+            _status.value = "Pega tu repositorio de GitHub o el enlace del instalador"
             return
         }
         if (_downloading.value) return
         _downloading.value = true
-        _status.value = "Descargando paquete de Windows $version…"
+        _status.value = "Buscando el instalador…"
         Thread({
             try {
-                payloadDir.mkdirs()
-                val tmp = File(payloadDir, "setup.tmp")
-                val conn = URL(url).openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000
-                conn.readTimeout = 30000
-                conn.instanceFollowRedirects = true
-                conn.connect()
-                if (conn.responseCode !in 200..299) {
-                    throw IllegalStateException("HTTP ${conn.responseCode}")
+                val repo = githubRepoOf(input)
+                if (repo != null) prefs.edit().putString(KEY_REPO, repo).apply()
+                if (repo != null) {
+                    val (url, version) = latestReleaseInstaller(repo)
+                    downloadPayload(url, version)
+                } else {
+                    val version = VERSION_REGEX.find(input)?.value
+                        ?: throw IllegalStateException("El enlace directo debe incluir la versión (p. ej. Setup-1.1.0.exe)")
+                    downloadPayload(input, version)
                 }
-                val digest = MessageDigest.getInstance("SHA-256")
-                var size = 0L
-                conn.inputStream.use { input ->
-                    FileOutputStream(tmp).use { out ->
-                        val buffer = ByteArray(65536)
-                        while (true) {
-                            val n = input.read(buffer)
-                            if (n < 0) break
-                            out.write(buffer, 0, n)
-                            digest.update(buffer, 0, n)
-                            size += n
-                            if (size > MAX_PAYLOAD_BYTES) throw IllegalStateException("Paquete demasiado grande")
-                        }
-                    }
-                }
-                val sha = digest.digest().joinToString("") { "%02x".format(it) }
-                val dest = File(payloadDir, "AcousticalEstudioSetup.exe")
-                if (dest.exists()) dest.delete()
-                if (!tmp.renameTo(dest)) throw IllegalStateException("No se pudo guardar el paquete")
-                prefs.edit()
-                    .putString(KEY_VERSION, version)
-                    .putString(KEY_SHA256, sha)
-                    .putString(KEY_URL, url)
-                    .apply()
-                _payloadReady.value = true
-                _status.value = "Listo: al conectar el PC por USB se instalará la versión $version"
             } catch (e: Exception) {
                 _status.value = "Descarga fallida: ${e.message ?: "error"}"
             } finally {
                 _downloading.value = false
             }
         }, "acoustical-payload-download").start()
+    }
+
+    /**
+     * Comprueba el último release del repositorio configurado y, si es más
+     * reciente que el paquete guardado, lo descarga automáticamente.
+     */
+    fun checkForWindowsUpdate() {
+        val repo = prefs.getString(KEY_REPO, null)
+        if (repo.isNullOrEmpty()) {
+            _status.value = "Configura primero tu repositorio de GitHub"
+            return
+        }
+        checkForWindowsUpdate(repo)
+    }
+
+    private fun checkForWindowsUpdate(repo: String) {
+        if (_downloading.value) return
+        _downloading.value = true
+        _status.value = "Comprobando versiones en GitHub…"
+        Thread({
+            try {
+                val (url, version) = latestReleaseInstaller(repo)
+                if (!isNewerVersion(version, installedPayloadVersion())) {
+                    _status.value = "Ya está instalada la versión más reciente ($version)"
+                    return@Thread
+                }
+                _status.value = "Versión nueva disponible: $version — descargando…"
+                downloadPayload(url, version)
+            } catch (e: Exception) {
+                _status.value = "No se pudo consultar GitHub: ${e.message ?: "error"}"
+            } finally {
+                _downloading.value = false
+            }
+        }, "acoustical-update-check").start()
+    }
+
+    /** Comprobación automática al arrancar la app, como máximo cada 30 minutos. */
+    private fun maybeAutoCheck() {
+        val repo = prefs.getString(KEY_REPO, null) ?: return
+        val now = System.currentTimeMillis()
+        if (now - prefs.getLong(KEY_LAST_CHECK, 0L) < AUTO_CHECK_INTERVAL_MS) return
+        prefs.edit().putLong(KEY_LAST_CHECK, now).apply()
+        checkForWindowsUpdate(repo)
+    }
+
+    /** Consulta el último release del repositorio y devuelve (enlace .exe, versión). */
+    private fun latestReleaseInstaller(repo: String): Pair<String, String> {
+        val conn = URL("https://api.github.com/repos/$repo/releases/latest")
+            .openConnection() as HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = 20000
+        conn.setRequestProperty("Accept", "application/vnd.github+json")
+        conn.setRequestProperty("User-Agent", "Acoustical-Android")
+        conn.connect()
+        if (conn.responseCode !in 200..299) throw IllegalStateException("GitHub HTTP ${conn.responseCode}")
+        val text = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+        val json = Json.parseToJsonElement(text).jsonObject
+        val tag = json.textContent("tag_name") ?: ""
+        val assets = (json["assets"] as? JsonArray)
+            ?.mapNotNull { it as? JsonObject }
+            ?: emptyList()
+        val asset = assets.firstOrNull {
+            (it.textContent("name") ?: "").endsWith(".exe", ignoreCase = true)
+        } ?: throw IllegalStateException("El release $tag no incluye el instalador .exe")
+        val name = asset.textContent("name").orEmpty()
+        val url = asset.textContent("browser_download_url")
+            ?: throw IllegalStateException("El adjunto no tiene enlace de descarga")
+        val version = VERSION_REGEX.find(name)?.value
+            ?: tag.removePrefix("v").takeIf { VERSION_REGEX.matches(it) }
+            ?: throw IllegalStateException("No se pudo leer la versión del release")
+        return url to version
+    }
+
+    /** Devuelve "usuario/repo" si la entrada apunta a GitHub; null si es un enlace directo. */
+    private fun githubRepoOf(input: String): String? {
+        GITHUB_REPO_REGEX.find(input)?.let {
+            return "${it.groupValues[1]}/${it.groupValues[2].removeSuffix(".git")}"
+        }
+        if (!input.contains("://") && !input.endsWith(".exe", ignoreCase = true)) {
+            GITHUB_SHORT_REGEX.matchEntire(input)?.let {
+                return "${it.groupValues[1]}/${it.groupValues[2]}"
+            }
+        }
+        return null
+    }
+
+    /** Compara versiones numéricas: 1.10 > 1.9 > 1.2.3. */
+    private fun isNewerVersion(candidate: String, current: String?): Boolean {
+        if (current.isNullOrEmpty()) return true
+        fun parts(v: String) = v.split('.').map { it.takeWhile { c -> c.isDigit() }.toIntOrNull() ?: 0 }
+        val a = parts(candidate)
+        val b = parts(current)
+        for (i in 0 until maxOf(a.size, b.size)) {
+            val x = a.getOrElse(i) { 0 }
+            val y = b.getOrElse(i) { 0 }
+            if (x != y) return x > y
+        }
+        return false
+    }
+
+    /** Descarga y verifica el instalador; lo guarda listo para servirlo por USB. */
+    private fun downloadPayload(url: String, version: String) {
+        _status.value = "Descargando paquete de Windows $version…"
+        payloadDir.mkdirs()
+        val tmp = File(payloadDir, "setup.tmp")
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = 30000
+        conn.instanceFollowRedirects = true
+        conn.connect()
+        if (conn.responseCode !in 200..299) {
+            throw IllegalStateException("HTTP ${conn.responseCode}")
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        var size = 0L
+        conn.inputStream.use { input ->
+            FileOutputStream(tmp).use { out ->
+                val buffer = ByteArray(65536)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    out.write(buffer, 0, n)
+                    digest.update(buffer, 0, n)
+                    size += n
+                    if (size > MAX_PAYLOAD_BYTES) throw IllegalStateException("Paquete demasiado grande")
+                }
+            }
+        }
+        val sha = digest.digest().joinToString("") { "%02x".format(it) }
+        val dest = File(payloadDir, "AcousticalEstudioSetup.exe")
+        if (dest.exists()) dest.delete()
+        if (!tmp.renameTo(dest)) throw IllegalStateException("No se pudo guardar el paquete")
+        prefs.edit()
+            .putString(KEY_VERSION, version)
+            .putString(KEY_SHA256, sha)
+            .putString(KEY_URL, url)
+            .apply()
+        _payloadReady.value = true
+        _status.value = "Listo: al conectar el PC por USB se instalará la versión $version"
     }
 
     fun clearWindowsPayload() {
@@ -406,12 +524,17 @@ class PhoneSyncManager private constructor(context: Context) {
         private const val KEY_VERSION = "windows_version"
         private const val KEY_SHA256 = "windows_sha256"
         private const val KEY_URL = "windows_url"
+        private const val KEY_REPO = "github_repo"
+        private const val KEY_LAST_CHECK = "last_update_check"
 
         private const val READ_TIMEOUT_MS = 600
         private const val MAX_HEADER_BYTES = 64 * 1024
         private const val MAX_MESSAGE_BYTES = 1024 * 1024
         private const val MAX_PAYLOAD_BYTES = 512L * 1024 * 1024
+        private const val AUTO_CHECK_INTERVAL_MS = 30L * 60 * 1000
         private val VERSION_REGEX = Regex("""(\d+\.\d+(?:\.\d+)*)""")
+        private val GITHUB_REPO_REGEX = Regex("""github\.com/+([A-Za-z0-9_.-]+)/+([A-Za-z0-9_.-]+)""")
+        private val GITHUB_SHORT_REGEX = Regex("""^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$""")
 
         @Volatile private var instance: PhoneSyncManager? = null
 
