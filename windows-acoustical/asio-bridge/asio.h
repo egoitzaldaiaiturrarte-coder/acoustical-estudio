@@ -57,29 +57,29 @@ struct ASIOCallbacks {
 
 // Interfaz COM del driver (mismos orden de métodos que el SDK oficial)
 struct __declspec(uuid("B7A9E3D1-2C45-4F0A-8D63-1E5A0B7C9F42")) IASIO : public IUnknown {
-    virtual ASIOBool init(void* sysHandle) = 0;
-    virtual void getDriverName(char* name) = 0;
-    virtual long getDriverVersion() = 0;
-    virtual void getErrorMessage(char* error) = 0;
-    virtual ASIOError start() = 0;
-    virtual ASIOError stop() = 0;
-    virtual ASIOError getChannels(long* numInputChannels, long* numOutputChannels) = 0;
-    virtual ASIOError getLatencies(long* inputLatency, long* outputLatency) = 0;
-    virtual ASIOError getBufferSize(long* minSize, long* maxSize,
-                                    long* preferredSize, long* granularity) = 0;
-    virtual ASIOError canSampleRate(ASIOSamples rate) = 0;
-    virtual ASIOError getSampleRate(ASIOSamples* rate) = 0;
-    virtual ASIOError setSampleRate(ASIOSamples rate) = 0;
-    virtual ASIOError getClockSources(ASIOClockSource* clocks, long* numSources) = 0;
-    virtual ASIOError setClockSource(long reference) = 0;
-    virtual ASIOError getSamplePosition(ASIOSamples* sPos, ASIOTimeStamp* tStamp) = 0;
-    virtual ASIOError getChannelInfo(ASIOChannelInfo* info) = 0;
-    virtual ASIOError createBuffers(ASIOBufferInfo* infos, long numChannels,
-                                    long bufferSize, ASIOCallbacks* callbacks) = 0;
-    virtual ASIOError disposeBuffers() = 0;
-    virtual ASIOError controlPanel() = 0;
-    virtual ASIOError future(long selector, void* opt) = 0;
-    virtual ASIOError outputReady() = 0;
+    virtual ASIOBool STDMETHODCALLTYPE init(void* sysHandle) = 0;
+    virtual void STDMETHODCALLTYPE getDriverName(char* name) = 0;
+    virtual long STDMETHODCALLTYPE getDriverVersion() = 0;
+    virtual void STDMETHODCALLTYPE getErrorMessage(char* error) = 0;
+    virtual ASIOError STDMETHODCALLTYPE start() = 0;
+    virtual ASIOError STDMETHODCALLTYPE stop() = 0;
+    virtual ASIOError STDMETHODCALLTYPE getChannels(long* numInputChannels, long* numOutputChannels) = 0;
+    virtual ASIOError STDMETHODCALLTYPE getLatencies(long* inputLatency, long* outputLatency) = 0;
+    virtual ASIOError STDMETHODCALLTYPE getBufferSize(long* minSize, long* maxSize,
+                                                      long* preferredSize, long* granularity) = 0;
+    virtual ASIOError STDMETHODCALLTYPE canSampleRate(ASIOSamples rate) = 0;
+    virtual ASIOError STDMETHODCALLTYPE getSampleRate(ASIOSamples* rate) = 0;
+    virtual ASIOError STDMETHODCALLTYPE setSampleRate(ASIOSamples rate) = 0;
+    virtual ASIOError STDMETHODCALLTYPE getClockSources(ASIOClockSource* clocks, long* numSources) = 0;
+    virtual ASIOError STDMETHODCALLTYPE setClockSource(long reference) = 0;
+    virtual ASIOError STDMETHODCALLTYPE getSamplePosition(ASIOSamples* sPos, ASIOTimeStamp* tStamp) = 0;
+    virtual ASIOError STDMETHODCALLTYPE getChannelInfo(ASIOChannelInfo* info) = 0;
+    virtual ASIOError STDMETHODCALLTYPE createBuffers(ASIOBufferInfo* infos, long numChannels,
+                                                      long bufferSize, ASIOCallbacks* callbacks) = 0;
+    virtual ASIOError STDMETHODCALLTYPE disposeBuffers() = 0;
+    virtual ASIOError STDMETHODCALLTYPE controlPanel() = 0;
+    virtual ASIOError STDMETHODCALLTYPE future(long selector, void* opt) = 0;
+    virtual ASIOError STDMETHODCALLTYPE outputReady() = 0;
 };
 
 // CLSID del Acoustical Bridge (debe coincidir con el instalador y el registro)
