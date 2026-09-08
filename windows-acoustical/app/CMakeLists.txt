@@ -11,6 +11,8 @@ target_sources(AcousticalEstudio PRIVATE
 target_compile_definitions(AcousticalEstudio PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
     JUCE_APPLICATION_NAME_STRING="Acoustical Estudio"
     JUCE_APPLICATION_VERSION_STRING="1.0.0"
 )

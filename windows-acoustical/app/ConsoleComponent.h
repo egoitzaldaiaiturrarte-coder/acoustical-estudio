@@ -183,7 +183,6 @@ private:
         lastSampleRate_ = device ? device->getCurrentSampleRate() : 48000.0;
     }
     void audioDeviceStopped() override {}
-    void audioDeviceIOCallbackWithContext(const juce::AudioIODeviceCallbackContext&) override {}
 
     // === Estado compartido entre el hilo del motor y la UI ===
 
@@ -324,13 +323,21 @@ private:
         auto* obj = v.getDynamicObject();
         if (obj == nullptr) return;
         auto c = engine_.config();
-        c.maxGainDb = static_cast<float>(static_cast<double>(obj->getProperty("maxGainDb", c.maxGainDb)));
-        c.smoothingFactor = static_cast<float>(static_cast<double>(obj->getProperty("smoothingFactor", c.smoothingFactor)));
-        c.noiseFloorDb = static_cast<float>(static_cast<double>(obj->getProperty("noiseFloorDb", c.noiseFloorDb)));
-        c.noiseSubtractionEnabled = static_cast<bool>(obj->getProperty("noiseSubtractionEnabled", c.noiseSubtractionEnabled));
-        c.correctionEnabled = static_cast<bool>(obj->getProperty("correctionEnabled", c.correctionEnabled));
-        c.targetSpl = static_cast<float>(static_cast<double>(obj->getProperty("targetSpl", c.targetSpl)));
-        c.audioDelayMs = static_cast<float>(static_cast<double>(obj->getProperty("audioDelayMs", c.audioDelayMs)));
+        auto num = [obj](const char* key, double def) {
+            const auto v = obj->getProperty(key);
+            return v.isVoid() ? def : static_cast<double>(v);
+        };
+        auto flag = [obj](const char* key, bool def) {
+            const auto v = obj->getProperty(key);
+            return v.isVoid() ? def : static_cast<bool>(v);
+        };
+        c.maxGainDb = static_cast<float>(num("maxGainDb", c.maxGainDb));
+        c.smoothingFactor = static_cast<float>(num("smoothingFactor", c.smoothingFactor));
+        c.noiseFloorDb = static_cast<float>(num("noiseFloorDb", c.noiseFloorDb));
+        c.noiseSubtractionEnabled = flag("noiseSubtractionEnabled", c.noiseSubtractionEnabled);
+        c.correctionEnabled = flag("correctionEnabled", c.correctionEnabled);
+        c.targetSpl = static_cast<float>(num("targetSpl", c.targetSpl));
+        c.audioDelayMs = static_cast<float>(num("audioDelayMs", c.audioDelayMs));
         engine_.configure(c);
         settingsPanel_->refresh();
     }
