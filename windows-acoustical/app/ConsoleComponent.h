@@ -57,6 +57,29 @@ public:
         phoneLabel_.setFont(juce::Font(12.0f));
         phoneLabel_.setColour(juce::Label::textColourId, theme::textDim);
 
+        // === Selector de vista (los mismos nombres que las pestañas) ===
+        addAndMakeVisible(viewBox_);
+        viewBox_.addItem("1 · EQ", 1);
+        viewBox_.addItem("2 · Ecuas dinámicos", 2);
+        viewBox_.addItem("3 · Ruteos", 3);
+        viewBox_.addItem("4 · Ajustes", 4);
+        viewBox_.addItem("5 · Análisis", 5);
+        viewBox_.addItem("6 · Audio", 6);
+        viewBox_.setSelectedId(1, juce::dontSendNotification);
+        viewBox_.onChange = [this] {
+            tabs_->setCurrentTabIndex(viewBox_.getSelectedId() - 1, true);
+        };
+
+        addAndMakeVisible(fullscreenButton_);
+        fullscreenButton_.setButtonText("Pantalla completa (F11)");
+        fullscreenButton_.setClickingTogglesState(true);
+        fullscreenButton_.onClick = [this] { toggleFullscreen(); };
+
+        // === Panel de audio: todas las tarjetas del PC con sus ajustes ===
+        audioPanel_ = std::make_unique<juce::AudioDeviceSelectorComponent>(
+            deviceManager_, 0, 16, 0, 16, false, false, true, false);
+        audioPanel_->setItemHeight(36);
+
         // === Los tres ecuas dinámicos, idénticos y seguidos ===
         for (int i = 0; i < 3; ++i) {
             DynamicEqCard::Snapshot snap;
@@ -88,6 +111,7 @@ public:
         tabs_->addTab("Ruteos", theme::surface, routingMatrix_.get(), false);
         tabs_->addTab("Ajustes", theme::surface, settingsPanel_.get(), false);
         tabs_->addTab("Análisis", theme::surface, spectrumView_.get(), false);
+        tabs_->addTab("Audio", theme::surface, audioPanel_.get(), false);
         addAndMakeVisible(*tabs_);
 
         refreshPresets();
@@ -122,6 +146,13 @@ public:
         if (key == juce::KeyPress::F2Key) { toggleDynamicEq(1); return true; }
         if (key == juce::KeyPress::F3Key) { toggleDynamicEq(2); return true; }
         if (key == juce::KeyPress::spaceKey) { freezeButton_.triggerClick(); return true; }
+        if (key == juce::KeyPress::F11Key) { toggleFullscreen(); return true; }
+        // Teclas 1-6: saltar directo a cada vista
+        const auto ch = key.getTextCharacter();
+        if (ch >= '1' && ch <= '6') {
+            tabs_->setCurrentTabIndex(ch - '1', true);
+            return true;
+        }
         return false;
     }
 
@@ -142,6 +173,14 @@ private:
         const bool target = !dynamicEqEnabled_[index];
         engine_.setDynamicEqEnabled(index, target);
         dynamicEqEnabled_[index] = target;
+    }
+
+    void toggleFullscreen() {
+        if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) {
+            const bool target = !w->isFullScreen();
+            w->setFullScreen(target);
+            fullscreenButton_.setToggleState(target, juce::dontSendNotification);
+        }
     }
 
     void audioDeviceIOCallbackWithContext(const float* const* input, int numInputs,
@@ -358,12 +397,14 @@ private:
         }
         auto top = bounds.removeFromTop(44.0f).reduced(8.0f, 6.0f);
         powerButton_.setBounds(top.removeFromLeft(84.0f));
-        referenceButton_.setBounds(top.removeFromLeft(150.0f).reduced(2.0f, 0.0f));
-        noiseButton_.setBounds(top.removeFromLeft(120.0f).reduced(2.0f, 0.0f));
+        referenceButton_.setBounds(top.removeFromLeft(138.0f).reduced(2.0f, 0.0f));
+        noiseButton_.setBounds(top.removeFromLeft(110.0f).reduced(2.0f, 0.0f));
         freezeButton_.setBounds(top.removeFromLeft(92.0f).reduced(2.0f, 0.0f));
-        presetBox_.setBounds(top.removeFromLeft(160.0f).reduced(4.0f, 0.0f));
+        viewBox_.setBounds(top.removeFromLeft(150.0f).reduced(4.0f, 0.0f));
+        presetBox_.setBounds(top.removeFromLeft(140.0f).reduced(4.0f, 0.0f));
         savePresetButton_.setBounds(top.removeFromLeft(84.0f).reduced(2.0f, 0.0f));
-        syncButton_.setBounds(top.removeFromLeft(150.0f).reduced(2.0f, 0.0f));
+        syncButton_.setBounds(top.removeFromLeft(136.0f).reduced(2.0f, 0.0f));
+        fullscreenButton_.setBounds(top.removeFromLeft(150.0f).reduced(2.0f, 0.0f));
         phoneLabel_.setBounds(top);
 
         tabs_->setBounds(bounds);
@@ -373,8 +414,8 @@ private:
     acoustical::AcousticalEngine& engine_;
 
     juce::TextButton powerButton_, referenceButton_, noiseButton_, freezeButton_,
-        savePresetButton_, syncButton_;
-    juce::ComboBox presetBox_;
+        savePresetButton_, syncButton_, fullscreenButton_;
+    juce::ComboBox presetBox_, viewBox_;
     juce::Label phoneLabel_;
 
     std::unique_ptr<juce::TabbedComponent> tabs_;
@@ -384,6 +425,7 @@ private:
     std::unique_ptr<SpectrumView> spectrumView_;
     std::unique_ptr<RoutingMatrix> routingMatrix_;
     std::unique_ptr<SettingsPanel> settingsPanel_;
+    std::unique_ptr<juce::AudioDeviceSelectorComponent> audioPanel_;
 
     std::unique_ptr<PhoneLink> phoneLink_;
 
