@@ -7,6 +7,18 @@ Set-Location $root
 
 Write-Host "=== Acoustical Estudio - build de un paso ===" -ForegroundColor Cyan
 
+# 0. adb (platform-tools oficiales de Google): sin él el PC no ve el móvil
+if (-not (Test-Path "tools\adb\adb.exe")) {
+    Write-Host "== Descargando adb (platform-tools de Google) ==" -ForegroundColor Yellow
+    New-Item -ItemType Directory -Force -Path "tools\adb" | Out-Null
+    $zip = Join-Path $env:TEMP "platform-tools.zip"
+    Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile $zip
+    Expand-Archive -Path $zip -DestinationPath "$env:TEMP\platform-tools" -Force
+    Copy-Item "$env:TEMP\platform-tools\platform-tools\adb.exe" "tools\adb\" -Force
+    Copy-Item "$env:TEMP\platform-tools\platform-tools\AdbWinApi.dll" "tools\adb\" -Force
+    Copy-Item "$env:TEMP\platform-tools\platform-tools\AdbWinUsbApi.dll" "tools\adb\" -Force
+}
+
 # 1. Configurar + compilar app, engine y plugin (x64)
 Write-Host "== App + plugin (x64) ==" -ForegroundColor Yellow
 if (-not (Test-Path "build")) {
