@@ -22,14 +22,12 @@ public:
 
     explicit EqCanvas(std::function<void(int, float)> onBandChanged)
         : onBandChanged_(std::move(onBandChanged)) {
-        // Se avisa una vez por gesto (para el punto de deshacer)
+        setMouseClickGrabsKeyboardFocus(false);
+        setBufferedToImage(true);
     }
 
     /** Se dispara al empezar un arrastre: punto de guardado para Ctrl+Z. */
     std::function<void()> onBandEditStart;
-        setMouseClickGrabsKeyboardFocus(false);
-        setBufferedToImage(true);
-    }
 
     void setSnapshot(const Snapshot& s) {
         std::lock_guard<std::mutex> lock(mutex_);
