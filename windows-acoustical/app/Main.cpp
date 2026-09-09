@@ -14,8 +14,8 @@ public:
         console_ = std::make_unique<ConsoleComponent>(dm, engine);
         setContentNonOwned(console_.get(), false);
         setResizable(true, false);
-        setResizeLimits(900, 600, 8192, 8192);
-        centreWithSize(1180, 760);
+        setResizeLimits(1120, 600, 8192, 8192);
+        centreWithSize(1280, 800);
         setVisible(true);
     }
 
@@ -30,7 +30,7 @@ private:
 class AcousticalApplication : public juce::JUCEApplication {
 public:
     const juce::String getApplicationName() override { return "Acoustical Estudio"; }
-    const juce::String getApplicationVersion() override { return "1.0.0"; }
+    const juce::String getApplicationVersion() override { return "1.1.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
 
     void initialise(const juce::String&) override {
