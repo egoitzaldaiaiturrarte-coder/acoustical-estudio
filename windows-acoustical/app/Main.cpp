@@ -47,7 +47,7 @@ public:
     }
 
     void shutdown() override {
-        if (const auto state = deviceManager.createStateInformation()) {
+        if (auto state = deviceManager.createStateXml()) {
             audioStateFile().getParentDirectory().createDirectory();
             if (auto out = audioStateFile().createOutputStream())
                 state->writeTo(*out);
