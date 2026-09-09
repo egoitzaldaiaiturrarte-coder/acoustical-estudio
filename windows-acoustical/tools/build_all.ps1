@@ -47,7 +47,7 @@ if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el bridge Win32" }
 Write-Host "== Preparando dist\ ==" -ForegroundColor Yellow
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path "$dist\app", "$dist\plugin", `
-    "$dist\bridge\x64", "$dist\bridge\x86" | Out-Null
+    "$dist\plugin32", "$dist\bridge\x64", "$dist\bridge\x86" | Out-Null
 
 # JUCE deja los artefactos en <target>_artefacts\<config>; buscamos en todo build\
 $appExe = Get-ChildItem "build" -Recurse -Filter "Acoustical*Estudio*.exe" -ErrorAction SilentlyContinue |

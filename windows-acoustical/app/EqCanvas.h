@@ -22,6 +22,11 @@ public:
 
     explicit EqCanvas(std::function<void(int, float)> onBandChanged)
         : onBandChanged_(std::move(onBandChanged)) {
+        // Se avisa una vez por gesto (para el punto de deshacer)
+    }
+
+    /** Se dispara al empezar un arrastre: punto de guardado para Ctrl+Z. */
+    std::function<void()> onBandEditStart;
         setMouseClickGrabsKeyboardFocus(false);
         setBufferedToImage(true);
     }
@@ -124,7 +129,10 @@ public:
         if (onBandChanged_) onBandChanged_(index, gain);
     }
 
-    void mouseDown(const juce::MouseEvent& e) override { mouseDrag(e); }
+    void mouseDown(const juce::MouseEvent& e) override {
+        if (onBandEditStart) onBandEditStart();
+        mouseDrag(e);
+    }
 
     void mouseUp(const juce::MouseEvent& e) override {
         juce::ignoreUnused(e);
