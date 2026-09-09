@@ -80,6 +80,20 @@ public:
             deviceManager_, 0, 16, 0, 16, false, false, true, false);
         audioPanel_->setItemHeight(36);
 
+        addAndMakeVisible(lockButton_);
+        lockButton_.setButtonText("Bloquear faders");
+        lockButton_.setClickingTogglesState(true);
+        lockButton_.setColour(juce::TextButton::buttonOnColourId, theme::eq2Amber);
+        lockButton_.onClick = [this] { fadersLocked_ = lockButton_.getToggleState(); };
+
+        addAndMakeVisible(undoButton_);
+        undoButton_.setButtonText("Desh");
+        undoButton_.onClick = [this] { undo(); };
+
+        addAndMakeVisible(redoButton_);
+        redoButton_.setButtonText("Reh");
+        redoButton_.onClick = [this] { redo(); };
+
         // === Los tres ecuas dinámicos, idénticos y seguidos ===
         for (int i = 0; i < 3; ++i) {
             DynamicEqCard::Snapshot snap;
@@ -95,16 +109,21 @@ public:
 
         // === EQ principal ===
         eqCanvas_ = std::make_unique<EqCanvas>([this](int band, float gain) {
+            if (fadersLocked_) return;
             engine_.setBandGain(band, gain);
         });
+        eqCanvas_->onBandEditStart = [this] { if (!fadersLocked_) pushUndo(); };
         addAndMakeVisible(*eqCanvas_);
 
         // === Pestañas ===
         spectrumView_ = std::make_unique<SpectrumView>();
         routingMatrix_ = std::make_unique<RoutingMatrix>(deviceManager_);
+        loadSavedSettings();  // últimos valores funcionales
         settingsPanel_ = std::make_unique<SettingsPanel>(engine_, [this](bool active) {
             generatorActive_.store(active);
         });
+        settingsPanel_->onBeforeChange = [this] { pushUndo(); };
+        settingsPanel_->onAfterChange = [this] { saveSettings(); };
         tabs_ = std::make_unique<juce::TabbedComponent>(juce::TabbedButtonBar::TabsAtTop);
         tabs_->addTab("EQ", theme::surface, eqCanvas_.get(), false);
         tabs_->addTab("Ecuas dinámicos", theme::surface, &eqCardsPanel_, false);
@@ -122,6 +141,9 @@ public:
 
         startTimerHz(30);
         deviceManager_.addAudioCallback(this);
+
+        // Motor arrancado por defecto: solo hay que tener el audio seleccionado
+        if (engine_.start()) powerButton_.setButtonText("Parar");
 
         // Vigilante USB: adb + sincronización con el móvil
         auto adb = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
@@ -147,6 +169,13 @@ public:
         if (key == juce::KeyPress::F3Key) { toggleDynamicEq(2); return true; }
         if (key == juce::KeyPress::spaceKey) { freezeButton_.triggerClick(); return true; }
         if (key == juce::KeyPress::F11Key) { toggleFullscreen(); return true; }
+        // Ctrl+Z deshacer · Ctrl+Shift+Z / Ctrl+Y rehacer
+        const auto mods = key.getModifiers();
+        if (mods.isCtrlDown()) {
+            const auto kc = key.getKeyCode();
+            if (kc == 'Z') { mods.isShiftDown() ? redo() : undo(); return true; }
+            if (kc == 'Y') { redo(); return true; }
+        }
         // Teclas 1-6: saltar directo a cada vista
         const auto ch = key.getTextCharacter();
         if (ch >= '1' && ch <= '6') {
@@ -181,6 +210,66 @@ private:
             w->setFullScreen(target);
             fullscreenButton_.setToggleState(target, juce::dontSendNotification);
         }
+    }
+
+    // === Deshacer / rehacer de la configuración ===
+
+    void pushUndo() {
+        undoStack_.push_back(engine_.config());
+        if (undoStack_.size() > 100) undoStack_.pop_front();
+        redoStack_.clear();
+    }
+
+    void undo() {
+        if (undoStack_.empty()) return;
+        redoStack_.push_back(engine_.config());
+        engine_.configure(undoStack_.back());
+        undoStack_.pop_back();
+        settingsPanel_->refresh();
+    }
+
+    void redo() {
+        if (redoStack_.empty()) return;
+        undoStack_.push_back(engine_.config());
+        engine_.configure(redoStack_.back());
+        redoStack_.pop_back();
+        settingsPanel_->refresh();
+    }
+
+    // === Guardado automático de los últimos valores funcionales ===
+
+    juce::File settingsFile() const {
+        return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+            .getChildFile("Acoustical").getChildFile("settings.json");
+    }
+
+    void saveSettings() {
+        settingsFile().replaceWithText(juce::JSON::toString(serializeEngine(), true));
+    }
+
+    void loadSavedSettings() {
+        const auto f = settingsFile();
+        if (!f.existsAsFile()) return;
+        const auto v = juce::JSON::parse(f);
+        auto* obj = v.getDynamicObject();
+        if (obj == nullptr) return;
+        auto num = [obj](const char* key, double def) {
+            const auto val = obj->getProperty(key);
+            return val.isVoid() ? def : static_cast<double>(val);
+        };
+        auto flag = [obj](const char* key, bool def) {
+            const auto val = obj->getProperty(key);
+            return val.isVoid() ? def : static_cast<bool>(val);
+        };
+        auto c = engine_.config();
+        c.maxGainDb = static_cast<float>(num("maxGainDb", c.maxGainDb));
+        c.smoothingFactor = static_cast<float>(num("smoothingFactor", c.smoothingFactor));
+        c.noiseFloorDb = static_cast<float>(num("noiseFloorDb", c.noiseFloorDb));
+        c.noiseSubtractionEnabled = flag("noiseSubtractionEnabled", c.noiseSubtractionEnabled);
+        c.correctionEnabled = flag("correctionEnabled", c.correctionEnabled);
+        c.targetSpl = static_cast<float>(num("targetSpl", c.targetSpl));
+        c.audioDelayMs = static_cast<float>(num("audioDelayMs", c.audioDelayMs));
+        engine_.configure(c);
     }
 
     void audioDeviceIOCallbackWithContext(const float* const* input, int numInputs,
@@ -400,11 +489,14 @@ private:
         referenceButton_.setBounds(top.removeFromLeft(138.0f).reduced(2.0f, 0.0f));
         noiseButton_.setBounds(top.removeFromLeft(110.0f).reduced(2.0f, 0.0f));
         freezeButton_.setBounds(top.removeFromLeft(92.0f).reduced(2.0f, 0.0f));
-        viewBox_.setBounds(top.removeFromLeft(150.0f).reduced(4.0f, 0.0f));
-        presetBox_.setBounds(top.removeFromLeft(140.0f).reduced(4.0f, 0.0f));
+        viewBox_.setBounds(top.removeFromLeft(130.0f).reduced(4.0f, 0.0f));
+        presetBox_.setBounds(top.removeFromLeft(130.0f).reduced(4.0f, 0.0f));
         savePresetButton_.setBounds(top.removeFromLeft(84.0f).reduced(2.0f, 0.0f));
-        syncButton_.setBounds(top.removeFromLeft(136.0f).reduced(2.0f, 0.0f));
-        fullscreenButton_.setBounds(top.removeFromLeft(150.0f).reduced(2.0f, 0.0f));
+        syncButton_.setBounds(top.removeFromLeft(120.0f).reduced(2.0f, 0.0f));
+        fullscreenButton_.setBounds(top.removeFromLeft(130.0f).reduced(2.0f, 0.0f));
+        lockButton_.setBounds(top.removeFromLeft(124.0f).reduced(2.0f, 0.0f));
+        undoButton_.setBounds(top.removeFromLeft(46.0f).reduced(2.0f, 0.0f));
+        redoButton_.setBounds(top.removeFromLeft(46.0f).reduced(2.0f, 0.0f));
         phoneLabel_.setBounds(top);
 
         tabs_->setBounds(bounds);
@@ -414,9 +506,13 @@ private:
     acoustical::AcousticalEngine& engine_;
 
     juce::TextButton powerButton_, referenceButton_, noiseButton_, freezeButton_,
-        savePresetButton_, syncButton_, fullscreenButton_;
+        savePresetButton_, syncButton_, fullscreenButton_, lockButton_,
+        undoButton_, redoButton_;
     juce::ComboBox presetBox_, viewBox_;
     juce::Label phoneLabel_;
+
+    std::deque<acoustical::AudioConfig> undoStack_, redoStack_;
+    bool fadersLocked_ = false;
 
     std::unique_ptr<juce::TabbedComponent> tabs_;
     std::unique_ptr<EqCanvas> eqCanvas_;

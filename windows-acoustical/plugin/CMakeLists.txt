@@ -35,6 +35,10 @@ target_compile_definitions(AcousticalDynamicEq PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
 )
 
+if(MSVC)
+    target_compile_options(AcousticalDynamicEq PRIVATE /utf-8)
+endif()
+
 # Reutiliza el canvas de EQ y las tarjetas de los ecuas dinámicos de la app
 target_include_directories(AcousticalDynamicEq PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../app)
 

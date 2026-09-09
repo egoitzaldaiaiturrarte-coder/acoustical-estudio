@@ -3,7 +3,7 @@
 ; Espera en dist\ lo generado por tools\build_all.ps1.
 
 #define AppName "Acoustical Estudio"
-#define AppVersion "1.1.1"
+#define AppVersion "1.2.0"
 #define AppExe "Acoustical Estudio.exe"
 
 [Setup]
@@ -38,6 +38,9 @@ Source: "..\dist\app\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 ; Plugin VST3 (x64) - Cubase 5 lo busca en Common Files\VST3
 Source: "..\dist\plugin\Acoustical Dynamic EQ.vst3"; DestDir: "{cf}\VST3"; \
   Flags: recursesubdirs ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
+; Plugin VST3 Win32 (Cubase 5 de 32 bits solo carga plugins de 32 bits)
+Source: "..\dist\plugin32\Acoustical Dynamic EQ.vst3"; DestDir: "{cf32}\VST3"; \
+  Flags: recursesubdirs ignoreversion skipifsourcedoesntexist
 ; Plugin VST2 (x64), si se compiló
 Source: "..\dist\plugin\Acoustical Dynamic EQ.dll"; DestDir: "{cf}\Steinberg\VstPlugins"; \
   Flags: ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
