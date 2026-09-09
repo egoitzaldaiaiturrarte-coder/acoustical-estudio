@@ -3,7 +3,7 @@
 ; Espera en dist\ lo generado por tools\build_all.ps1.
 
 #define AppName "Acoustical Estudio"
-#define AppVersion "1.1.0"
+#define AppVersion "1.1.1"
 #define AppExe "Acoustical Estudio.exe"
 
 [Setup]
