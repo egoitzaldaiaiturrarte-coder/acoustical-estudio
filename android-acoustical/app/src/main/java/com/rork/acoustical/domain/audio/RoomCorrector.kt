@@ -25,7 +25,8 @@ class RoomCorrector(
     private val fftBinCount: Int,
     private val maxGainDb: Float,
     private val smoothingFactor: Float,
-    private val noiseFloorDb: Float
+    private val noiseFloorDb: Float,
+    private val correctionPeriodMs: Long = TWO_BAND_PERIOD_MS
 ) {
 
     private val bandCount: Int = bandFrequencies.size
@@ -51,6 +52,11 @@ class RoomCorrector(
     private val bandEdgeRatio: Double =
         if (bandCount > 40) 2.0.pow(1.0 / 12.0) else 2.0.pow(1.0 / 6.0)
 
+    // Native (shared C core) fast path for band aggregation — same code the
+    // Windows app runs. Stateless: the native function takes all parameters
+    // directly, so no handle is needed.
+    private val useNative: Boolean = NativeDsp.isAvailable
+
     /**
      * Aggregate raw FFT bins into perceptual bands using log-spaced center frequencies.
      *
@@ -62,26 +68,43 @@ class RoomCorrector(
         magnitudesDb: FloatArray,
         binFrequencies: FloatArray
     ): FloatArray {
-        val bandLevels = FloatArray(bandCount)
+        // Native (shared C core) fast path — same two-pointer aggregation the
+        // Windows app runs. Falls through to the pure-Kotlin implementation
+        // when the native lib is absent (e.g. JVM unit tests).
+        if (useNative) {
+            val bandLevels = FloatArray(bandCount)
+            NativeDsp.nativeAggregateBands(bandFrequencies, magnitudesDb, binFrequencies, noiseFloorDb, bandLevels)
+            currentBandLevels = bandLevels
+            return bandLevels
+        }
 
+        val bandLevels = FloatArray(bandCount)
+        val ratio = bandEdgeRatio
+        val totalBins = binFrequencies.size
+
+        // Two-pointer: both the band edges (lower/upper) and the bin
+        // frequencies are sorted, so the [lower, upper] window only ever moves
+        // forward. This is O(totalBins + bandCount) instead of the previous
+        // O(bandCount × totalBins), which matters with 124 bands × 2048 bins.
+        var start = 0
+        var end = 0
         for (b in 0 until bandCount) {
             val center = bandFrequencies[b]
-            // Band edges: half the band spacing (1/3 or 1/6 octave depending on density)
-            val ratio = bandEdgeRatio
-            val lower = (center / ratio).toFloat()
-            val upper = (center * ratio).toFloat()
+            val lower = center / ratio
+            val upper = center * ratio
+
+            while (start < totalBins && binFrequencies[start] < lower) start++
+            if (end < start) end = start
+            while (end < totalBins && binFrequencies[end] <= upper) end++
 
             var sum = 0.0
             var count = 0
-            for (i in 0 until binFrequencies.size) {
-                val freq = binFrequencies[i]
-                if (freq >= lower && freq <= upper) {
-                    if (magnitudesDb[i] > noiseFloorDb) {
-                        sum += magnitudesDb[i]
-                        count++
-                    }
+            for (i in start until end) {
+                val mag = magnitudesDb[i]
+                if (mag > noiseFloorDb) {
+                    sum += mag
+                    count++
                 }
-                if (freq > upper) break
             }
             bandLevels[b] = if (count > 0) (sum / count).toFloat() else noiseFloorDb
         }
@@ -120,7 +143,7 @@ class RoomCorrector(
         }
 
         val now = System.currentTimeMillis()
-        if (now - lastCorrectionMs >= TWO_BAND_PERIOD_MS) {
+        if (now - lastCorrectionMs >= correctionPeriodMs) {
             lastCorrectionMs = now
 
             // Only bands with real signal above the noise floor participate;
@@ -234,14 +257,16 @@ class RoomCorrector(
             fftSize: Int,
             maxGainDb: Float,
             smoothingFactor: Float,
-            noiseFloorDb: Float
+            noiseFloorDb: Float,
+            correctionPeriodMs: Long = TWO_BAND_PERIOD_MS
         ): RoomCorrector = RoomCorrector(
             bandFrequencies = bandFrequencies,
             sampleRate = sampleRate,
             fftBinCount = fftSize / 2,
             maxGainDb = maxGainDb,
             smoothingFactor = smoothingFactor,
-            noiseFloorDb = noiseFloorDb
+            noiseFloorDb = noiseFloorDb,
+            correctionPeriodMs = correctionPeriodMs
         )
     }
 }

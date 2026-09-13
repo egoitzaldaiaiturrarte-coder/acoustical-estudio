@@ -35,7 +35,15 @@ if (-not (Test-Path "build-bridge64")) {
 cmake --build build-bridge64 --config Release
 if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el bridge x64" }
 
-# 3. Driver ASIO Win32 (Cubase 5 de 32 bits)
+# 3. Plugin Win32 (Cubase 5 de 32 bits only loads 32-bit plugins)
+Write-Host "== App + plugin (Win32) ==" -ForegroundColor Yellow
+if (-not (Test-Path "build-plugin32")) {
+    cmake -S . -B build-plugin32 -A Win32
+}
+cmake --build build-plugin32 --config Release --target AcousticalDynamicEq_VST AcousticalDynamicEq_VST3 --parallel
+if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el plugin Win32" }
+
+# 4. Driver ASIO Win32 (Cubase 5 de 32 bits)
 Write-Host "== Acoustical Bridge (Win32) ==" -ForegroundColor Yellow
 if (-not (Test-Path "build-bridge32")) {
     cmake -S asio-bridge -B build-bridge32 -A Win32
@@ -43,7 +51,7 @@ if (-not (Test-Path "build-bridge32")) {
 cmake --build build-bridge32 --config Release
 if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el bridge Win32" }
 
-# 4. Reunir dist\
+# 5. Reunir dist\
 Write-Host "== Preparando dist\ ==" -ForegroundColor Yellow
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path "$dist\app", "$dist\plugin", `
@@ -65,6 +73,14 @@ $vst2 = Get-ChildItem "build" -Recurse -Filter "Acoustical*Dynamic*EQ*.dll" -Err
     Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
 if ($vst2) { Copy-Item $vst2.FullName "$dist\plugin\" -Force }
 
+# Plugin Win32 (Cubase 5 de 32 bits): VST2.4 dll + VST3 bundle
+$vst32 = Get-ChildItem "build-plugin32" -Recurse -Directory -Filter "*.vst3" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
+if ($vst32) { Copy-Item $vst32.FullName "$dist\plugin32\" -Recurse -Force }
+$vst2_32 = Get-ChildItem "build-plugin32" -Recurse -Filter "Acoustical*Dynamic*EQ*.dll" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release\\VST\\" } | Select-Object -First 1
+if ($vst2_32) { Copy-Item $vst2_32.FullName "$dist\plugin32\" -Force }
+
 $bridge64 = Get-ChildItem "build-bridge64" -Recurse -Filter "AcousticalBridge.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
 $bridge32 = Get-ChildItem "build-bridge32" -Recurse -Filter "AcousticalBridge.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $bridge64) { throw "No se encontró AcousticalBridge.dll x64" }
@@ -76,8 +92,6 @@ Write-Host ""
 Write-Host "=== Todo compilado en dist\ ===" -ForegroundColor Green
 Write-Host "Siguiente paso: compilar el instalador con Inno Setup:"
 Write-Host "  ISCC installer\acoustical.iss"
-if (-not $env:VST2_SDK_PATH) {
-    Write-Host ""
-    Write-Warning "VST2_SDK_PATH no definido: el plugin se compila solo en VST3 (Cubase 5 lo soporta)."
-    Write-Warning "Para VST2.4: define la variable con la carpeta del SDK legacy y vuelve a ejecutar."
+if (-not (Test-Path "$dist\plugin32\Acoustical Dynamic EQ.dll")) {
+    Write-Warning "El plugin VST2.4 Win32 no se ha generado: Cubase 5 de 32 bits no lo cargará."
 }

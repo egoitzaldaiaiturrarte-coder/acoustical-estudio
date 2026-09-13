@@ -4,6 +4,12 @@ project(AcousticalEstudio VERSION 1.0.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Static MSVC runtime so the plugin DLL has no VC++ redistributable dependency
+# (Cubase 5 era machines often lack the VC++ 2015+ runtime).
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # JUCE se descarga automáticamente la primera vez (necesita conexión a internet)
 include(FetchContent)
 FetchContent_Declare(

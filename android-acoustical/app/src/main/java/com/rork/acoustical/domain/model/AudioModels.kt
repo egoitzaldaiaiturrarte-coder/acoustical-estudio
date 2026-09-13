@@ -71,6 +71,8 @@ data class AudioConfig(
     val maxGainDb: Float = 12f,
     val targetSpl: Float = 75f,
     val smoothingFactor: Float = 0.3f,
+    // Cadence of the two-band correction sweep (ms). Default 500 ms = 2 Hz.
+    val correctionPeriodMs: Long = 500L,
     // Noise threshold fixed by design (120 dB reference) — no manual control
     val noiseFloorDb: Float = -120f,
     val noiseSubtractionEnabled: Boolean = true,

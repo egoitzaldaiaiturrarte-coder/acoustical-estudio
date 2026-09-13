@@ -24,7 +24,8 @@ void AcousticalEngine::configure(const AudioConfig& config) {
     fft_ = std::make_unique<FftProcessor>(fftSamples(config.fftSize));
     corrector_ = std::make_unique<RoomCorrector>(
         bandFrequencies_, sampleRateHz(config.sampleRate), fft_->binCount(),
-        config.maxGainDb, config.effectiveSmoothingFactor(), config.noiseFloorDb);
+        config.maxGainDb, config.effectiveSmoothingFactor(), config.noiseFloorDb,
+        config.correctionIntervalMs);
     splMeter_ = std::make_unique<SplMeter>(120.0f);
     noiseProfiler_ = std::make_unique<NoiseProfiler>(fft_->binCount(), 50, 6.0f);
 

@@ -37,6 +37,17 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // Native DSP: builds libacoustical_dsp.so from app/src/main/cpp, which
+    // links the shared C core (dsp/acoustical_dsp.c) so Android runs the same
+    // FFT / band-aggregation as the Windows app. Pure-Kotlin fallback used if
+    // the lib is absent.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 kotlin {
@@ -66,5 +77,8 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
     implementation(libs.koin.androidx.compose)
+
+    // JVM unit tests for the pure-Kotlin DSP (FftProcessor, RoomCorrector).
+    testImplementation(libs.junit)
     debugImplementation(libs.androidx.ui.tooling)
 }

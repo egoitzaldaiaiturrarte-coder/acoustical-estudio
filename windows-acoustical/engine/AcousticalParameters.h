@@ -116,6 +116,9 @@ struct AudioConfig {
     float audioDelayMs = 25.0f;
     bool geoAutoAdjust = false;
     std::string scenarioPreset = "CUSTOM";
+    // Cadencia de la corrección rápida (ms). A menor valor, más rápido se
+    // recorre el espectro de bandas; 500 ms es el valor original.
+    int correctionIntervalMs = 500;
 
     // Con límites altos de corrección el suavizado se relaja para evitar oscilación
     float effectiveSmoothingFactor() const {
