@@ -44,6 +44,9 @@ Source: "..\dist\plugin32\Acoustical Dynamic EQ.vst3"; DestDir: "{cf32}\VST3"; \
 ; Plugin VST2 (x64), si se compiló
 Source: "..\dist\plugin\Acoustical Dynamic EQ.dll"; DestDir: "{cf}\Steinberg\VstPlugins"; \
   Flags: ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
+; Plugin VST2.4 Win32 (Cubase 5 de 32 bits loads it from {cf32}\Vstplugins)
+Source: "..\dist\plugin32\Acoustical Dynamic EQ.dll"; DestDir: "{cf32}\Vstplugins"; \
+  Flags: ignoreversion skipifsourcedoesntexist
 ; Driver ASIO x64 y x86 (Cubase 5 de 32 y 64 bits)
 Source: "..\dist\bridge\x64\AcousticalBridge.dll"; DestDir: "{app}\bridge\x64"; Flags: ignoreversion
 Source: "..\dist\bridge\x86\AcousticalBridge.dll"; DestDir: "{app}\bridge\x86"; Flags: ignoreversion

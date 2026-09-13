@@ -11,6 +11,74 @@ permissions:
   contents: write
 
 jobs:
+  dsp:
+    # Fast gate: compile the shared C DSP core and run the C++ engine + JNI
+    # bridge tests on Linux. Catches regressions in the DSP that both the
+    # Windows app and the Android native lib depend on, in seconds.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Compilar y testear el núcleo DSP compartido (C)
+        run: |
+          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp \
+            dsp/test_engine_wiring.cpp dsp/acoustical_dsp.c \
+            windows-acoustical/engine/FftProcessor.cpp windows-acoustical/engine/EqDsp.cpp \
+            -o /tmp/test_wiring -lm
+          /tmp/test_wiring
+
+      - name: Compilar y testear el puente JNI (sin NDK)
+        run: |
+          g++ -std=c++17 -O2 -Idsp/jni_stub -Idsp \
+            android-acoustical/app/src/main/cpp/acoustical_jni.cpp \
+            dsp/acoustical_dsp.c dsp/test_jni.cpp -o /tmp/test_jni -lm
+          /tmp/test_jni
+
+  android:
+    # Full Android build: runs the pure-Kotlin DSP unit tests, builds the
+    # native libacoustical_dsp.so, and assembles the debug APK.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-acoustical
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Instalar cmdline-tools
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools: 12266717
+
+      - name: Instalar Android SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
+            "ndk;27.0.12077973" "cmake;3.22.1"
+
+      - name: Configurar local.properties
+        run: echo "sdk.dir=${ANDROID_HOME}" > local.properties
+
+      - name: Ejecutar tests JVM (DSP Kotlin)
+        run: ./gradlew :app:testDebugUnitTest --console=plain --stacktrace
+
+      - name: Compilar APK (debug)
+        run: ./gradlew :app:assembleDebug --console=plain --stacktrace
+
+      - name: Subir el APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: AcousticalEstudio-Android
+          path: android-acoustical/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
   build:
     runs-on: windows-latest
     defaults:

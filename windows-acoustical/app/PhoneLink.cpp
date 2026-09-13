@@ -109,12 +109,24 @@ bool PhoneLink::connectAndExchange(const juce::var& send, juce::var& reply) {
         socket.close();
         return false;
     }
+    // TCP es un flujo: la respuesta puede llegar en varios segmentos o superar
+    // 64 KB (payloads de 124 bandas). Leer una sola vez trunca el JSON. Acumulamos
+    // hasta que el móvil cierra la conexión (el servidor la cierra al terminar),
+    // con un tope de seguridad para no colgarnos si no cierra.
+    juce::MemoryBlock raw;
     char buffer[65536];
-    const int n = socket.read(buffer, sizeof(buffer) - 1, false);
+    const juce::int64 maxBytes = 8 * 1024 * 1024;
+    for (juce::int64 total = 0; total < maxBytes;) {
+        const int n = socket.read(buffer, sizeof(buffer), false);
+        if (n <= 0) break;
+        raw.append(buffer, static_cast<size_t>(n));
+        total += n;
+    }
     socket.close();
-    if (n <= 0) return false;
-    buffer[n] = '\0';
-    reply = juce::JSON::parse(juce::String::fromUTF8(buffer, n));
+    if (raw.getSize() == 0) return false;
+    reply = juce::JSON::parse(
+        juce::String::fromUTF8(static_cast<const char*>(raw.getData()),
+                               static_cast<int>(raw.getSize())));
     return !reply.isVoid();
 }
 

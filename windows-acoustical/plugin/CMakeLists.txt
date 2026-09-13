@@ -1,12 +1,17 @@
-# Plugin VST para Cubase 5 — VST3 siempre; VST2.4 si está el SDK legacy
-# (variable de entorno VST2_SDK_PATH apuntando a la carpeta con aeffect.h).
-set(FORMATS VST3)
-if(DEFINED ENV{VST2_SDK_PATH})
-    juce_set_vst2_sdk_path("$ENV{VST2_SDK_PATH}")
-    set(FORMATS VST3 VST2)
-    message(STATUS "Acoustical: compilando VST3 + VST2.4")
+# Plugin VST para Cubase 5 — VST3 siempre; VST2.4 (32-bit) for Cubase 5.
+# The legacy VST2 SDK is vendored in windows-acoustical/vst2-sdk. Override with
+# the VST2_SDK_PATH env var if you have a different/complete SDK.
+set(_vst2_sdk "$ENV{VST2_SDK_PATH}")
+if(NOT _vst2_sdk)
+    set(_vst2_sdk "${CMAKE_CURRENT_SOURCE_DIR}/../vst2-sdk")
+endif()
+if(EXISTS "${_vst2_sdk}/pluginterfaces/vst2.x/aeffect.h")
+    juce_set_vst2_sdk_path("${_vst2_sdk}")
+    set(FORMATS VST3 VST)
+    message(STATUS "Acoustical: compilando VST3 + VST2.4 (SDK: ${_vst2_sdk})")
 else()
-    message(STATUS "Acoustical: VST2_SDK_PATH no definido — solo VST3")
+    message(STATUS "Acoustical: VST2 SDK no encontrado — solo VST3")
+    set(FORMATS VST3)
 endif()
 
 juce_add_plugin(AcousticalDynamicEq

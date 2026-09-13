@@ -4,6 +4,7 @@
 #pragma once
 
 #include "AcousticalParameters.h"
+#include "acoustical_dsp.h"
 #include <algorithm>
 #include <chrono>
 #include "StandardFrequencies.h"
@@ -13,42 +14,37 @@ namespace acoustical {
 class RoomCorrector {
 public:
     RoomCorrector(const std::vector<float>& bandFrequencies, int sampleRate, int fftBinCount,
-                  float maxGainDb, float smoothingFactor, float noiseFloorDb)
+                  float maxGainDb, float smoothingFactor, float noiseFloorDb,
+                  int correctionIntervalMs = 500)
         : bandFrequencies_(bandFrequencies), sampleRate_(sampleRate), fftBinCount_(fftBinCount),
           maxGainDb_(maxGainDb), smoothingFactor_(smoothingFactor), noiseFloorDb_(noiseFloorDb),
+          correctionIntervalMs_(correctionIntervalMs > 0 ? correctionIntervalMs : 500),
           bandCount_(static_cast<int>(bandFrequencies.size())) {
         targetGains_.assign(bandCount_, 0.0f);
         currentBandLevels_.assign(bandCount_, noiseFloorDb);
-        bandEdgeRatio_ = bandCount_ > 40 ? std::pow(2.0, 1.0 / 12.0) : std::pow(2.0, 1.0 / 6.0);
     }
 
-    // Agrega los bins del FFT en bandas perceptuales (media de bins dentro de los bordes)
+    // Agrega los bins del FFT en bandas perceptuales (media de bins dentro de los
+    // bordes). La búsqueda de bins es O(bandas + bins) gracias al núcleo
+    // compartido (dos punteros), en lugar de O(bandas * bins).
     std::vector<float> aggregateBands(const std::vector<float>& magnitudesDb,
                                       const std::vector<float>& binFrequencies) {
         std::vector<float> bandLevels(bandCount_);
-        for (int b = 0; b < bandCount_; ++b) {
-            const float center = bandFrequencies_[b];
-            const float lower = static_cast<float>(center / bandEdgeRatio_);
-            const float upper = static_cast<float>(center * bandEdgeRatio_);
-            double sum = 0.0;
-            int count = 0;
-            for (size_t i = 0; i < binFrequencies.size(); ++i) {
-                const float freq = binFrequencies[i];
-                if (freq > upper) break;
-                if (freq >= lower && freq <= upper && i < magnitudesDb.size() &&
-                    magnitudesDb[i] > noiseFloorDb_) {
-                    sum += magnitudesDb[i];
-                    ++count;
-                }
-            }
-            bandLevels[b] = count > 0 ? static_cast<float>(sum / count) : noiseFloorDb_;
+        if (bandCount_ > 0 && !binFrequencies.empty()) {
+            acoustical_aggregate_bands(bandFrequencies_.data(), bandCount_,
+                                       magnitudesDb.data(), static_cast<int>(magnitudesDb.size()),
+                                       binFrequencies.data(), static_cast<int>(binFrequencies.size()),
+                                       noiseFloorDb_, bandLevels.data());
+        } else {
+            std::fill(bandLevels.begin(), bandLevels.end(), noiseFloorDb_);
         }
         currentBandLevels_ = bandLevels;
         return bandLevels;
     }
 
-    // Corrección rápida: cada 500 ms corta la banda más alta del ranking y sube
-    // la más baja (round-robin); todas las bandas se suavizan en cada fotograma.
+    // Corrección rápida: cada `correctionIntervalMs_` ms corta la banda más alta
+    // del ranking y sube la más baja (round-robin); todas las bandas se suavizan
+    // en cada fotograma.
     std::vector<EqBand> computeCorrections(const std::vector<float>& referenceLevels,
                                            const std::vector<float>& measuredLevels,
                                            const std::vector<EqBand>& currentBands) {
@@ -56,7 +52,7 @@ public:
         if (static_cast<int>(targetGains_.size()) != bandCount_) targetGains_.assign(bandCount_, 0.0f);
 
         const long long now = nowMs();
-        if (now - lastCorrectionMs_ >= kTwoBandPeriodMs) {
+        if (now - lastCorrectionMs_ >= correctionIntervalMs_) {
             lastCorrectionMs_ = now;
 
             std::vector<int> active;
@@ -159,8 +155,8 @@ private:
     float maxGainDb_;
     float smoothingFactor_;
     float noiseFloorDb_;
+    int correctionIntervalMs_ = kTwoBandPeriodMs;
     int bandCount_;
-    double bandEdgeRatio_ = std::pow(2.0, 1.0 / 6.0);
 
     std::vector<float> targetGains_;
     std::vector<float> currentBandLevels_;

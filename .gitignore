@@ -2,3 +2,12 @@ node_modules
 .env
 .expo
 .rork
+# build artifacts
+windows-acoustical/build/
+windows-acoustical/build-bridge64/
+windows-acoustical/build-bridge32/
+windows-acoustical/build-plugin32/
+android-acoustical/app/.cxx/
+android-acoustical/.gradle/
+android-acoustical/app/build/
+android-acoustical/build/

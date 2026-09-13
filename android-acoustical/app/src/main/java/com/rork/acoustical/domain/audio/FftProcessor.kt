@@ -21,10 +21,45 @@ class FftProcessor(private val size: Int) {
     private val magnitudeDb: FloatArray = FloatArray(size / 2)
     private val binFrequencies: FloatArray = FloatArray(size / 2)
 
+    // Native (shared C core) path: when the JNI lib is present on device we run
+    // the exact same FFT the Windows app uses. A non-zero handle means the
+    // native core is live and [useNative] is true; otherwise the pure-Kotlin
+    // implementation below is used.
+    private val nativeHandle: Long = if (NativeDsp.isAvailable) NativeDsp.nativeFftCreate(size) else 0L
+    private val useNative: Boolean = nativeHandle != 0L
+
     init {
         require(size > 0 && size and (size - 1) == 0) { "FFT size must be power of 2, got $size" }
         bitReverseTable = computeBitReverseTable(size)
         initHammingWindow()
+        if (!useNative) initTwiddleTables()
+    }
+
+    @Volatile
+    private var twiddleReal: Array<FloatArray>? = null
+    private var twiddleImag: Array<FloatArray>? = null
+
+    private fun initTwiddleTables() {
+        val stages = (1 until countLog2(size) + 1).map { 1 shl it } // 2,4,8,...,size
+        twiddleReal = Array(stages.size) { s ->
+            val stageSize = stages[s]
+            val halfStage = stageSize / 2
+            val angleStep = -2.0 * PI / stageSize
+            FloatArray(halfStage) { i -> cos(angleStep * i).toFloat() }
+        }
+        twiddleImag = Array(stages.size) { s ->
+            val stageSize = stages[s]
+            val halfStage = stageSize / 2
+            val angleStep = -2.0 * PI / stageSize
+            FloatArray(halfStage) { i -> kotlin.math.sin(angleStep * i).toFloat() }
+        }
+    }
+
+    private fun countLog2(n: Int): Int {
+        var v = n
+        var bits = 0
+        while (v > 1) { v = v ushr 1; bits++ }
+        return bits
     }
 
     val binCount: Int get() = size / 2
@@ -68,6 +103,15 @@ class FftProcessor(private val size: Int) {
     fun computeMagnitudesDb(input: FloatArray, sampleRate: Int): FloatArray {
         require(input.size >= size) { "Input must have at least $size samples, got ${input.size}" }
 
+        // Native (shared C core) fast path — same FFT the Windows app runs.
+        // Reuses the magnitudeDb scratch buffer and refreshes bin frequencies.
+        if (useNative) {
+            NativeDsp.nativeFftCompute(nativeHandle, input, sampleRate, magnitudeDb)
+            val binHz = sampleRate.toFloat() / size.toFloat()
+            for (i in 0 until binCount) binFrequencies[i] = i * binHz
+            return magnitudeDb
+        }
+
         // Apply window and prepare arrays
         for (i in 0 until size) {
             real[i] = input[i] * window[i]
@@ -83,20 +127,25 @@ class FftProcessor(private val size: Int) {
             }
         }
 
-        // Cooley-Tukey butterfly
+        // Cooley-Tukey butterfly, using the precomputed twiddle tables.
+        // (Non-null here: the native path returns early, so the Kotlin tables
+        // were built in init.)
+        val twReal = requireNotNull(twiddleReal) { "twiddle tables not initialised" }
+        val twImag = requireNotNull(twiddleImag) { "twiddle tables not initialised" }
         var stageSize = 2
+        var stageIdx = 0
         while (stageSize <= size) {
             val halfStage = stageSize / 2
-            val angleStep = -2.0 * PI / stageSize
+            val wReal = twReal[stageIdx]
+            val wImag = twImag[stageIdx]
             for (i in 0 until halfStage) {
-                val angle = angleStep * i
-                val wReal = cos(angle).toFloat()
-                val wImag = kotlin.math.sin(angle).toFloat()
+                val wr = wReal[i]
+                val wi = wImag[i]
                 var j = i
                 while (j < size) {
                     val k = j + halfStage
-                    val tReal = wReal * real[k] - wImag * imag[k]
-                    val tImag = wReal * imag[k] + wImag * real[k]
+                    val tReal = wr * real[k] - wi * imag[k]
+                    val tImag = wr * imag[k] + wi * real[k]
                     real[k] = real[j] - tReal
                     imag[k] = imag[j] - tImag
                     real[j] = real[j] + tReal
@@ -105,6 +154,7 @@ class FftProcessor(private val size: Int) {
                 }
             }
             stageSize = stageSize shl 1
+            stageIdx++
         }
 
         // Compute magnitudes in dB

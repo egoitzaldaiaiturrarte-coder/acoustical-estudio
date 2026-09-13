@@ -117,7 +117,8 @@ class AudioEngine {
             maxGainDb = newConfig.maxGainDb,
             // High correction limits automatically relax the smoothing to avoid oscillation
             smoothingFactor = newConfig.effectiveSmoothingFactor,
-            noiseFloorDb = newConfig.noiseFloorDb
+            noiseFloorDb = newConfig.noiseFloorDb,
+            correctionPeriodMs = newConfig.correctionPeriodMs
         )
         splMeter = SplMeter(calibrationOffset = 120f)
         noiseProfiler = NoiseProfiler(

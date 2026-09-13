@@ -1,22 +1,20 @@
 #include "EqDsp.h"
+#include "acoustical_dsp.h"
 #include <algorithm>
 #include <cmath>
 
 namespace acoustical {
 
+// Los coeficientes del peaking EQ (RBJ cookbook) viven en el núcleo DSP
+// compartido (dsp/acoustical_dsp.c), que es la única fuente de verdad y la
+// que cubren los tests. El paso por muestra (BiquadState::process) se queda
+// aquí, inline, para no añadir una llamada en el hot path de audio.
 BiquadCoeffs makePeaking(float f0, float fs, float gainDb, float q) {
-    BiquadCoeffs c;
-    const float A = std::pow(10.0f, gainDb / 40.0f);
-    const float w0 = 2.0f * 3.14159265358979323846f * f0 / fs;
-    const float cw = std::cos(w0), sw = std::sin(w0);
-    const float alpha = sw / (2.0f * q);
-    const float a0 = 1.0f + alpha / A;
-    c.b0 = (1.0f + alpha * A) / a0;
-    c.b1 = (-2.0f * cw) / a0;
-    c.b2 = (1.0f - alpha * A) / a0;
-    c.a1 = (-2.0f * cw) / a0;
-    c.a2 = (1.0f - alpha / A) / a0;
-    return c;
+    acoustical_biquad_coeffs c;
+    acoustical_make_peaking(f0, fs, gainDb, q, &c);
+    BiquadCoeffs out;
+    out.b0 = c.b0; out.b1 = c.b1; out.b2 = c.b2; out.a1 = c.a1; out.a2 = c.a2;
+    return out;
 }
 
 void EqDsp::prepare(int bands, const float* bandFrequencies, float sampleRate, float q) {
