@@ -54,8 +54,6 @@ jobs:
 
       - name: Instalar cmdline-tools
         uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools: 12266717
 
       - name: Instalar Android SDK components
         run: |
