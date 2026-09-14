@@ -53,12 +53,14 @@ private:
     float q_ = 1.41f;
     std::vector<float> bandFreqs_;
 
-    // Doble buffer de ganancias con puntero atómico (libre de bloqueos)
+    // Doble buffer de ganancias con puntero atómico (libre de bloqueos).
+    // Cada instancia EqDsp ES un canal: isRight_ fija qué slot lee process(),
+    // de modo que dspL_ aplica siempre las curvas L y dspR_ las R.
     struct GainSnapshot {
         std::vector<float> gains;
     };
     std::unique_ptr<GainSnapshot> gainSets_[2];
-    std::atomic<int> activeGainSet_{0};
+    std::atomic<bool> isRight_{false};
     std::atomic<bool> dirty_{false};
     std::vector<float> lastApplied_;
 

@@ -92,6 +92,38 @@ int main() {
     for (float v : audio) if (std::isnan(v) || std::isinf(v)) { noNan = false; break; }
     CHECK(noNan, "EqDsp output has no NaN/Inf");
 
+    // --- 5b) Regresión: las curvas del canal DERECHO se aplican de verdad
+    //     (antes el banco activo quedaba fijado en L y R nunca sonaba corregido)
+    {
+        EqDsp eqR2;
+        eqR2.prepare(bandCount, bandFreqs.data(), sr, 1.41f);
+        int band1k = 0;
+        for (int i = 1; i < bandCount; ++i)
+            if (std::fabs(std::log10(bandFreqs[i] / 1000.0f)) <
+                std::fabs(std::log10(bandFreqs[band1k] / 1000.0f))) band1k = i;
+        std::vector<float> zero(bandCount, 0.0f);
+        eqR2.setGains(true, zero);
+        std::vector<float> ref(4096), out(4096);
+        for (int i = 0; i < 4096; ++i)
+            ref[(size_t)i] = 0.5f * std::sin(2.0 * 3.14159265358979 * 1000.0 * i / sr);
+        out = ref;
+        eqR2.process(out.data(), 4096);
+        auto rmsFrom = [](const std::vector<float>& v, size_t from) {
+            double s = 0.0;
+            for (size_t i = from; i < v.size(); ++i) s += double(v[i]) * double(v[i]);
+            return std::sqrt(s / double(v.size() - from));
+        };
+        const double rmsFlat = rmsFrom(out, 1024);
+        std::vector<float> cut(bandCount, 0.0f);
+        cut[(size_t)band1k] = -12.0f;
+        eqR2.setGains(true, cut);
+        out = ref;
+        eqR2.process(out.data(), 4096);
+        const double rmsCut = rmsFrom(out, 1024);
+        CHECK(rmsCut < rmsFlat * 0.6, "R-channel gains are actually applied");
+        std::printf("  EqDsp canal R: rms plano=%.4f con corte 1k -12 dB=%.4f\n", rmsFlat, rmsCut);
+    }
+
     // --- 6) makePeaking(0 dB) is a flat-response biquad (b1==a1, b2==a2) ---
     BiquadCoeffs id = makePeaking(1000.0f, sr, 0.0f, 1.41f);
     CHECK(nearF(id.b1, id.a1, 1e-5f) && nearF(id.b2, id.a2, 1e-5f) &&

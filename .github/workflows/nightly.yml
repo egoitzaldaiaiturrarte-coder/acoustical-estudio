@@ -1,0 +1,117 @@
+# Tarea programada: validación nocturna de todo el ecosistema Acoustical.
+# Cada noche comprueba que las tres plataformas siguen compilando y pasando
+# los tests (núcleo DSP compartido, app Android, instalador Windows), para
+# detectar cualquier desincronización entre versiones antes de que afecte.
+name: Validación nocturna
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # diario a las 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dsp:
+    # Núcleo DSP compartido C + motor C++ + puente JNI: la única fuente de
+    # verdad que usan Windows y Android por igual.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Compilar y testear el núcleo DSP compartido (C)
+        run: |
+          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp \
+            dsp/test_engine_wiring.cpp dsp/acoustical_dsp.c \
+            windows-acoustical/engine/FftProcessor.cpp windows-acoustical/engine/EqDsp.cpp \
+            -o /tmp/test_wiring -lm
+          /tmp/test_wiring
+
+      - name: Compilar y testear el puente JNI (sin NDK)
+        run: |
+          g++ -std=c++17 -O2 -Idsp/jni_stub -Idsp \
+            android-acoustical/app/src/main/cpp/acoustical_jni.cpp \
+            dsp/acoustical_dsp.c dsp/test_jni.cpp -o /tmp/test_jni -lm
+          /tmp/test_jni
+
+      - name: Compilar y testear el núcleo DSP puro (C)
+        run: |
+          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp dsp/test_dsp.cpp dsp/acoustical_dsp.c \
+            windows-acoustical/engine/FftProcessor.cpp -o /tmp/test_dsp -lm
+          /tmp/test_dsp
+
+  android:
+    # App Android: tests JVM + APK debug como artefacto de control.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-acoustical
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Instalar Android SDK components
+        run: |
+          SDKM="$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
+            "ndk;27.0.12077973" "cmake;3.22.1" \
+            || echo "Gradle descargará por su cuenta los componentes que falten"
+
+      - name: Configurar local.properties
+        run: echo "sdk.dir=${ANDROID_HOME}" > local.properties
+
+      - name: Ejecutar tests JVM (DSP Kotlin)
+        run: ./gradlew :app:testDebugUnitTest --console=plain --stacktrace
+
+      - name: Compilar APK (debug)
+        run: ./gradlew :app:assembleDebug --console=plain --stacktrace
+
+      - name: Subir el APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: AcousticalEstudio-Android-nocturno
+          path: android-acoustical/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+  build:
+    # Instalador Windows nocturno (artefacto de control, sin publicar nada).
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows-acoustical
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Compilar app, plugin y driver ASIO (x64 + Win32)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools\build_all.ps1
+
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Generar el instalador
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe no encontrado" }
+          & $iscc installer\acoustical.iss
+
+      - name: Subir el instalador como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: AcousticalEstudioSetup-nocturno
+          path: |
+            windows-acoustical/dist/installer/*.exe
+            windows-acoustical/dist/installer/*.sha256
+          if-no-files-found: error
