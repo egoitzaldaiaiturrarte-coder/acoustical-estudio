@@ -12,6 +12,8 @@
 #include "SpectrumView.h"
 #include "RoutingMatrix.h"
 #include "SettingsPanel.h"
+#include "RouteHub.h"
+#include "HubPanel.h"
 #include "PhoneLink.h"
 
 class ConsoleComponent : public juce::Component,
@@ -61,10 +63,11 @@ public:
         addAndMakeVisible(viewBox_);
         viewBox_.addItem("1 · EQ", 1);
         viewBox_.addItem("2 · Ecuas dinámicos", 2);
-        viewBox_.addItem("3 · Ruteos", 3);
-        viewBox_.addItem("4 · Ajustes", 4);
-        viewBox_.addItem("5 · Análisis", 5);
-        viewBox_.addItem("6 · Audio", 6);
+        viewBox_.addItem("3 · Hub", 3);
+        viewBox_.addItem("4 · Ruteos", 4);
+        viewBox_.addItem("5 · Ajustes", 5);
+        viewBox_.addItem("6 · Análisis", 6);
+        viewBox_.addItem("7 · Audio", 7);
         viewBox_.setSelectedId(1, juce::dontSendNotification);
         viewBox_.onChange = [this] {
             tabs_->setCurrentTabIndex(viewBox_.getSelectedId() - 1, true);
@@ -124,9 +127,12 @@ public:
         });
         settingsPanel_->onBeforeChange = [this] { pushUndo(); };
         settingsPanel_->onAfterChange = [this] { saveSettings(); };
+        hub_ = std::make_unique<RouteHub>(deviceManager_);
+        hubPanel_ = std::make_unique<HubPanel>(*hub_);
         tabs_ = std::make_unique<juce::TabbedComponent>(juce::TabbedButtonBar::TabsAtTop);
         tabs_->addTab("EQ", theme::surface, eqCanvas_.get(), false);
         tabs_->addTab("Ecuas dinámicos", theme::surface, &eqCardsPanel_, false);
+        tabs_->addTab("Hub", theme::surface, hubPanel_.get(), false);
         tabs_->addTab("Ruteos", theme::surface, routingMatrix_.get(), false);
         tabs_->addTab("Ajustes", theme::surface, settingsPanel_.get(), false);
         tabs_->addTab("Análisis", theme::surface, spectrumView_.get(), false);
@@ -176,9 +182,9 @@ public:
             if (kc == 'Z') { mods.isShiftDown() ? redo() : undo(); return true; }
             if (kc == 'Y') { redo(); return true; }
         }
-        // Teclas 1-6: saltar directo a cada vista
+        // Teclas 1-7: saltar directo a cada vista
         const auto ch = key.getTextCharacter();
-        if (ch >= '1' && ch <= '6') {
+        if (ch >= '1' && ch <= '7') {
             tabs_->setCurrentTabIndex(ch - '1', true);
             return true;
         }
@@ -301,6 +307,11 @@ private:
             engine_.eqDspL().process(left.data(), numSamples);
             engine_.eqDspR().process(right.data(), numSamples);
         }
+
+        // Hub del sistema: la ruta principal aplica su fase/retardo/ganancia y
+        // las rutas auxiliares reciben la señal post-EQ (multiruta simultánea)
+        hub_->setStreamInfo(lastSampleRate_);
+        hub_->processMaster(left.data(), right.data(), numSamples, mono.data());
 
         if (numOutputs > 0 && output[0])
             std::copy(left.begin(), left.end(), output[0]);
@@ -432,6 +443,22 @@ private:
             engine_.configure(c);
         }
         settingsPanel_->refresh();
+
+        // Comando del Hub enviado desde la app móvil (por USB)
+        const auto hubCmd = obj->getProperty("hubCmd");
+        auto* hc = hubCmd.getDynamicObject();
+        if (hc != nullptr) {
+            const int route = static_cast<int>(static_cast<double>(hc->getProperty("route")));
+            const auto cmd = hc->getProperty("cmd").toString();
+            const double value = static_cast<double>(hc->getProperty("value"));
+            if (route >= 0 && route < RouteHub::NUM_ROUTES) {
+                if (cmd == "mute") hub_->setRouteMute(route, value > 0.5);
+                else if (cmd == "enable") hub_->setRouteEnabled(route, value > 0.5);
+                else if (cmd == "invert") hub_->setPhaseInvert(route, value > 0.5);
+                else if (cmd == "gain") hub_->setRouteGainDb(route, static_cast<float>(value));
+                else if (cmd == "delay") hub_->setDelayMs(route, static_cast<float>(value));
+            }
+        }
     }
 
     void refreshPresets() {
@@ -522,6 +549,8 @@ private:
     std::unique_ptr<RoutingMatrix> routingMatrix_;
     std::unique_ptr<SettingsPanel> settingsPanel_;
     std::unique_ptr<juce::AudioDeviceSelectorComponent> audioPanel_;
+    std::unique_ptr<RouteHub> hub_;          // antes que hubPanel_ (orden de destrucción)
+    std::unique_ptr<HubPanel> hubPanel_;
 
     std::unique_ptr<PhoneLink> phoneLink_;
 
