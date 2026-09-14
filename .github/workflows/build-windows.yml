@@ -52,9 +52,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Instalar cmdline-tools
-        uses: android-actions/setup-android@v3
-
       - name: Instalar Android SDK components
         run: |
           yes | sdkmanager --licenses > /dev/null
