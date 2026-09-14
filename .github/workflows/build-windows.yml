@@ -54,9 +54,11 @@ jobs:
 
       - name: Instalar Android SDK components
         run: |
-          yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
-            "ndk;27.0.12077973" "cmake;3.22.1"
+          SDKM="$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
+            "ndk;27.0.12077973" "cmake;3.22.1" \
+            || echo "Gradle descargará por su cuenta los componentes que falten"
 
       - name: Configurar local.properties
         run: echo "sdk.dir=${ANDROID_HOME}" > local.properties
