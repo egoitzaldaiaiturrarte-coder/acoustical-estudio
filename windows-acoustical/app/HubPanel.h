@@ -14,7 +14,7 @@ public:
     explicit HubPanel(RouteHub& hub) : hub_(hub) {
         addAndMakeVisible(header_);
         header_.setFont(juce::Font(14.0f, juce::Font::bold));
-        header_.setColour(juce::Label::textColourId, theme::textBright);
+        header_.setColour(juce::Label::textColourId, theme::textPrimary);
         header_.setText("Hub del sistema · la salida principal se replica en "
                         "todas las rutas activas, cada una con su fase, retardo "
                         "y correcciones", juce::dontSendNotification);
@@ -94,7 +94,7 @@ private:
             const bool isMain = index_ == 0;
             addAndMakeVisible(title_);
             title_.setFont(juce::Font(13.0f, juce::Font::bold));
-            title_.setColour(juce::Label::textColourId, isMain ? theme::eq1Cyan : theme::textBright);
+            title_.setColour(juce::Label::textColourId, isMain ? theme::eq1Cyan : theme::textPrimary);
             title_.setText(isMain ? juce::String("Ruta 1 · Salida principal")
                                   : juce::String("Ruta ") + juce::String(index_ + 1),
                            juce::dontSendNotification);

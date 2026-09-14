@@ -397,6 +397,11 @@ fun SettingsScreen(
             // PC / Windows — sincronización y actualización automática por USB
             WindowsPcCard()
 
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Hub del PC — multiruta gobernada desde el móvil por USB
+            HubPcCard()
+
             Spacer(modifier = Modifier.height(16.dp))
         }
     }
@@ -474,6 +479,72 @@ private fun WindowsPcCard() {
                 TextButton(onClick = { sync.clearWindowsPayload() }, enabled = !downloading) {
                     Text("Eliminar paquete")
                 }
+            }
+            if (syncStatus.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(syncStatus, style = MaterialTheme.typography.labelSmall, color = CyanGlow)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HubPcCard() {
+    val context = LocalContext.current
+    val sync = remember(context) { PhoneSyncManager.get(context.applicationContext) }
+    val syncStatus by sync.status.collectAsState()
+    var route by remember { mutableStateOf(0) }
+    var mute by remember { mutableStateOf(false) }
+    var invert by remember { mutableStateOf(false) }
+    var gainDb by remember { mutableStateOf(0f) }
+    var delayMs by remember { mutableStateOf(0f) }
+
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text("Hub del PC (multiruta)", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                "Gobierna las salidas del ordenador desde aquí: la ruta 1 es la principal y las demás son auxiliares (Bluetooth, HDMI, USB…). Los comandos viajan por el cable USB.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                repeat(5) { i ->
+                    TextButton(onClick = { route = i }) {
+                        Text(
+                            "R${i + 1}",
+                            color = if (route == i) CyanGlow else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = if (route == i) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Mute", style = MaterialTheme.typography.labelSmall)
+                Switch(checked = mute, onCheckedChange = { mute = it })
+                Text("Fase ⊖", style = MaterialTheme.typography.labelSmall)
+                Switch(checked = invert, onCheckedChange = { invert = it })
+            }
+            Text(
+                "Ganancia: ${"%.1f".format(gainDb)} dB",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Slider(value = gainDb, onValueChange = { gainDb = it }, valueRange = -24f..6f)
+            Text(
+                "Retardo: ${"%.2f".format(delayMs)} ms",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Slider(value = delayMs, onValueChange = { delayMs = it }, valueRange = 0f..100f)
+            Button(onClick = {
+                sync.sendHubCommand(route, "gain", gainDb.toDouble())
+                sync.sendHubCommand(route, "delay", delayMs.toDouble())
+                sync.sendHubCommand(route, "mute", if (mute) 1.0 else 0.0)
+                sync.sendHubCommand(route, "invert", if (invert) 1.0 else 0.0)
+            }) {
+                Text("Aplicar en el PC")
             }
             if (syncStatus.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(4.dp))

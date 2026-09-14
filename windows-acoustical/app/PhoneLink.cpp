@@ -59,6 +59,12 @@ juce::String PhoneLink::lastSyncInfo() const {
 }
 
 void PhoneLink::pollDevices() {
+    // Sondeo periódico de sincronización: trae los comandos del Hub que el
+    // móvil haya encolado (viajan en la respuesta "sync")
+    if (state_.load() == State::Connected && ++syncPollCounter_ >= 3) {
+        syncPollCounter_ = 0;
+        requestSync();
+    }
     if (!adb_.existsAsFile()) {
         if (state_.load() != State::NoAdb) {
             state_.store(State::NoAdb);
