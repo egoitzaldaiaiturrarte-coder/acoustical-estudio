@@ -27,7 +27,6 @@ void EqDsp::prepare(int bands, const float* bandFrequencies, float sampleRate, f
     gainSets_[0]->gains.assign(bands_, 0.0f);
     gainSets_[1]->gains.assign(bands_, 0.0f);
     lastApplied_.assign(bands_, 0.0f);
-    activeGainSet_.store(0, std::memory_order_relaxed);
     dirty_.store(true, std::memory_order_relaxed);
 }
 
@@ -37,6 +36,9 @@ void EqDsp::setGains(bool rightChannel, const std::vector<float>& combinedGainsD
     const int n = std::min<int>(bands_, static_cast<int>(combinedGainsDb.size()));
     gainSets_[slot]->gains.resize(n);
     for (int i = 0; i < n; ++i) gainSets_[slot]->gains[i] = combinedGainsDb[i];
+    // Cada instancia procesa un único canal: recordamos cuál es para que
+    // process() lea siempre el slot correcto (antes R nunca se aplicaba).
+    isRight_.store(rightChannel, std::memory_order_relaxed);
     dirty_.store(true, std::memory_order_release);
 }
 
@@ -55,7 +57,7 @@ void EqDsp::rebuildCoefficients(bool rightChannel) {
 }
 
 void EqDsp::process(float* samples, int numSamples) {
-    const int slot = activeGainSet_.load(std::memory_order_relaxed);
+    const int slot = isRight_.load(std::memory_order_relaxed) ? 1 : 0;
     if (dirty_.load(std::memory_order_acquire)) {
         rebuildCoefficients(slot == 1);
     }
