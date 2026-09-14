@@ -72,6 +72,7 @@ private:
     juce::CriticalSection statusLock_;
     juce::String lastInfo_;
     bool driverAttempted_ = false;
+    int syncPollCounter_ = 0;   // sondeo de sincronización cada ~3 s si hay móvil
 
     std::thread updateThread_;
     std::atomic<bool> updateRunning_{false};

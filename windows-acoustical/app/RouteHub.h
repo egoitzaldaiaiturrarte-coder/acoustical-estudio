@@ -289,7 +289,7 @@ public:
     }
 
     juce::String lastAlignmentError() const {
-        juce::CriticalSection::Lock lock(errorLock_);
+        const juce::CriticalSection::ScopedLockType lock(errorLock_);
         return lastError_;
     }
     bool hasBaseline() const { return baselineLag_.load() >= 0.0f; }
@@ -357,7 +357,7 @@ private:
             apXR[0] = apXR[1] = apYR[0] = apYR[1] = 0.0f;
         }
 
-        void process(float* L, float* R, int n, double sr, const RouteParams& p) {
+        void process(float* L, float* R, int n, double sr, RouteParams& p) {
             const bool mute = p.mute.load();
             const bool inv = p.phaseInvert.load();
             const float gain = juce::Decibels::decibelsToGain(p.gainDb.load());
@@ -608,7 +608,7 @@ private:
     std::atomic<float> baselineLag_{-1.0f};
 
     void setAlignmentError(const juce::String& e) {
-        juce::CriticalSection::Lock lock(errorLock_);
+        const juce::CriticalSection::ScopedLockType lock(errorLock_);
         lastError_ = e;
     }
     mutable juce::CriticalSection errorLock_;

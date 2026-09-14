@@ -280,11 +280,38 @@ class PhoneSyncManager private constructor(context: Context) {
         out.flush()
     }
 
+    // === Hub del PC: comandos que viajan con la próxima sincronización ===
+
+    /** Encola un comando para el Hub de Windows (ruta 0 = principal, 1..4 auxiliares). */
+    fun sendHubCommand(route: Int, cmd: String, value: Double) {
+        val json = buildJsonObject {
+            put("route", route)
+            put("cmd", cmd)
+            put("value", value)
+        }
+        synchronized(hubLock) {
+            pendingHubCommands.addLast(json)
+            // Evita colas infinitas si el PC está desconectado
+            while (pendingHubCommands.size > 8) pendingHubCommands.removeFirst()
+        }
+        _status.value = "Comando del Hub en cola: ruta ${route + 1} · $cmd"
+    }
+
+    private fun takePendingHubCommand(): JsonObject? =
+        synchronized(hubLock) { pendingHubCommands.removeFirstOrNull() }
+
+    private val hubLock = Any()
+    private val pendingHubCommands = ArrayDeque<JsonObject>()
+
     // === Estado sincronizado ===
 
     private fun currentSyncJson(): String {
         val stored = prefs.getString(KEY_SYNC_STATE, null) ?: "{}"
-        return "{\"type\":\"sync\",\"ok\":true,\"payload\":$stored}"
+        val payload = runCatching { Json.parseToJsonElement(stored).jsonObject }
+            .getOrElse { buildJsonObject { } }
+        val out = LinkedHashMap(payload)
+        takePendingHubCommand()?.let { out["hubCmd"] = it }
+        return "{\"type\":\"sync\",\"ok\":true,\"payload\":${JsonObject(out)}}"
     }
 
     private fun storeSyncPayload(text: String, fromPc: Boolean) {
