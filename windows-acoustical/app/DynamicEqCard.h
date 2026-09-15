@@ -34,7 +34,7 @@ public:
         Snapshot snap;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            snapshot_ = snap;
+            snap = snapshot_;
         }
         auto bounds = getLocalBounds().toFloat();
         g.setColour(theme::surface);
