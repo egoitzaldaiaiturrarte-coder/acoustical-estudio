@@ -13,12 +13,12 @@ class ParamRow : public juce::Component {
 public:
     ParamRow(juce::AudioProcessorValueTreeState& state, const juce::String& paramId,
              const juce::String& text)
-        : label(text, juce::dontSendNotification) {
+        : label(text, text) {
         label.setFont(juce::Font(11.0f));
         label.setColour(juce::Label::textColourId, theme::textDim);
         addAndMakeVisible(label);
 
-        slider.setSliderStyle(juce::Slider::LinearBarHorizontal);
+        slider.setSliderStyle(juce::Slider::LinearBar);
         slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 54, 16);
         slider.setColour(juce::Slider::backgroundColourId, theme::background);
         slider.setColour(juce::Slider::trackColourId, theme::primaryDark);
@@ -106,7 +106,7 @@ public:
 
         referencia_.setButtonText("Capturar referencia");
         referencia_.setColour(juce::TextButton::buttonColourId, theme::surfaceHi);
-        referencia_.setColour(juce::TextButton::textColourId, theme::textPrimary);
+        referencia_.setColour(juce::TextButton::textColourOffId, theme::textPrimary);
         referencia_.onClick = [this] { processor_.engine().captureReference(); };
         addAndMakeVisible(referencia_);
 

@@ -8,7 +8,7 @@
 #include <AcousticalEngine.h>
 
 class AcousticalAudioProcessor : public juce::AudioProcessor,
-                                 private juce::AudioProcessorValueTreeState::Listener,
+                                 private juce::AudioProcessorParameter::Listener,
                                  private juce::AsyncUpdater {
 public:
     AcousticalAudioProcessor();
@@ -50,9 +50,12 @@ public:
 private:
     void analyzeLatest(const juce::AudioBuffer<float>& buffer);
 
-    // Listener del APVTS: un arrastre de slider genera decenas de cambios,
-    // los coalescemos con AsyncUpdater y aplicamos en el hilo de mensajes.
-    void parameterChanged(const juce::String&, float) override { triggerAsyncUpdate(); }
+    // Listener de parámetros (AudioProcessorParameter::Listener, compatible
+    // con la JUCE del proyecto y con la automatización del host): coalescemos
+    // los cambios (un arrastre de slider genera decenas) con AsyncUpdater y
+    // aplicamos en el hilo de mensajes.
+    void parameterValueChanged(int parameterIndex, float newValue) override;
+    void parameterGestureChanged(int parameterIndex, bool gestureIsStarting) override;
     void handleAsyncUpdate() override;
 
     acoustical::AcousticalEngine engine_;
