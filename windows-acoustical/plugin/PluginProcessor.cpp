@@ -21,7 +21,7 @@ AcousticalAudioProcessor::createParameterLayout() {
         const juce::String n = juce::String(i);
         const juce::String prefix = "eq" + n + ".";
         layout.add(std::make_unique<juce::AudioParameterBool>(
-            juce::ParameterID{"eq" + n + "Enabled", 1}, "Ecu " + n + " activo", i == 1));
+            juce::ParameterID{"eq" + n + "Enabled", 1}, "Ecu " + n + " activo", true));
         layout.add(std::make_unique<juce::AudioParameterInt>(
             juce::ParameterID{"eq" + n + "Interval", 1}, "Ecu " + n + " intervalo (ms)",
             100, 2000, 800));
@@ -46,14 +46,34 @@ AcousticalAudioProcessor::AcousticalAudioProcessor()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "PARAMS", createParameterLayout()) {
+    apvts.addListener(this);
     engine_.onSweep = [this](acoustical::SweepProcess p, const acoustical::SweepStep& s) {
         std::lock_guard<std::mutex> lock(mutex_);
         sweepSteps_[static_cast<int>(p)] = s;
     };
+    // El análisis lo publica el hilo del motor: se registra UNA vez aquí
+    // (antes se reasignaba dentro de processBlock, con carrera de datos).
+    engine_.onAnalysis = [this](const acoustical::AnalysisResult& r) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        latest_ = std::make_unique<acoustical::AnalysisResult>(r);
+    };
     applyParameters();
 }
 
+AcousticalAudioProcessor::~AcousticalAudioProcessor() {
+    cancelPendingUpdate();
+    apvts.removeListener(this);
+    engine_.stop();
+}
+
+void AcousticalAudioProcessor::handleAsyncUpdate() { applyParameters(); }
+
 void AcousticalAudioProcessor::applyParameters() {
+    // configure() recrea FFT/corrector/ecuas: hay que parar el hilo del motor
+    // mientras se sustituyen, o habría carrera con el hilo de análisis.
+    const bool wasRunning = engine_.isRunning();
+    if (wasRunning) engine_.stop();
+
     auto c = engine_.config();
     c.correctionEnabled = apvts.getRawParameterValue("correction")->load() > 0.5f;
     c.maxGainDb = apvts.getRawParameterValue("maxGain")->load();
@@ -74,10 +94,13 @@ void AcousticalAudioProcessor::applyParameters() {
         cfg.startFrom = static_cast<acoustical::SweepDirection>(i);  // NEED_BASED/BOTTOM_UP/TOP_DOWN
         engine_.setDynamicEqConfig(i, cfg);
     }
+
+    if (wasRunning) engine_.start();
 }
 
 void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/) {
     // Mapea al muestreo soportado más cercano
+    engine_.stop();
     auto c = engine_.config();
     const double sr = sampleRate;
     c.sampleRate = sr > 87000.0 ? acoustical::SampleRate::Hz96000
@@ -85,8 +108,11 @@ void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPer
                  : sr > 46000.0 ? acoustical::SampleRate::Hz48000
                                 : acoustical::SampleRate::Hz44100;
     engine_.configure(c);
+    applyParameters();  // reaplica los parámetros tras recrear el motor
     engine_.start();
 }
+
+void AcousticalAudioProcessor::releaseResources() { engine_.stop(); }
 
 void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                             juce::MidiBuffer&) {
@@ -119,17 +145,6 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     engine_.eqDspR().process(right.data(), numSamples);
     buffer.copyFrom(0, 0, left.data(), numSamples);
     if (getTotalNumOutputChannels() > 1) buffer.copyFrom(1, 0, right.data(), numSamples);
-
-    // 3. Snapshot para el editor
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        latest_ = nullptr;  // el análisis real lo publica el hilo del motor vía onAnalysis
-    }
-    // El hilo del motor publica onAnalysis → guardamos ahí
-    engine_.onAnalysis = [this](const acoustical::AnalysisResult& r) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        latest_ = std::make_unique<acoustical::AnalysisResult>(r);
-    };
 }
 
 juce::AudioProcessorEditor* AcousticalAudioProcessor::createEditor() {

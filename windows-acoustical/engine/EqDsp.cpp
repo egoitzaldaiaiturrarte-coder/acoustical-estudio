@@ -18,7 +18,16 @@ BiquadCoeffs makePeaking(float f0, float fs, float gainDb, float q) {
 }
 
 void EqDsp::prepare(int bands, const float* bandFrequencies, float sampleRate, float q) {
-    bands_ = std::min(bands, kMaxBands);
+    const int newBands = std::min(bands, kMaxBands);
+    // Configuración idéntica (mismas bandas, muestreo y Q): no tocar nada.
+    // prepare() puede llamarse desde el hilo de mensajes mientras el hilo de
+    // audio está en process(); reasignar los buffers sería una carrera.
+    const bool sameSetup = newBands == bands_ && sampleRate == sampleRate_ && q == q_
+        && bandFreqs_.size() == static_cast<size_t>(newBands)
+        && std::equal(bandFreqs_.begin(), bandFreqs_.end(), bandFrequencies);
+    if (sameSetup) return;
+
+    bands_ = newBands;
     sampleRate_ = sampleRate;
     q_ = q;
     bandFreqs_.assign(bandFrequencies, bandFrequencies + bands_);

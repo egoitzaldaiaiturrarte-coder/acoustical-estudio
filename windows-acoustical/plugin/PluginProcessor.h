@@ -7,12 +7,15 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <AcousticalEngine.h>
 
-class AcousticalAudioProcessor : public juce::AudioProcessor {
+class AcousticalAudioProcessor : public juce::AudioProcessor,
+                                 private juce::AudioProcessorValueTreeState::Listener,
+                                 private juce::AsyncUpdater {
 public:
     AcousticalAudioProcessor();
+    ~AcousticalAudioProcessor() override;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
     juce::AudioProcessorEditor* createEditor() override;
@@ -31,6 +34,7 @@ public:
     void setStateInformation(const void* data, int sizeInBytes) override;
 
     acoustical::AcousticalEngine& engine() { return engine_; }
+    juce::AudioProcessorValueTreeState& parameters() { return apvts; }
 
     // Copia thread-safe del último análisis para el editor
     void getLatestAnalysis(acoustical::AnalysisResult& out,
@@ -45,6 +49,11 @@ public:
 
 private:
     void analyzeLatest(const juce::AudioBuffer<float>& buffer);
+
+    // Listener del APVTS: un arrastre de slider genera decenas de cambios,
+    // los coalescemos con AsyncUpdater y aplicamos en el hilo de mensajes.
+    void parameterChanged(const juce::String&, float) override { triggerAsyncUpdate(); }
+    void handleAsyncUpdate() override;
 
     acoustical::AcousticalEngine engine_;
     juce::AudioProcessorValueTreeState apvts;
