@@ -46,7 +46,10 @@ AcousticalAudioProcessor::AcousticalAudioProcessor()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "PARAMS", createParameterLayout()) {
-    apvts.addListener(this);
+    // AudioProcessorParameter::Listener (APVTS no tiene addListener en la JUCE
+    // del proyecto) — cubre tanto los cambios de la ventana como la
+    // automatización del host.
+    for (auto* param : getParameters()) param->addListener(this);
     engine_.onSweep = [this](acoustical::SweepProcess p, const acoustical::SweepStep& s) {
         std::lock_guard<std::mutex> lock(mutex_);
         sweepSteps_[static_cast<int>(p)] = s;
@@ -62,11 +65,16 @@ AcousticalAudioProcessor::AcousticalAudioProcessor()
 
 AcousticalAudioProcessor::~AcousticalAudioProcessor() {
     cancelPendingUpdate();
-    apvts.removeListener(this);
+    for (auto* param : getParameters()) param->removeListener(this);
     engine_.stop();
 }
 
 void AcousticalAudioProcessor::handleAsyncUpdate() { applyParameters(); }
+
+// Llamado desde cualquier hilo (host o UI): coalescemos con AsyncUpdater y
+// aplicamos en el hilo de mensajes.
+void AcousticalAudioProcessor::parameterValueChanged(int, float) { triggerAsyncUpdate(); }
+void AcousticalAudioProcessor::parameterGestureChanged(int, bool) {}
 
 void AcousticalAudioProcessor::applyParameters() {
     // configure() recrea FFT/corrector/ecuas: hay que parar el hilo del motor
