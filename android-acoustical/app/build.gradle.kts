@@ -17,10 +17,28 @@ android {
         versionName = "1.3.3"
     }
 
+    // Llave de firma del proyecto (en el repo, que es privado). Todos los
+    // APKs — CI y build local — comparten esta firma: sin ella, cada APK
+    // lleva la llave debug de la máquina que lo compiló y Android rechaza la
+    // actualización con "el paquete no está bien" (firma distinta).
+    signingConfigs {
+        create("acoustical") {
+            storeFile = file("../keystore/acoustical.jks")
+            storePassword = "acoustical2026"
+            keyAlias = "acoustical"
+            keyPassword = "acoustical2026"
+        }
+    }
+
     buildTypes {
+        // Debug y release firmados con la misma llave del proyecto: cualquier
+        // APK nuevo se instala encima del anterior sin desinstalar.
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("acoustical")
+        }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("acoustical")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
