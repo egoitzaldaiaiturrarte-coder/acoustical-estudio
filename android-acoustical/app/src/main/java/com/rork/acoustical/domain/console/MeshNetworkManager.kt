@@ -183,9 +183,17 @@ class MeshNetworkManager(private val context: Context) {
         val maxSpl = spls.maxOrNull() ?: 0f
         val minSpl = spls.minOrNull() ?: 0f
 
-        // Simple consensus: average of all peers' corrections
-        // A more sophisticated approach would weight by distance or signal quality
-        val consensus = if (localCorrections.isNotEmpty()) localCorrections else emptyList()
+        // Consenso: media de las correcciones informadas por todos los peers
+        // activos (se alinea a la longitud máxima; las bandas ausentes no
+        // votan).
+        val consensusSize = activePeers
+            .map { it.corrections.size }
+            .filter { it > 0 }
+            .maxOrNull() ?: 0
+        val consensus = (0 until consensusSize).map { i ->
+            val vals = activePeers.mapNotNull { it.corrections.getOrNull(i) }
+            if (vals.isEmpty()) 0f else vals.average().toFloat()
+        }
 
         return MeshAggregate(
             peers = activePeers,
@@ -201,7 +209,11 @@ class MeshNetworkManager(private val context: Context) {
 
     private fun registerService() {
         val serviceInfo = NsdServiceInfo().apply {
-            serviceName = "AcoustiCal-$deviceId"
+            // El master se anuncia con prefijo "M-": así los listeners lo
+            // identifican al resolver el servicio (C4: antes el rol MASTER
+            // nunca se detectaba porque todos los peers se registraban como
+            // LISTENER).
+            serviceName = if (isMaster) "AcoustiCal-M-$deviceId" else "AcoustiCal-$deviceId"
             serviceType = SERVICE_TYPE
             port = MESH_PORT
         }
@@ -257,7 +269,7 @@ class MeshNetworkManager(private val context: Context) {
             override fun onServiceLost(serviceInfo: NsdServiceInfo?) {
                 Log.d(TAG, "NSD service lost: ${serviceInfo?.serviceName}")
                 val name = serviceInfo?.serviceName ?: return
-                val peerId = name.removePrefix("AcoustiCal-")
+                val peerId = name.removePrefix("AcoustiCal-M-").removePrefix("AcoustiCal-")
                 _peers.remove(peerId)
                 onPeerDisconnected?.invoke(peerId)
                 onPeersChanged?.invoke(peers)
@@ -275,15 +287,18 @@ class MeshNetworkManager(private val context: Context) {
         val resolveListener = object : NsdManager.ResolveListener {
             override fun onServiceResolved(serviceInfo: NsdServiceInfo?) {
                 val name = serviceInfo?.serviceName ?: return
-                val peerId = name.removePrefix("AcoustiCal-")
+                // El master se anuncia como "AcoustiCal-M-<id>" (ver
+                // registerService); sin el prefijo es un listener.
+                val isMasterPeer = name.startsWith("AcoustiCal-M-")
+                val peerId = name.removePrefix("AcoustiCal-M-").removePrefix("AcoustiCal-")
                 val host = serviceInfo?.host ?: return
                 val port = serviceInfo?.port ?: MESH_PORT
 
                 val peer = MeshPeer(
                     id = peerId,
                     ipAddress = host.hostAddress ?: "",
-                    deviceName = "AcoustiCal-$peerId",
-                    role = MeshPeer.MeshRole.LISTENER,
+                    deviceName = if (isMasterPeer) "AcoustiCal-$peerId · MASTER" else "AcoustiCal-$peerId",
+                    role = if (isMasterPeer) MeshPeer.MeshRole.MASTER else MeshPeer.MeshRole.LISTENER,
                     lastSeenMs = System.currentTimeMillis(),
                     isActive = true
                 )
@@ -353,11 +368,17 @@ class MeshNetworkManager(private val context: Context) {
                             role = MeshPeer.MeshRole.LISTENER,
                             lastSeenMs = System.currentTimeMillis(),
                             currentSpl = spl,
+                            corrections = corrections,
                             isActive = true
                         )
 
                         _peers[peerId] = peer
                         onPeersChanged?.invoke(peers)
+
+                        // El listener espera el agregado en esta misma conexión:
+                        // se responde con el consenso actual para que pueda
+                        // aplicar las correcciones combinadas.
+                        sendAggregate(output, computeAggregate())
                     }
 
                     MSG_REQUEST_AGGREGATE -> {
@@ -442,14 +463,20 @@ class MeshNetworkManager(private val context: Context) {
                 }
                 output.flush()
 
-                // Check if master sent back an aggregate
+                // El master responde en esta misma conexión con el agregado
+                // (consenso). Lectura bloqueante acotada: en LAN llega en ms.
                 val input = DataInputStream(sock.getInputStream())
-                if (sock.getInputStream().available() > 0) {
-                    val respType = input.readByte().toInt()
-                    if (respType == MSG_AGGREGATE) {
-                        val aggregate = readAggregate(input)
-                        onAggregateReceived?.invoke(aggregate)
-                    }
+                sock.soTimeout = 800
+                val respType = try {
+                    input.readByte().toInt()
+                } catch (e: java.net.SocketTimeoutException) {
+                    -1
+                } catch (e: java.io.EOFException) {
+                    -1
+                }
+                if (respType == MSG_AGGREGATE) {
+                    val aggregate = readAggregate(input)
+                    onAggregateReceived?.invoke(aggregate)
                 }
             }
         } catch (e: Exception) {

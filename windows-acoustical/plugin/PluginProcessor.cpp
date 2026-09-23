@@ -77,11 +77,10 @@ void AcousticalAudioProcessor::parameterValueChanged(int, float) { triggerAsyncU
 void AcousticalAudioProcessor::parameterGestureChanged(int, bool) {}
 
 void AcousticalAudioProcessor::applyParameters() {
-    // configure() recrea FFT/corrector/ecuas: hay que parar el hilo del motor
-    // mientras se sustituyen, o habría carrera con el hilo de análisis.
-    const bool wasRunning = engine_.isRunning();
-    if (wasRunning) engine_.stop();
-
+    // configure() es thread-safe (stateMutex_ en el motor): se puede llamar
+    // con el motor en marcha, sin detenerlo. Antes se hacía stop()/start()
+    // en cada slider, y en el caso de prepareToPlay ese stop() era un join
+    // DE Hilo de audio (C3/M10).
     auto c = engine_.config();
     c.correctionEnabled = apvts.getRawParameterValue("correction")->load() > 0.5f;
     c.maxGainDb = apvts.getRawParameterValue("maxGain")->load();
@@ -102,13 +101,12 @@ void AcousticalAudioProcessor::applyParameters() {
         cfg.startFrom = static_cast<acoustical::SweepDirection>(i);  // NEED_BASED/BOTTOM_UP/TOP_DOWN
         engine_.setDynamicEqConfig(i, cfg);
     }
-
-    if (wasRunning) engine_.start();
 }
 
 void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/) {
-    // Mapea al muestreo soportado más cercano
-    engine_.stop();
+    // prepareToPlay corre en el HILO de audio: está prohibido hacer stop()
+    // (join de un hilo) ni trabajo pesado aquí. configure() es thread-safe y
+    // start() es idempotente, así que basta con reconfigurar y arrancar.
     auto c = engine_.config();
     const double sr = sampleRate;
     c.sampleRate = sr > 87000.0 ? acoustical::SampleRate::Hz96000
@@ -116,8 +114,8 @@ void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPer
                  : sr > 46000.0 ? acoustical::SampleRate::Hz48000
                                 : acoustical::SampleRate::Hz44100;
     engine_.configure(c);
-    applyParameters();  // reaplica los parámetros tras recrear el motor
-    engine_.start();
+    applyParameters();  // reaplica los parámetros tras reconfigurar el motor
+    engine_.start();    // sin-op si ya estaba en marcha
 }
 
 void AcousticalAudioProcessor::releaseResources() { engine_.stop(); }
@@ -130,7 +128,9 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     // 1. Análisis: la señal que pasa por el canal alimenta el motor
     const int numInputs = getTotalNumInputChannels();
-    std::vector<float> mono(static_cast<size_t>(numSamples), 0.0f);
+    if (monoBuf_.size() < static_cast<size_t>(numSamples)) monoBuf_.resize(numSamples);
+    float* mono = monoBuf_.data();
+    std::fill_n(mono, numSamples, 0.0f);
     for (int ch = 0; ch < numInputs; ++ch) {
         const float* src = buffer.getReadPointer(ch);
         for (int s = 0; s < numSamples; ++s) mono[s] += src[s];
@@ -141,18 +141,20 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             for (int s = 0; s < numSamples; ++s) mono[s] += src[s];
         }
     }
-    engine_.pushSamples(mono.data(), numSamples, static_cast<int>(getSampleRate()));
+    engine_.pushSamples(mono, numSamples, static_cast<int>(getSampleRate()));
 
     // 2. EQ en tiempo real por canal (correcciones de los tres ecuas dinámicos)
-    std::vector<float> left(static_cast<size_t>(numSamples));
-    std::vector<float> right(static_cast<size_t>(numSamples));
-    std::copy_n(buffer.getReadPointer(0), numSamples, left.begin());
+    if (leftBuf_.size() < static_cast<size_t>(numSamples)) leftBuf_.resize(numSamples);
+    if (rightBuf_.size() < static_cast<size_t>(numSamples)) rightBuf_.resize(numSamples);
+    float* left = leftBuf_.data();
+    float* right = rightBuf_.data();
+    std::copy_n(buffer.getReadPointer(0), numSamples, left);
     std::copy_n(buffer.getReadPointer(getTotalNumOutputChannels() > 1 ? 1 : 0), numSamples,
-                right.begin());
-    engine_.eqDspL().process(left.data(), numSamples);
-    engine_.eqDspR().process(right.data(), numSamples);
-    buffer.copyFrom(0, 0, left.data(), numSamples);
-    if (getTotalNumOutputChannels() > 1) buffer.copyFrom(1, 0, right.data(), numSamples);
+                right);
+    engine_.eqDspL().process(left, numSamples);
+    engine_.eqDspR().process(right, numSamples);
+    buffer.copyFrom(0, 0, left, numSamples);
+    if (getTotalNumOutputChannels() > 1) buffer.copyFrom(1, 0, right, numSamples);
 }
 
 juce::AudioProcessorEditor* AcousticalAudioProcessor::createEditor() {

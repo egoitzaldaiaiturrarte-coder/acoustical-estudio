@@ -14,27 +14,30 @@ void SignalGenerator::fill(float* out, int count, float sampleRate) {
         std::fill(out, out + count, 0.0f);
         return;
     }
-    const float twoPi = 3.14159265358979323846f;
+    const double twoPi = 2.0 * 3.14159265358979323846;
 
     for (int i = 0; i < count; ++i) {
         float sample = 0.0f;
         switch (waveform_) {
             case Waveform::Sine:
             case Waveform::BandSine: {
-                sample = std::sin(phase_);
+                sample = static_cast<float>(std::sin(phase_));
                 phase_ += twoPi * frequency_ / sampleRate;
-                if (phase_ > twoPi) phase_ -= twoPi;
+                if (phase_ >= twoPi) phase_ -= twoPi;
                 break;
             }
             case Waveform::LogSweep: {
-                // Fase integral del barrido logarítmico: f(t) = f0·(f1/f0)^(t/T)
+                // Fase integrada del barrido logarítmico: f(t) = f0·(f1/f0)^(t/T).
+                // Se integra muestra a muestra (phase += 2π·f(t)/fs) para que la
+                // frecuencia instantánea sea exactamente f(t), sin aliasing.
                 const double T = static_cast<double>(sweepSeconds_);
                 const double t = sweepPhase_;
                 const double ratio = std::log(static_cast<double>(sweepEndHz_) / sweepStartHz_) / T;
                 const double instFreq = sweepStartHz_ * std::exp(ratio * t);
-                sample = static_cast<float>(std::sin(twoPi * instFreq * t));
+                sweepIntPhase_ += twoPi * instFreq / sampleRate;
+                sample = static_cast<float>(std::sin(sweepIntPhase_));
                 sweepPhase_ += 1.0 / static_cast<double>(sampleRate);
-                if (sweepPhase_ >= T) { sweepPhase_ = 0.0; }
+                if (sweepPhase_ >= T) { sweepPhase_ = 0.0; sweepIntPhase_ = 0.0; }
                 break;
             }
             case Waveform::WhiteNoise:
@@ -68,7 +71,8 @@ std::vector<float> SignalGenerator::makeLogSweep(float startHz, float endHz, flo
     for (size_t i = 0; i < out.size(); ++i) {
         const double t = static_cast<double>(i) / sampleRate;
         const double instFreq = startHz * std::exp(ratio * t);
-        out[i] = static_cast<float>(0.8 * std::sin(twoPi * instFreq * t));
+        phase += twoPi * instFreq / sampleRate;  // fase integrada (sin aliasing)
+        out[i] = static_cast<float>(0.8 * std::sin(phase));
     }
     return out;
 }

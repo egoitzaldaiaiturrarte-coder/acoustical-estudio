@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
@@ -101,7 +102,14 @@ class InternalCaptureService : Service() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                startForeground(NOTIFICATION_ID, buildNotification())
+                val notification = buildNotification()
+                if (Build.VERSION.SDK_INT >= 29) {
+                    // targetSdk 34+ exige el tipo; sin él, MissingForegroundServiceTypeException
+                    startForeground(NOTIFICATION_ID, notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
                 startCapture(resultCode, data)
             }
         }
@@ -124,10 +132,11 @@ class InternalCaptureService : Service() {
         projection = mediaProjection
         mediaProjection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
-                // The user revoked the capture from the system cast dialog
-                shouldCapture = false
-                latestLevels = null
-                isCapturing = false
+                // The user revoked the capture from the system cast dialog.
+                // Detener TODO el servicio (antes seguía vivo con la captura
+                // activa y el FGS, sin consentimiento vigente).
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
             }
         }, null)
 
@@ -178,7 +187,21 @@ class InternalCaptureService : Service() {
 
             while (shouldCapture) {
                 val read = record.read(shortBuffer, 0, CAPTURE_FFT_SIZE)
-                if (read <= 0) continue
+                when {
+                    read < 0 -> {
+                        // Error real (no "aún no hay datos"): evita el spin loop
+                        // a 100% de CPU que dejaba el bucle en `continue` puro.
+                        if (record.error != AudioRecord.ERROR_INVALID_OPERATION) {
+                            Log.e(TAG, "AudioRecord.read error: ${record.error}")
+                            break
+                        }
+                        continue
+                    }
+                    read == 0 -> {
+                        try { Thread.sleep(2) } catch (_: InterruptedException) {}
+                        continue
+                    }
+                }
                 for (i in 0 until read) {
                     floatBuffer[i] = shortBuffer[i] / 32768.0f
                 }
@@ -200,6 +223,7 @@ class InternalCaptureService : Service() {
                 Log.w(TAG, "Error deteniendo captura", e)
             }
             record.release()
+            fft.close()  // libera el plan FFT nativo (ver FftProcessor.close)
         }.also { it.start() }
     }
 
@@ -229,6 +253,15 @@ class InternalCaptureService : Service() {
 
     private fun releaseCapture() {
         shouldCapture = false
+        // Primero detener la proyección (es lo que desbloquea el record.read en
+        // el hilo de captura) y DESPUÉS esperar al hilo. Antes el join iba antes
+        // y expiraba porque el hilo seguía bloqueado en read.
+        try {
+            projection?.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error deteniendo proyección", e)
+        }
+        projection = null
         try {
             captureThread?.join(500)
         } catch (_: InterruptedException) {
@@ -236,12 +269,6 @@ class InternalCaptureService : Service() {
         captureThread = null
         latestLevels = null
         isCapturing = false
-        try {
-            projection?.stop()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error deteniendo proyección", e)
-        }
-        projection = null
     }
 
     private fun buildNotification(): Notification {

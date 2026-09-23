@@ -65,5 +65,10 @@ private:
     std::unique_ptr<acoustical::AnalysisResult> latest_;
     acoustical::SweepStep sweepSteps_[3]{};
 
+    // Buffers preasignados de processBlock: antes se hacía new/delete en cada
+    // bloque de audio (A4). Solo los toca el hilo de audio; se redimensionan
+    // solo si crecen (sin malloc en estado estable).
+    mutable std::vector<float> monoBuf_, leftBuf_, rightBuf_;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcousticalAudioProcessor)
 };

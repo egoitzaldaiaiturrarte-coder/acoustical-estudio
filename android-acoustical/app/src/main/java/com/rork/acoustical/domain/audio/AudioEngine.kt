@@ -46,6 +46,12 @@ class AudioEngine {
     private var analysisJob: Job? = null
     private var audioRecord: AudioRecord? = null
 
+    /**
+     * Protege el intercambio/liberación de los objetos DSP (sobre todo el FFT,
+     * que libera memoria nativa) frente al bucle de análisis (M4/A7).
+     */
+    private val stateLock = Any()
+
     private var fftProcessor: FftProcessor? = null
     private var roomCorrector: RoomCorrector? = null
     private var splMeter: SplMeter? = null
@@ -104,34 +110,64 @@ class AudioEngine {
     )
 
     /**
-     * Configure the engine with new parameters. Takes effect on next start or analysis cycle.
+     * Configure the engine with new parameters. Structural changes (band
+     * count, FFT size, sample rate) rebuild the DSP objects; everything else
+     * (gains, smoothing, noise floor, correction period) is updated in place
+     * without stopping the engine and without losing correction state
+     * (M4: before, every slider tick did stop/rebuild/restart on the main
+     * thread).
      */
     fun configure(newConfig: AudioConfig) {
-        config = newConfig
-        bandFrequencies = StandardFrequencies.forCount(newConfig.bandCount)
-        fftProcessor = FftProcessor(newConfig.fftSize.samples)
-        roomCorrector = RoomCorrector.create(
-            bandFrequencies = bandFrequencies,
-            sampleRate = newConfig.sampleRate.hz,
-            fftSize = newConfig.fftSize.samples,
-            maxGainDb = newConfig.maxGainDb,
-            // High correction limits automatically relax the smoothing to avoid oscillation
-            smoothingFactor = newConfig.effectiveSmoothingFactor,
-            noiseFloorDb = newConfig.noiseFloorDb,
-            correctionPeriodMs = newConfig.correctionPeriodMs
-        )
-        splMeter = SplMeter(calibrationOffset = 120f)
-        noiseProfiler = NoiseProfiler(
-            binCount = newConfig.fftSize.binCount,
-            maxCaptureFrames = 50,
-            gateRange = 6f
-        )
-        for (i in 0 until DYNAMIC_EQ_COUNT) {
-            sweepers[i] = SweeperProcessor(bandFrequencies, dynamicCfgs[i])
+        val old = config
+        val structural = fftProcessor == null ||
+            old.bandCount != newConfig.bandCount ||
+            old.fftSize != newConfig.fftSize ||
+            old.sampleRate != newConfig.sampleRate
+
+        if (!structural) {
+            synchronized(stateLock) {
+                config = newConfig
+                roomCorrector?.updateParams(
+                    maxGainDb = newConfig.maxGainDb,
+                    smoothingFactor = newConfig.effectiveSmoothingFactor,
+                    noiseFloorDb = newConfig.noiseFloorDb,
+                    correctionPeriodMs = newConfig.correctionPeriodMs
+                )
+            }
+            return
         }
-        bands = bandFrequencies.mapIndexed { i, freq ->
-            EqBand(index = i, centerFreq = freq, gainDb = 0f, targetGainDb = 0f)
-        }.toMutableList()
+
+        synchronized(stateLock) {
+            config = newConfig
+            bandFrequencies = StandardFrequencies.forCount(newConfig.bandCount)
+            val oldFft = fftProcessor
+            fftProcessor = FftProcessor(newConfig.fftSize.samples)
+            // Se libera aquí (bajo el lock) y no antes: nadie puede estar
+            // usándolo si el análisis corre bajo el mismo lock.
+            oldFft?.close()
+            roomCorrector = RoomCorrector.create(
+                bandFrequencies = bandFrequencies,
+                sampleRate = newConfig.sampleRate.hz,
+                fftSize = newConfig.fftSize.samples,
+                maxGainDb = newConfig.maxGainDb,
+                // High correction limits automatically relax the smoothing to avoid oscillation
+                smoothingFactor = newConfig.effectiveSmoothingFactor,
+                noiseFloorDb = newConfig.noiseFloorDb,
+                correctionPeriodMs = newConfig.correctionPeriodMs
+            )
+            splMeter = SplMeter(calibrationOffset = 120f)
+            noiseProfiler = NoiseProfiler(
+                binCount = newConfig.fftSize.binCount,
+                maxCaptureFrames = 50,
+                gateRange = 6f
+            )
+            for (i in 0 until DYNAMIC_EQ_COUNT) {
+                sweepers[i] = SweeperProcessor(bandFrequencies, dynamicCfgs[i])
+            }
+            bands = bandFrequencies.mapIndexed { i, freq ->
+                EqBand(index = i, centerFreq = freq, gainDb = 0f, targetGainDb = 0f)
+            }.toMutableList()
+        }
     }
 
     /**
@@ -205,6 +241,12 @@ class AudioEngine {
         }
         audioRecord?.release()
         audioRecord = null
+        // Bajo el lock: un análisis en vuelo termina antes de liberar el FFT
+        // nativo (el bucle corre bajo el mismo lock).
+        synchronized(stateLock) {
+            fftProcessor?.close()
+            fftProcessor = null
+        }
         scope?.cancel()
         scope = null
         framesAnalyzed = 0L
@@ -416,7 +458,20 @@ class AudioEngine {
         }
     }
 
+    /**
+     * Corre bajo [stateLock]: [configure]/[stop] intercambian y liberan el
+     * FFT (memoria nativa) bajo el mismo lock, así nunca se libera un FFT que
+     * el análisis esté usando (UAF).
+     */
     private fun analyzeFrame(
+        samples: FloatArray,
+        sampleRate: Int,
+        fftSize: Int
+    ): AnalysisResult? = synchronized(stateLock) {
+        analyzeFrameLocked(samples, sampleRate, fftSize)
+    }
+
+    private fun analyzeFrameLocked(
         samples: FloatArray,
         sampleRate: Int,
         fftSize: Int

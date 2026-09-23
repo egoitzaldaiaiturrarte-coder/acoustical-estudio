@@ -15,11 +15,66 @@
 #include "RouteHub.h"
 #include "HubPanel.h"
 #include "PhoneLink.h"
+#include "AsioBridgeClient.h"
 
 class ConsoleComponent : public juce::Component,
                          private juce::AudioIODeviceCallback,
                          private juce::Timer {
 public:
+    // === Pestaña "Audio": panel de dispositivos + puente ASIO (Cubase) ===
+    class AudioTab : public juce::Component {
+    public:
+        AudioTab(juce::AudioDeviceSelectorComponent& panel, AsioBridgeClient& bridge)
+            : panel_(panel), bridge_(bridge) {
+            addAndMakeVisible(panel_);
+            addAndMakeVisible(bridgeButton_);
+            bridgeButton_.setButtonText("Puent ASIO (Cubase)");
+            bridgeButton_.setClickingTogglesState(true);
+            bridgeButton_.onClick = [this] {
+                if (bridgeButton_.getToggleState())
+                    bridgeOk_ = bridge_.connect();
+                else
+                    bridge_.disconnect();
+                updateStatus();
+            };
+            addAndMakeVisible(bridgeStatus_);
+            bridgeStatus_.setFont(juce::Font(12.0f));
+            bridgeStatus_.setColour(juce::Label::textColourId, theme::textDim);
+            updateStatus();
+        }
+
+        void resized() override {
+            auto b = getLocalBounds().reduced(10);
+            bridgeButton_.setBounds(b.removeFromTop(34).removeFromLeft(220));
+            bridgeStatus_.setBounds(b.removeFromTop(26));
+            panel_.setBounds(b.reduced(0, 2));
+        }
+
+        void refreshStatus() { if (bridge_.isConnected()) updateStatus(); }
+
+    private:
+        void updateStatus() {
+            juce::String s;
+            if (!bridge_.isConnected())
+                s = bridgeOk_
+                    ? "Puent desconectado."
+                    : "Puent ASIO apagado. Ruta: maestro de Cubase → \"Bridge Out\" (suena por la "
+                      "tarjeta con el EQ aplicado); \"Bridge In\" → señal de prueba hacia Cubase.";
+            else
+                s = juce::String::formatted(
+                    "Puent ASIO conectado · %u Hz · buffer %u — el audio de Cubase pasa por el EQ a "
+                    "la tarjeta real; la señal de prueba sale hacia Cubase.",
+                    bridge_.sampleRate(), bridge_.bufferSize());
+            bridgeStatus_.setText(s, juce::dontSendNotification);
+        }
+
+        juce::AudioDeviceSelectorComponent& panel_;
+        AsioBridgeClient& bridge_;
+        juce::ToggleButton bridgeButton_;
+        juce::Label bridgeStatus_;
+        bool bridgeOk_ = false;
+    };
+
     ConsoleComponent(juce::AudioDeviceManager& dm, acoustical::AcousticalEngine& eng)
         : deviceManager_(dm), engine_(eng) {
         theme::apply(*this);
@@ -82,6 +137,7 @@ public:
         audioPanel_ = std::make_unique<juce::AudioDeviceSelectorComponent>(
             deviceManager_, 0, 16, 0, 16, false, false, true, false);
         audioPanel_->setItemHeight(36);
+        audioTab_ = std::make_unique<AudioTab>(*audioPanel_, bridge_);
 
         addAndMakeVisible(lockButton_);
         lockButton_.setButtonText("Bloquear faders");
@@ -136,7 +192,7 @@ public:
         tabs_->addTab("Ruteos", theme::surface, routingMatrix_.get(), false);
         tabs_->addTab("Ajustes", theme::surface, settingsPanel_.get(), false);
         tabs_->addTab("Análisis", theme::surface, spectrumView_.get(), false);
-        tabs_->addTab("Audio", theme::surface, audioPanel_.get(), false);
+        tabs_->addTab("Audio", theme::surface, audioTab_.get(), false);
         addAndMakeVisible(*tabs_);
 
         refreshPresets();
@@ -287,12 +343,32 @@ private:
             if (const auto* in = input[ch])
                 for (int s = 0; s < numSamples; ++s) mono[s] += in[s];
 
-        // Generador de señales → se procesa por el EQ como una entrada más
-        if (generatorActive_.load() && numOutputs > 0) {
-            generatorBuffer_.assign(static_cast<size_t>(numSamples), 0.0f);
-            engine_.signalGenerator().fill(generatorBuffer_.data(), numSamples,
+        // Generador de señales: es con estado de fase, se genera UNA vez por
+        // bloque y se comparte entre la salida de la tarjeta real y el
+        // puente ASIO (antes se re-asignaba el buffer en cada bloque, A4).
+        int genFrames = 0;
+        if (generatorActive_.load(std::memory_order_relaxed)) {
+            if (genBuf_.size() < static_cast<size_t>(numSamples)) genBuf_.resize(numSamples);
+            engine_.signalGenerator().fill(genBuf_.data(), numSamples,
                                            static_cast<float>(lastSampleRate_));
-            for (int s = 0; s < numSamples; ++s) mono[s] += generatorBuffer_[s];
+            genFrames = numSamples;
+            if (numOutputs > 0)
+                for (int s = 0; s < numSamples; ++s) mono[s] += genBuf_[s];
+        }
+
+        // Puente ASIO (C5): el audio de Cubase (ruteado a "Bridge Out") entra
+        // como una entrada más: pasa por el análisis y por el EQ, y suena por
+        // la tarjeta real.
+        int bridgeFrames = 0;
+        if (bridge_.isConnected()) {
+            if (bridgeBufL_.size() < static_cast<size_t>(numSamples)) {
+                bridgeBufL_.resize(numSamples);
+                bridgeBufR_.resize(numSamples);
+            }
+            bridgeFrames = bridge_.pullCapture(bridgeBufL_.data(), bridgeBufR_.data(),
+                                               numSamples, lastSampleRate_);
+            for (int s = 0; s < bridgeFrames; ++s)
+                mono[s] += bridgeBufL_[s] + bridgeBufR_[s];
         }
 
         engine_.pushSamples(mono.data(), numSamples, lastSampleRate_);
@@ -313,6 +389,14 @@ private:
         hub_->setStreamInfo(lastSampleRate_);
         hub_->processMaster(left.data(), right.data(), numSamples, mono.data());
 
+        // Volumen general (pestaña Ruteos): escala solo la salida a la tarjeta
+        const float outGain = routingMatrix_->gain();
+        if (outGain != 1.0f)
+            for (int s = 0; s < numSamples; ++s) {
+                left[s] *= outGain;
+                right[s] *= outGain;
+            }
+
         if (numOutputs > 0 && output[0])
             std::copy(left.begin(), left.end(), output[0]);
         if (numOutputs > 1 && output[1])
@@ -320,6 +404,18 @@ private:
         for (int ch = 2; ch < numOutputs; ++ch)
             if (output[ch])
                 std::copy(right.begin(), right.end(), output[ch]);
+
+        // Playback del puente: la señal de prueba (o silencio) sale hacia
+        // Cubase por el anillo de playback; reutiliza las muestras del
+        // generador ya producidas para la tarjeta real.
+        if (bridge_.isConnected()) {
+            if (genFrames <= 0) {
+                if (genBuf_.size() < static_cast<size_t>(numSamples)) genBuf_.resize(numSamples);
+                std::fill_n(genBuf_.data(), numSamples, 0.0f);
+                genFrames = numSamples;
+            }
+            bridge_.pushPlayback(genBuf_.data(), genBuf_.data(), genFrames, lastSampleRate_);
+        }
     }
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
@@ -343,6 +439,9 @@ private:
     }
 
     void timerCallback() override {
+        // 0. Estado del puente ASIO (el driver puede cambiar de tasa con Cubase)
+        if (bridge_.isConnected()) audioTab_->refreshStatus();
+
         // 1. EQ principal con resaltados por ecu dinámico
         EqCanvas::Snapshot snap;
         {
@@ -409,7 +508,7 @@ private:
 
     juce::var serializeEngine() const {
         auto obj = new juce::DynamicObject();
-        const auto& c = engine_.config();
+        const auto c = engine_.config();
         obj->setProperty("maxGainDb", c.maxGainDb);
         obj->setProperty("smoothingFactor", c.smoothingFactor);
         obj->setProperty("noiseFloorDb", c.noiseFloorDb);
@@ -417,13 +516,24 @@ private:
         obj->setProperty("correctionEnabled", c.correctionEnabled);
         obj->setProperty("targetSpl", c.targetSpl);
         obj->setProperty("audioDelayMs", c.audioDelayMs);
+        // Curva del EQ manual (antes no se guardaba: el preset perdía lo
+        // principal, M8)
+        auto eqGains = new juce::DynamicObject();
+        for (const auto& b : engine_.bands())
+            eqGains->setProperty("band" + juce::String(b.index), b.gainDb);
+        obj->setProperty("eqGains", eqGains);
+        // Ecuas dinámicos: el estado real del motor (antes se serializaba un
+        // estado muerto de la UI que nunca se modificaba ni se leía, M8/M9)
         auto eqs = new juce::DynamicObject();
         for (int i = 0; i < 3; ++i) {
             auto eq = new juce::DynamicObject();
-            eq->setProperty("enabled", dynamicEqEnabled_[i]);
-            eq->setProperty("intervalMs", sweepInterval_[i]);
-            eq->setProperty("speedMultiplier", sweepSpeed_[i]);
-            eq->setProperty("extraSweeps", sweepExtras_[i]);
+            const auto cfg = engine_.dynamicEqConfig(i);
+            eq->setProperty("enabled", engine_.dynamicEqEnabled(i));
+            eq->setProperty("intervalMs", cfg.decisionIntervalMs);
+            eq->setProperty("maxGainDb", cfg.maxGainDb);
+            eq->setProperty("mixerLevel", cfg.mixerLevel);
+            eq->setProperty("speedMultiplier", cfg.speedMultiplier);
+            eq->setProperty("extraSweeps", cfg.extraSweeps);
             eqs->setProperty("eq" + juce::String(i + 1), eq);
         }
         obj->setProperty("dynamicEqs", eqs);
@@ -481,23 +591,51 @@ private:
         const auto v = juce::JSON::parse(f);
         auto* obj = v.getDynamicObject();
         if (obj == nullptr) return;
+        auto num = [](const juce::DynamicObject* o, const char* key, double def) {
+            if (o == nullptr) return def;
+            const auto val = o->getProperty(key);
+            return val.isVoid() ? def : static_cast<double>(val);
+        };
+        auto flag = [](const juce::DynamicObject* o, const char* key, bool def) {
+            if (o == nullptr) return def;
+            const auto val = o->getProperty(key);
+            return val.isVoid() ? def : static_cast<bool>(val);
+        };
         auto c = engine_.config();
-        auto num = [obj](const char* key, double def) {
-            const auto v = obj->getProperty(key);
-            return v.isVoid() ? def : static_cast<double>(v);
-        };
-        auto flag = [obj](const char* key, bool def) {
-            const auto v = obj->getProperty(key);
-            return v.isVoid() ? def : static_cast<bool>(v);
-        };
-        c.maxGainDb = static_cast<float>(num("maxGainDb", c.maxGainDb));
-        c.smoothingFactor = static_cast<float>(num("smoothingFactor", c.smoothingFactor));
-        c.noiseFloorDb = static_cast<float>(num("noiseFloorDb", c.noiseFloorDb));
-        c.noiseSubtractionEnabled = flag("noiseSubtractionEnabled", c.noiseSubtractionEnabled);
-        c.correctionEnabled = flag("correctionEnabled", c.correctionEnabled);
-        c.targetSpl = static_cast<float>(num("targetSpl", c.targetSpl));
-        c.audioDelayMs = static_cast<float>(num("audioDelayMs", c.audioDelayMs));
+        c.maxGainDb = static_cast<float>(num(obj, "maxGainDb", c.maxGainDb));
+        c.smoothingFactor = static_cast<float>(num(obj, "smoothingFactor", c.smoothingFactor));
+        c.noiseFloorDb = static_cast<float>(num(obj, "noiseFloorDb", c.noiseFloorDb));
+        c.noiseSubtractionEnabled = flag(obj, "noiseSubtractionEnabled", c.noiseSubtractionEnabled);
+        c.correctionEnabled = flag(obj, "correctionEnabled", c.correctionEnabled);
+        c.targetSpl = static_cast<float>(num(obj, "targetSpl", c.targetSpl));
+        c.audioDelayMs = static_cast<float>(num(obj, "audioDelayMs", c.audioDelayMs));
         engine_.configure(c);
+
+        // Curva del EQ manual
+        if (auto* eqGains = obj->getProperty("eqGains").getDynamicObject())
+            for (const auto& b : engine_.bands()) {
+                const auto val = eqGains->getProperty("band" + juce::String(b.index));
+                if (!val.isVoid())
+                    engine_.setBandGain(b.index, static_cast<float>(static_cast<double>(val)));
+            }
+
+        // Ecuas dinámicos
+        if (auto* eqs = obj->getProperty("dynamicEqs").getDynamicObject())
+            for (int i = 0; i < 3; ++i) {
+                if (auto* eq = eqs->getProperty("eq" + juce::String(i + 1)).getDynamicObject()) {
+                    acoustical::DynamicEqConfig cfg;
+                    cfg.decisionIntervalMs = static_cast<int>(num(eq, "intervalMs", cfg.decisionIntervalMs));
+                    cfg.maxGainDb = static_cast<float>(num(eq, "maxGainDb", cfg.maxGainDb));
+                    cfg.mixerLevel = static_cast<float>(num(eq, "mixerLevel", cfg.mixerLevel));
+                    cfg.speedMultiplier = static_cast<float>(num(eq, "speedMultiplier", cfg.speedMultiplier));
+                    cfg.extraSweeps = static_cast<int>(num(eq, "extraSweeps", cfg.extraSweeps));
+                    cfg.clamp();
+                    engine_.setDynamicEqConfig(i, cfg);
+                    const bool enabled = flag(eq, "enabled", engine_.dynamicEqEnabled(i));
+                    engine_.setDynamicEqEnabled(i, enabled);
+                    dynamicEqEnabled_[i] = enabled;
+                }
+            }
         settingsPanel_->refresh();
     }
 
@@ -531,6 +669,7 @@ private:
 
     juce::AudioDeviceManager& deviceManager_;
     acoustical::AcousticalEngine& engine_;
+    AsioBridgeClient bridge_;   // lado de app del puente ASIO (debe vivir más que audioTab_)
 
     juce::TextButton powerButton_, referenceButton_, noiseButton_, freezeButton_,
         savePresetButton_, syncButton_, fullscreenButton_, lockButton_,
@@ -549,6 +688,7 @@ private:
     std::unique_ptr<RoutingMatrix> routingMatrix_;
     std::unique_ptr<SettingsPanel> settingsPanel_;
     std::unique_ptr<juce::AudioDeviceSelectorComponent> audioPanel_;
+    std::unique_ptr<AudioTab> audioTab_;
     std::unique_ptr<RouteHub> hub_;          // antes que hubPanel_ (orden de destrucción)
     std::unique_ptr<HubPanel> hubPanel_;
 
@@ -556,9 +696,6 @@ private:
 
     // Estado de los ecuas dinámicos para la UI
     std::array<bool, 3> dynamicEqEnabled_{{true, false, false}};
-    std::array<int, 3> sweepInterval_{{800, 800, 800}};
-    std::array<float, 3> sweepSpeed_{{1.0f, 1.0f, 1.0f}};
-    std::array<int, 3> sweepExtras_{{1, 1, 1}};
     std::array<acoustical::SweepStep, 3> sweepSteps_{};
     std::array<int, 3> activeBand_{{-1, -1, -1}};
     std::array<juce::String, 3> activeChannel_{{"L+R", "L+R", "L+R"}};
@@ -569,5 +706,6 @@ private:
     std::mutex dspMutex_;
 
     double lastSampleRate_ = 48000.0;
-    std::vector<float> generatorBuffer_;
+    std::vector<float> genBuf_;          // señal del generador (una generación por bloque)
+    std::vector<float> bridgeBufL_, bridgeBufR_;  // audio entrante de Cubase (puente ASIO)
 };

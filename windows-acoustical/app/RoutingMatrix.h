@@ -20,10 +20,13 @@ public:
 
         addAndMakeVisible(gainSlider_);
         gainSlider_.setRange(0.0, 1.0, 0.01);
-        gainSlider_.setValue(mainGain_, juce::dontSendNotification);
+        gainSlider_.setValue(mainGain_.load(), juce::dontSendNotification);
         gainSlider_.setTextValueSuffix(" · volumen general");
         gainSlider_.onValueChange = [this] {
-            mainGain_ = static_cast<float>(gainSlider_.getValue());
+            // Atómico: lo lee el callback de audio en cada bloque (antes se
+            // guardaba en un float sin usar nunca — control muerto, M9).
+            mainGain_.store(static_cast<float>(gainSlider_.getValue()),
+                            std::memory_order_relaxed);
         };
         addAndMakeVisible(gainLabel_);
         gainLabel_.attachToComponent(&gainSlider_, true);
@@ -33,6 +36,9 @@ public:
     }
 
     ~RoutingMatrix() override { stopTimer(); }
+
+    // Ganancia de salida (0…1): la aplica el callback de audio de la app.
+    float gain() const { return mainGain_.load(std::memory_order_relaxed); }
 
     void paint(juce::Graphics& g) override {
         g.setColour(theme::background);
@@ -68,5 +74,5 @@ private:
     std::unique_ptr<juce::AudioDeviceSelectorComponent> selector_;
     juce::Label statusLabel_, gainLabel_;
     juce::Slider gainSlider_;
-    float mainGain_ = 1.0f;
+    std::atomic<float> mainGain_{1.0f};
 };

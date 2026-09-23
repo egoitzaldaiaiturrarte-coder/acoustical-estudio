@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -66,15 +67,33 @@ class AudioAnalysisService : Service() {
                     engine = AudioEngine()
                 }
                 engine?.start()
-                startForeground(NOTIFICATION_ID, buildNotification(0f, 0f, 0L))
+                startForegroundCompat(buildNotification(0f, 0f, 0L))
             }
         }
-        return START_STICKY
+        // NOT_STICKY: si el proceso muere, el servicio no revivie con intent==null
+        // (antes dejaba un FGS huérfano con notificación para siempre).
+        return START_NOT_STICKY
     }
 
     fun updateNotification(spl: Float, correction: Float, frames: Long) {
         val notification = buildNotification(spl, correction, frames)
         notificationManager?.notify(NOTIFICATION_ID, notification)
+    }
+
+    /**
+     * startForeground con tipo explícito. Con targetSdk 34+ la sobrecarga a 2
+     * argumentos lanza MissingForegroundServiceTypeException; hay que declarar el
+     * tipo (microphone) desde API 29.
+     */
+    private fun startForegroundCompat(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(
+                NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun createNotificationChannel() {

@@ -20,6 +20,9 @@ if(MSVC)
     target_compile_options(AcousticalEstudio PRIVATE /utf-8)
 endif()
 
+# Protocolo de memoria compartida del puente ASIO (AsioBridgeClient.h)
+target_include_directories(AcousticalEstudio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../asio-bridge)
+
 target_link_libraries(AcousticalEstudio PRIVATE
     juce::juce_gui_basics
     juce::juce_gui_extra

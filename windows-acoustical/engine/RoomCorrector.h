@@ -13,6 +13,8 @@ namespace acoustical {
 
 class RoomCorrector {
 public:
+    // `bandFrequencies` se COPIA (no referencia): el engine puede recrear su
+    // vector de frecuencias en configure() sin dejar referencias colgando.
     RoomCorrector(const std::vector<float>& bandFrequencies, int sampleRate, int fftBinCount,
                   float maxGainDb, float smoothingFactor, float noiseFloorDb,
                   int correctionIntervalMs = 500)
@@ -132,6 +134,16 @@ public:
         return std::clamp(static_cast<float>(total) / maxPossible, 0.0f, 1.0f);
     }
 
+    // Actualiza los parámetros en caliente (desde configure() ligero) sin
+    // recrear el objeto ni perder el estado de corrección.
+    void updateParams(float maxGainDb, float smoothingFactor, float noiseFloorDb,
+                      int correctionIntervalMs) {
+        maxGainDb_ = maxGainDb;
+        smoothingFactor_ = smoothingFactor;
+        noiseFloorDb_ = noiseFloorDb;
+        correctionIntervalMs_ = correctionIntervalMs > 0 ? correctionIntervalMs : 500;
+    }
+
     const std::vector<float>& currentBandLevels() const { return currentBandLevels_; }
 
     void reset() {
@@ -149,7 +161,7 @@ private:
     static constexpr long long kTwoBandPeriodMs = 500;
     static constexpr float kActiveMarginDb = 3.0f;
 
-    const std::vector<float>& bandFrequencies_;
+    std::vector<float> bandFrequencies_;  // copia propia (ver constructor)
     int sampleRate_;
     int fftBinCount_;
     float maxGainDb_;

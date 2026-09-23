@@ -5,60 +5,97 @@
 
 namespace acoustical {
 
-AcousticalEngine::AcousticalEngine() {
-    configure(AudioConfig{});
-    dynamicCfgs_ = {
-        DynamicEqConfig{SweepDirection::NEED_BASED, 800, 12.0f, 0.8f, 1.0f, 1},
-        DynamicEqConfig{SweepDirection::BOTTOM_UP, 800, 12.0f, 0.8f, 1.0f, 1},
-        DynamicEqConfig{SweepDirection::TOP_DOWN, 800, 12.0f, 0.8f, 1.0f, 1}
-    };
-    sweeperEnabled_.assign(kDynamicEqCount, false);
-    supportBandsByEq_.assign(kDynamicEqCount, {});
-    for (int i = 0; i < kDynamicEqCount; ++i)
-        sweepers_.push_back(std::make_unique<SweeperProcessor>(bandFrequencies_, dynamicCfgs_[i]));
-}
-
-void AcousticalEngine::configure(const AudioConfig& config) {
-    config_ = config;
-    bandFrequencies_ = StandardFrequencies::forCount(config.bandCount);
-    fft_ = std::make_unique<FftProcessor>(fftSamples(config.fftSize));
-    corrector_ = std::make_unique<RoomCorrector>(
-        bandFrequencies_, sampleRateHz(config.sampleRate), fft_->binCount(),
-        config.maxGainDb, config.effectiveSmoothingFactor(), config.noiseFloorDb,
-        config.correctionIntervalMs);
-    splMeter_ = std::make_unique<SplMeter>(120.0f);
-    noiseProfiler_ = std::make_unique<NoiseProfiler>(fft_->binCount(), 50, 6.0f);
-
-    bands_.clear();
-    for (int i = 0; i < static_cast<int>(bandFrequencies_.size()); ++i)
-        bands_.push_back(EqBand{i, bandFrequencies_[i], 0.0f, 0.0f, 1.41f});
-
-    const float sr = static_cast<float>(sampleRateHz(config.sampleRate));
-    dspL_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
-    dspR_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
-
-    // Los tres ecuas dinámicos se recrean con las nuevas bandas conservando
-    // sus ajustes (igual que AudioEngine.configure en el móvil)
-    if (dynamicCfgs_.size() < static_cast<size_t>(kDynamicEqCount)) {
-        dynamicCfgs_ = {
+namespace {
+    // Ajustes por defecto de los tres ecuas dinámicos.
+    std::vector<DynamicEqConfig> defaultDynamicCfgs() {
+        return {
             DynamicEqConfig{SweepDirection::NEED_BASED, 800, 12.0f, 0.8f, 1.0f, 1},
             DynamicEqConfig{SweepDirection::BOTTOM_UP, 800, 12.0f, 0.8f, 1.0f, 1},
             DynamicEqConfig{SweepDirection::TOP_DOWN, 800, 12.0f, 0.8f, 1.0f, 1}
         };
     }
-    sweepers_.clear();
-    for (int i = 0; i < kDynamicEqCount; ++i)
-        sweepers_.push_back(std::make_unique<SweeperProcessor>(bandFrequencies_, dynamicCfgs_[i]));
+}
+
+AcousticalEngine::AcousticalEngine() {
+    dynamicCfgs_ = defaultDynamicCfgs();
+    sweeperEnabled_.assign(kDynamicEqCount, false);
+    supportBandsByEq_.assign(kDynamicEqCount, {});
+    configure(AudioConfig{});
+}
+
+// === Configuración ===
+// Todo el estado estructural se protege con stateMutex_. configure() puede
+// llamarse con el motor en marcha: el hilo del motor solo lo usa por ticks
+// breves bajo el mismo lock, así que no hay UAF (antes recreaba fft_/
+// corrector_/sweepers_ en caliente → uso después de liberar).
+//
+// Dos caminos (ver A9):
+//  - ESTRUCTURAL (bandCount/fftSize cambian, o primera vez): recrea FFT,
+//    corrector, profiler y sweepers.
+//  - LIGERO (solo ganancias/suavizado/ruido): actualiza parámetros en sitio,
+//    sin recrear objetos ni perder el estado de corrección.
+void AcousticalEngine::configure(const AudioConfig& config) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+
+    const bool structural =
+        fft_ == nullptr ||
+        config.bandCount != config_.bandCount ||
+        config.fftSize != config_.fftSize;
+
+    config_ = config;
+
+    if (structural) {
+        bandFrequencies_ = StandardFrequencies::forCount(config.bandCount);
+        fft_ = std::make_unique<FftProcessor>(fftSamples(config.fftSize));
+        corrector_ = std::make_unique<RoomCorrector>(
+            bandFrequencies_, sampleRateHz(config.sampleRate), fft_->binCount(),
+            config.maxGainDb, config.effectiveSmoothingFactor(), config.noiseFloorDb,
+            config.correctionIntervalMs);
+        splMeter_ = std::make_unique<SplMeter>(120.0f + splCalibrationDb_);
+        noiseProfiler_ = std::make_unique<NoiseProfiler>(fft_->binCount(), 50, 6.0f);
+
+        bands_.clear();
+        for (int i = 0; i < static_cast<int>(bandFrequencies_.size()); ++i)
+            bands_.push_back(EqBand{i, bandFrequencies_[i], 0.0f, 0.0f, 1.41f});
+
+        // El EQ se prepara con la tasa configurada; si la tasa real del
+        // dispositivo difiere, analyzeFrameLocked() lo re-prepara con la real.
+        const float sr = static_cast<float>(sampleRateHz(config.sampleRate));
+        dspL_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
+        dspR_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
+        eqSampleRate_ = static_cast<int>(sr);
+
+        const int newBandCount = static_cast<int>(bandFrequencies_.size());
+        if (sweepersBandCount_ != newBandCount) {
+            for (int i = 0; i < kDynamicEqCount; ++i)
+                sweepers_[i] = std::make_unique<SweeperProcessor>(bandFrequencies_, dynamicCfgs_[i]);
+            sweepersBandCount_ = newBandCount;
+        }
+    } else {
+        // Ligero: el corrector actualiza sus parámetros sin perder estado.
+        if (corrector_)
+            corrector_->updateParams(config.maxGainDb, config.effectiveSmoothingFactor(),
+                                     config.noiseFloorDb, config.correctionIntervalMs);
+    }
+
+    if (dynamicCfgs_.size() < static_cast<size_t>(kDynamicEqCount))
+        dynamicCfgs_ = defaultDynamicCfgs();
     if (sweeperEnabled_.size() < static_cast<size_t>(kDynamicEqCount))
         sweeperEnabled_.assign(kDynamicEqCount, false);
+
+    // Ajustes de los ecuas dinámicos: se aplican siempre (la UI los cambia en
+    // caliente) y no requieren recrear los sweepers.
+    for (int i = 0; i < kDynamicEqCount; ++i)
+        if (sweepers_[i]) sweepers_[i]->applyConfig(dynamicCfgs_[i]);
 }
 
 std::vector<EqBand> AcousticalEngine::bands() const {
-    std::lock_guard<std::mutex> lock(ringMutex_);
+    std::lock_guard<std::mutex> lock(stateMutex_);
     return bands_;
 }
 
 void AcousticalEngine::setBandGain(int index, float gainDb) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
     if (index < 0 || index >= static_cast<int>(bands_.size())) return;
     const float clamped = std::clamp(gainDb, -config_.maxGainDb, config_.maxGainDb);
     bands_[index].gainDb = clamped;
@@ -66,9 +103,12 @@ void AcousticalEngine::setBandGain(int index, float gainDb) {
 }
 
 void AcousticalEngine::resetBands() {
+    std::lock_guard<std::mutex> lock(stateMutex_);
     for (auto& b : bands_) { b.gainDb = 0.0f; b.targetGainDb = 0.0f; }
     if (corrector_) corrector_->reset();
 }
+
+// === Audio (hilo de audio: no toca stateMutex_) ===
 
 void AcousticalEngine::pushSamples(const float* samples, int count, int sampleRate) {
     inputSampleRate_.store(sampleRate, std::memory_order_relaxed);
@@ -85,6 +125,7 @@ void AcousticalEngine::setSecondaryCaptureLevels(const std::vector<float>& level
 }
 
 bool AcousticalEngine::start() {
+    std::lock_guard<std::mutex> lock(threadMutex_);
     if (running_.load()) return true;
     running_.store(true);
     framesAnalyzed_.store(0);
@@ -94,47 +135,70 @@ bool AcousticalEngine::start() {
 }
 
 void AcousticalEngine::stop() {
-    running_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(threadMutex_);
+        running_.store(false);
+    }
+    // join fuera del lock para no mantener ningún mutex durante la espera.
+    std::lock_guard<std::mutex> joinLock(threadMutex_);
     if (engineThread_.joinable()) engineThread_.join();
 }
 
+// === Bucle del motor ===
+// El trabajo (tick de sweepers + análisis FFT) se hace bajo stateMutex_; los
+// callbacks (onSweep/onAnalysis/onNoise*) se despachan FUERA del lock para que
+// no puedan reentrar y deadlocar el motor.
 void AcousticalEngine::engineLoop() {
-    std::vector<float> block(fftSamples(config_.fftSize));
     const int fftN = fftSamples(config_.fftSize);
+    std::vector<float> block(fftN);
 
     while (running_.load()) {
         const auto tickStart = std::chrono::steady_clock::now();
         const long long now = nowMs();
 
-        // 1. Tick de los tres ecuas dinámicos (cada 10 ms, valores se ajustan aquí)
-        std::vector<float> measured;
+        TickEvents ev;
         {
-            std::lock_guard<std::mutex> lock(secondaryMutex_);
-            measured = lastMeasuredLevels_;
-        }
-        if (!measured.empty()) {
-            for (int i = 0; i < kDynamicEqCount; ++i) {
-                if (!sweeperEnabled_[i]) continue;
-                if (auto step = sweepers_[i]->step(measured, now))
-                    if (onSweep) onSweep(static_cast<SweepProcess>(i), *step);
+            std::lock_guard<std::mutex> lock(stateMutex_);
+
+            // 1. Tick de los tres ecuas dinámicos (cada ~10 ms)
+            {
+                std::lock_guard<std::mutex> slock(secondaryMutex_);
+                if (!lastMeasuredLevels_.empty()) {
+                    for (int i = 0; i < kDynamicEqCount; ++i) {
+                        if (!sweeperEnabled_[i] || !sweepers_[i]) continue;
+                        if (auto step = sweepers_[i]->step(lastMeasuredLevels_, now))
+                            ev.sweeps.emplace_back(static_cast<SweepProcess>(i), *step);
+                    }
+                }
+            }
+
+            // 2. Análisis FFT cada analysisInterval ms
+            const bool doAnalysis =
+                (now - lastAnalysisMs_.load()) >= analysisIntervalMs(config_.analysisInterval);
+            if (doAnalysis) {
+                bool haveBlock = false;
+                {
+                    std::lock_guard<std::mutex> rlock(ringMutex_);
+                    if (static_cast<int>(ring_.size()) >= fftN) {
+                        const int start = static_cast<int>(ring_.size()) - fftN;
+                        std::copy_n(std::next(ring_.begin(), start), fftN, block.begin());
+                        haveBlock = true;
+                    }
+                }
+                if (haveBlock) {
+                    analyzeFrameLocked(block, inputSampleRate_.load(), ev);
+                    ev.hasAnalysis = true;
+                }
+                lastAnalysisMs_.store(now);
             }
         }
 
-        // 2. Análisis FFT cada analysisInterval ms
-        bool doAnalysis = (now - lastAnalysisMs_.load()) >= analysisIntervalMs(config_.analysisInterval);
-        if (doAnalysis) {
-            bool haveBlock = false;
-            {
-                std::lock_guard<std::mutex> lock(ringMutex_);
-                if (static_cast<int>(ring_.size()) >= fftN) {
-                    const int start = static_cast<int>(ring_.size()) - fftN;
-                    std::copy_n(std::next(ring_.begin(), start), fftN, block.begin());
-                    haveBlock = true;
-                }
-            }
-            if (haveBlock) analyzeFrame(block, inputSampleRate_.load());
-            lastAnalysisMs_.store(now);
-        }
+        // --- Despacho de callbacks FUERA del lock ---
+        for (auto& s : ev.sweeps)
+            if (onSweep) onSweep(s.first, s.second);
+        if (ev.hasAnalysis && onAnalysis) onAnalysis(ev.analysis);
+        if (ev.noiseComplete && onNoiseCaptureComplete) onNoiseCaptureComplete();
+        if (ev.noiseProgress >= 0.0f && onNoiseCaptureProgress) onNoiseCaptureProgress(ev.noiseProgress);
 
         // Ritmo de tick de 10 ms
         const auto elapsed = std::chrono::steady_clock::now() - tickStart;
@@ -143,8 +207,20 @@ void AcousticalEngine::engineLoop() {
     }
 }
 
-void AcousticalEngine::analyzeFrame(const std::vector<float>& samples, int sampleRate) {
-    if (!fft_ || !corrector_ || !splMeter_) return;
+// Requiere stateMutex_ tomado (el caller lo sostiene).
+void AcousticalEngine::analyzeFrameLocked(const std::vector<float>& samples, int sampleRate,
+                                          TickEvents& ev) {
+    if (!fft_ || !corrector_ || !splMeter_ || !noiseProfiler_) return;
+
+    // Si la tasa real del dispositivo cambió, re-preparamos el EQ con esa tasa
+    // (antes se diseñaba a la tasa "configurada" por defecto, 96 kHz → bandas
+    // equivocadas por 2× en tarjetas a 48 kHz).
+    if (sampleRate != eqSampleRate_) {
+        eqSampleRate_ = sampleRate;
+        const float sr = static_cast<float>(sampleRate);
+        dspL_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
+        dspR_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
+    }
 
     const float spl = splMeter_->computeSpl(samples.data(), static_cast<int>(samples.size()));
     const auto& rawMags = fft_->computeMagnitudesDb(samples.data(), sampleRate);
@@ -161,9 +237,9 @@ void AcousticalEngine::analyzeFrame(const std::vector<float>& samples, int sampl
     if (noiseProfiler_->isCapturing()) {
         std::vector<float> raw(rawMags.begin(), rawMags.end());
         const bool done = noiseProfiler_->feedFrame(raw);
-        if (onNoiseCaptureProgress) onNoiseCaptureProgress(noiseProfiler_->captureProgress());
+        ev.noiseProgress = noiseProfiler_->captureProgress();
         if (done) {
-            if (onNoiseCaptureComplete) onNoiseCaptureComplete();
+            ev.noiseComplete = true;
             corrector_->reset();
             for (auto& s : sweepers_) if (s) s->reset();
         }
@@ -204,8 +280,8 @@ void AcousticalEngine::analyzeFrame(const std::vector<float>& samples, int sampl
 
     std::vector<float> combinedL = manual, combinedR = manual;
     for (int i = 0; i < kDynamicEqCount; ++i) {
-        gainsL[i] = addSupportGains(sweepers_[i]->gainsL(), i);
-        gainsR[i] = addSupportGains(sweepers_[i]->gainsR(), i);
+        gainsL[i] = addSupportGains(sweepers_[i] ? sweepers_[i]->gainsL() : std::vector<float>{}, i);
+        gainsR[i] = addSupportGains(sweepers_[i] ? sweepers_[i]->gainsR() : std::vector<float>{}, i);
         for (size_t b = 0; b < combinedL.size(); ++b) {
             combinedL[b] = std::clamp(combinedL[b] + gainsL[i][b],
                                       -DynamicEqConfig::MAX_GAIN_DB, DynamicEqConfig::MAX_GAIN_DB);
@@ -230,15 +306,15 @@ void AcousticalEngine::analyzeFrame(const std::vector<float>& samples, int sampl
     result.averageSpl = splMeter_->averageSpl();
     result.correctionIntensity = correctionIntensity;
     result.framesAnalyzed = framesAnalyzed_.load();
-    result.noiseProfile = noiseProfiler_->profile();
+    result.noiseProfile = noiseProfiler_->profile();  // copia segura
     result.combinedGainsL = std::move(combinedL);
     result.combinedGainsR = std::move(combinedR);
     result.dynamicEqGainsL = std::move(gainsL);
     result.dynamicEqGainsR = std::move(gainsR);
     result.timeSamples = std::move(timeSamples);
 
+    ev.analysis = std::move(result);
     framesAnalyzed_.fetch_add(1);
-    if (onAnalysis) onAnalysis(result);
 }
 
 // === Bandas de apoyo de frecuencia libre (una serie por ecu dinámico) ===
@@ -258,10 +334,11 @@ float AcousticalEngine::supportGainAt(float freqHz) const {
 }
 
 std::vector<float> AcousticalEngine::addSupportGains(const std::vector<float>& gains, int eqIndex) const {
+    if (eqIndex < 0 || eqIndex >= kDynamicEqCount) return gains;
     const auto& support = supportBandsByEq_[eqIndex];
     if (support.empty()) return gains;
     std::vector<float> out = gains;
-    for (int b = 0; b < static_cast<int>(out.size()); ++b) {
+    for (int b = 0; b < static_cast<int>(out.size()) && b < static_cast<int>(bandFrequencies_.size()); ++b) {
         float extra = 0.0f;
         for (const auto& band : support) extra += supportTaper(bandFrequencies_[b], band);
         out[b] = std::clamp(out[b] + extra, -DynamicEqConfig::MAX_GAIN_DB, DynamicEqConfig::MAX_GAIN_DB);
@@ -281,6 +358,8 @@ SpectrumFrame AcousticalEngine::applySupportBands(const SpectrumFrame& spectrum)
 // === Referencia y ruido ===
 
 void AcousticalEngine::captureReference() {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (!corrector_) return;
     referenceLevels_ = corrector_->currentBandLevels();
     referenceCaptured_.store(true);
     corrector_->reset();
@@ -288,14 +367,39 @@ void AcousticalEngine::captureReference() {
 }
 
 void AcousticalEngine::clearReference() {
+    std::lock_guard<std::mutex> lock(stateMutex_);
     referenceCaptured_.store(false);
     referenceLevels_.clear();
 }
 
-void AcousticalEngine::startNoiseCapture() { noiseProfiler_->startCapture(); }
-void AcousticalEngine::cancelNoiseCapture() { noiseProfiler_->cancelCapture(); }
-void AcousticalEngine::clearNoiseProfile() { noiseProfiler_->clearProfile(); }
-bool AcousticalEngine::hasNoiseProfile() const { return noiseProfiler_->hasProfile(); }
+void AcousticalEngine::startNoiseCapture() {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (noiseProfiler_) noiseProfiler_->startCapture();
+}
+void AcousticalEngine::cancelNoiseCapture() {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (noiseProfiler_) noiseProfiler_->cancelCapture();
+}
+void AcousticalEngine::clearNoiseProfile() {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (noiseProfiler_) noiseProfiler_->clearProfile();
+}
+bool AcousticalEngine::hasNoiseProfile() const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return noiseProfiler_ && noiseProfiler_->hasProfile();
+}
+
+void AcousticalEngine::setSplCalibrationOffset(float adjustDb) {
+    adjustDb = std::clamp(adjustDb, -30.0f, 30.0f);
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    splCalibrationDb_ = adjustDb;
+    if (splMeter_) splMeter_->setCalibrationOffset(120.0f + adjustDb);
+}
+
+float AcousticalEngine::splCalibrationOffset() const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return splCalibrationDb_;
+}
 
 // === Ecuas dinámicos ===
 
@@ -305,33 +409,43 @@ SweeperProcessor& AcousticalEngine::sweeperFor(int index) {
 
 void AcousticalEngine::setDynamicEqInterval(int index, int ms) {
     if (index < 0 || index >= kDynamicEqCount) return;
+    std::lock_guard<std::mutex> lock(stateMutex_);
     DynamicEqConfig cfg = dynamicCfgs_[index];
     cfg.decisionIntervalMs = ms;
-    setDynamicEqConfig(index, cfg);
+    setDynamicEqConfigLocked(index, cfg);
 }
 
 void AcousticalEngine::setDynamicEqMaxGain(int index, float gainDb) {
     if (index < 0 || index >= kDynamicEqCount) return;
+    std::lock_guard<std::mutex> lock(stateMutex_);
     DynamicEqConfig cfg = dynamicCfgs_[index];
     cfg.maxGainDb = gainDb;
-    setDynamicEqConfig(index, cfg);
+    setDynamicEqConfigLocked(index, cfg);
 }
 
 void AcousticalEngine::setDynamicEqSpeed(int index, float speed) {
     if (index < 0 || index >= kDynamicEqCount) return;
+    std::lock_guard<std::mutex> lock(stateMutex_);
     DynamicEqConfig cfg = dynamicCfgs_[index];
     cfg.speedMultiplier = speed;
-    setDynamicEqConfig(index, cfg);
+    setDynamicEqConfigLocked(index, cfg);
 }
 
 void AcousticalEngine::setDynamicEqExtras(int index, int extras) {
     if (index < 0 || index >= kDynamicEqCount) return;
+    std::lock_guard<std::mutex> lock(stateMutex_);
     DynamicEqConfig cfg = dynamicCfgs_[index];
     cfg.extraSweeps = extras;
-    setDynamicEqConfig(index, cfg);
+    setDynamicEqConfigLocked(index, cfg);
 }
 
 void AcousticalEngine::setDynamicEqConfig(int index, const DynamicEqConfig& cfg) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    setDynamicEqConfigLocked(index, cfg);
+}
+
+// Requiere stateMutex_ tomado.
+void AcousticalEngine::setDynamicEqConfigLocked(int index, const DynamicEqConfig& cfg) {
     if (index < 0 || index >= kDynamicEqCount) return;
     dynamicCfgs_[index] = cfg;
     if (sweepers_[index]) sweepers_[index]->applyConfig(cfg);
@@ -339,20 +453,38 @@ void AcousticalEngine::setDynamicEqConfig(int index, const DynamicEqConfig& cfg)
 
 void AcousticalEngine::setDynamicEqEnabled(int index, bool enabled) {
     if (index < 0 || index >= kDynamicEqCount) return;
+    std::lock_guard<std::mutex> lock(stateMutex_);
     sweeperEnabled_[index] = enabled;
 }
 
+DynamicEqConfig AcousticalEngine::dynamicEqConfig(int index) const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (index < 0 || index >= static_cast<int>(dynamicCfgs_.size())) return {};
+    return dynamicCfgs_[index];
+}
+
+bool AcousticalEngine::dynamicEqEnabled(int index) const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return index >= 0 && index < static_cast<int>(sweeperEnabled_.size()) && sweeperEnabled_[index];
+}
+
 void AcousticalEngine::setDynamicEqMixerLevel(int index, float level) {
-    if (index < 0 || index >= kDynamicEqCount || !sweepers_[index]) return;
-    sweepers_[index]->mixerLevel.store(std::clamp(level, 0.0f, 1.0f), std::memory_order_relaxed);
+    if (index < 0 || index >= kDynamicEqCount) return;
+    // stateMutex_: los sweepers_ se recrean en configure() estructural; sin
+    // el lock habría una ventana UAF si la UI cambia el nivel en ese momento.
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (sweepers_[index])
+        sweepers_[index]->mixerLevel.store(std::clamp(level, 0.0f, 1.0f), std::memory_order_relaxed);
 }
 
 void AcousticalEngine::setEqChannelLinked(bool linked) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
     for (auto& s : sweepers_) if (s) s->channelLinked.store(linked, std::memory_order_relaxed);
 }
 
 void AcousticalEngine::setSupportBands(int index, const std::vector<SupportBand>& bands) {
     if (index < 0 || index >= kDynamicEqCount) return;
+    std::lock_guard<std::mutex> lock(stateMutex_);
     supportBandsByEq_[index] = bands;
 }
 

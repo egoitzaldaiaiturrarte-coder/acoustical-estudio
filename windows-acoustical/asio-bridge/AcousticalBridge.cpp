@@ -294,18 +294,24 @@ private:
         ULONGLONG next = GetTickCount64();
         long activeBuffer = 0;
         while (running_) {
-            // Copia reproducción: app → buffers de salida de Cubase (con la app
-            // parada, silencio para que el DAW siga avanzando sin atasco)
+            // Contrato ASIO en buffers[activeBuffer]:
+            //  - Salidas (isInput=false, "Bridge Out"): ahí renderiza CUBASE;
+            //    el dispositivo las LEE. Se envían al capture ring (Cubase →
+            //    app). Antes estaban invertidas: se sobre-escribía el render
+            //    de Cubase con el anillo de la app y se leía de vuelta datos
+            //    propios obsoletos.
             for (long i = 0; i < channels_; ++i) {
                 if (bufferInfos_[i].isInput) continue;
                 auto* out = static_cast<float*>(bufferInfos_[i].buffers[activeBuffer]);
-                FillFromPlaybackRing(i, out, bufferSize_);
+                PushToCaptureRing(i, out, bufferSize_);
             }
-            // Copia captura: entradas de Cubase → anillo hacia la app
+            //  - Entradas (isInput=true, "Bridge In"): el dispositivo las
+            //    ESCRIBE y Cubase las lee. Se rellenan desde el playback ring
+            //    (app → Cubase: señal de prueba; silencio si la app no manda).
             for (long i = 0; i < channels_; ++i) {
                 if (!bufferInfos_[i].isInput) continue;
                 auto* in = static_cast<float*>(bufferInfos_[i].buffers[activeBuffer]);
-                PushToCaptureRing(i, in, bufferSize_);
+                FillFromPlaybackRing(i, in, bufferSize_);
             }
             samplesPlayed_ += bufferSize_;
             // Aviso al host (Cubase)

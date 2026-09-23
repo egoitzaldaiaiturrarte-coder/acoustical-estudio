@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import kotlin.math.ln
@@ -84,8 +85,15 @@ class TestSignalPlayer {
         track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
             override fun onMarkerReached(t: AudioTrack) {
                 mainHandler.post {
-                    stop(outputId)
-                    onFinished()
+                    // Libera solo ESTA pista (por identidad). Si el usuario
+                    // relanzó la misma salida antes de que se ejecute este post,
+                    // no debe cortarse la pista nueva.
+                    val stillMine = synchronized(lock) { activeTracks[outputId] === t }
+                    if (stillMine) {
+                        synchronized(lock) { if (activeTracks[outputId] === t) activeTracks.remove(outputId) }
+                        releaseTrack(t)
+                        onFinished()
+                    }
                 }
             }
 
@@ -94,11 +102,13 @@ class TestSignalPlayer {
             }
         })
 
-        // Route to this output's physical device (speaker / BT / USB / wired)
-        if (device != null) {
+        // Route to this output's physical device (speaker / BT / USB / wired).
+        // setPreferredDevice requiere API 34; con minSdk 24 lanzaría
+        // NoSuchMethodError (no es Exception) en el resto de versiones.
+        if (device != null && Build.VERSION.SDK_INT >= 34) {
             try {
                 track.preferredDevice = device
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
                 // Routing unavailable — falls back to the system default
             }
         }
@@ -136,6 +146,10 @@ class TestSignalPlayer {
 
     // --- Generators ---
 
+    /** Convierte un valor en [-1, 1] a PCM de 16 bits (escala por 32767). */
+    private fun toShort16(v: Double): Short =
+        (v.coerceIn(-1.0, 1.0).toFloat() * 32767f).roundToInt().toShort()
+
     /**
      * Paul Kellet's pink noise filter: spectrally balanced noise with
      * equal energy per octave, like real room noise and PA systems.
@@ -158,7 +172,7 @@ class TestSignalPlayer {
             b5 = -0.7616 * b5 - white * 0.0168980
             val pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * PINK_SCALE
             b6 = white * 0.115926
-            out[i] = (pink * amplitude).coerceIn(-1.0, 1.0).toFloat().toInt().toShort()
+            out[i] = toShort16(pink * amplitude)
         }
     }
 
@@ -173,7 +187,7 @@ class TestSignalPlayer {
             val progress = i.toDouble() / count
             val freq = (logMin + (logMax - logMin) * progress).pow(1.0)
             phase += 2.0 * Math.PI * freq / SAMPLE_RATE
-            out[offset + i] = (sin(phase) * amplitude).coerceIn(-1.0, 1.0).toFloat().toInt().toShort()
+            out[offset + i] = toShort16(sin(phase) * amplitude)
         }
     }
 
@@ -181,7 +195,7 @@ class TestSignalPlayer {
     private fun generateTone(out: ShortArray, offset: Int, amplitude: Float) {
         for (i in offset until out.size) {
             val t = (i - offset).toDouble() / SAMPLE_RATE
-            out[i] = (sin(2.0 * Math.PI * 1000.0 * t) * amplitude).toInt().toShort()
+            out[i] = toShort16(sin(2.0 * Math.PI * 1000.0 * t) * amplitude)
         }
     }
 

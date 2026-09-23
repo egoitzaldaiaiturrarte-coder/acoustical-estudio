@@ -1,5 +1,6 @@
 package com.rork.acoustical.domain.audio
 
+import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.pow
 
@@ -118,10 +119,17 @@ class NoiseProfiler(
                 // Signal at or below noise floor — gate it down
                 result[i] = noise
             } else if (measured < noise + gateRange) {
-                // Transition zone: proportional subtraction
-                val ratio = (measured - noise) / gateRange
-                val subtraction = noise * (1f - ratio)
-                result[i] = max(noise, measured - subtraction)
+                // Transition zone: proportional spectral subtraction.
+                // Se hace en dominio LINEAL (no en dB): con dB negativos la
+                // resta "measured - noise*(1-ratio)" se convertía en suma y
+                // AMPLIFICABA el ruido hasta +40 dB. En lineal siempre
+                // atenua: resultado <= medido.
+                val gate = ((measured - noise) / gateRange).coerceIn(0f, 1f)
+                val linSig = 10.0.pow(measured / 20.0)
+                val linNo = 10.0.pow(noise / 20.0)
+                val linOut = (linSig - linNo * (1.0 - gate.toDouble())).coerceAtLeast(0.0)
+                val out = if (linOut > 1e-10) (20.0 * log10(linOut)).toFloat() else noise
+                result[i] = max(noise, out)
             } else {
                 // Signal well above noise — no subtraction needed
                 result[i] = measured

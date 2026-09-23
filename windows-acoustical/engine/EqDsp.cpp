@@ -7,8 +7,7 @@ namespace acoustical {
 
 // Los coeficientes del peaking EQ (RBJ cookbook) viven en el núcleo DSP
 // compartido (dsp/acoustical_dsp.c), que es la única fuente de verdad y la
-// que cubren los tests. El paso por muestra (BiquadState::process) se queda
-// aquí, inline, para no añadir una llamada en el hot path de audio.
+// que cubren los tests.
 BiquadCoeffs makePeaking(float f0, float fs, float gainDb, float q) {
     acoustical_biquad_coeffs c;
     acoustical_make_peaking(f0, fs, gainDb, q, &c);
@@ -17,64 +16,69 @@ BiquadCoeffs makePeaking(float f0, float fs, float gainDb, float q) {
     return out;
 }
 
-void EqDsp::prepare(int bands, const float* bandFrequencies, float sampleRate, float q) {
-    const int newBands = std::min(bands, kMaxBands);
-    // Configuración idéntica (mismas bandas, muestreo y Q): no tocar nada.
-    // prepare() puede llamarse desde el hilo de mensajes mientras el hilo de
-    // audio está en process(); reasignar los buffers sería una carrera.
-    const bool sameSetup = newBands == bands_ && sampleRate == sampleRate_ && q == q_
-        && bandFreqs_.size() == static_cast<size_t>(newBands)
-        && std::equal(bandFreqs_.begin(), bandFreqs_.end(), bandFrequencies);
-    if (sameSetup) return;
+EqDsp::EqDsp() {
+    // Snapshot plano inicial (0 bandas) para que process() nunca vea nullptr.
+    std::atomic_store(&current_, std::make_shared<EqCoeffSet>());
+}
 
-    bands_ = newBands;
+std::shared_ptr<EqCoeffSet> EqDsp::buildSet(const std::vector<float>& gainsDb) const {
+    auto s = std::make_shared<EqCoeffSet>();
+    s->bands = bands_;
+    for (int i = 0; i < bands_; ++i) {
+        const float g = i < static_cast<int>(gainsDb.size()) ? gainsDb[i] : 0.0f;
+        s->gain[i] = g;
+        s->coeffs[i] = makePeaking(bandFreqs_[i], sampleRate_, g, q_);
+    }
+    return s;
+}
+
+void EqDsp::prepare(int bands, const float* bandFrequencies, float sampleRate, float q) {
+    std::lock_guard<std::mutex> lock(writerMutex_);
+    bands_ = std::min(bands, kMaxBands);
     sampleRate_ = sampleRate;
     q_ = q;
     bandFreqs_.assign(bandFrequencies, bandFrequencies + bands_);
-    gainSets_[0] = std::make_unique<GainSnapshot>();
-    gainSets_[1] = std::make_unique<GainSnapshot>();
-    gainSets_[0]->gains.assign(bands_, 0.0f);
-    gainSets_[1]->gains.assign(bands_, 0.0f);
-    lastApplied_.assign(bands_, 0.0f);
-    dirty_.store(true, std::memory_order_relaxed);
+    std::vector<float> flat(bands_, 0.0f);
+    std::atomic_store(&current_, buildSet(flat));
+    // El estado de los biquads se pone a cero en el hilo de audio (seguro).
+    stateReset_.store(true, std::memory_order_release);
 }
 
-void EqDsp::setGains(bool rightChannel, const std::vector<float>& combinedGainsDb) {
-    const int slot = rightChannel ? 1 : 0;
-    if (!gainSets_[slot]) return;
-    const int n = std::min<int>(bands_, static_cast<int>(combinedGainsDb.size()));
-    gainSets_[slot]->gains.resize(n);
-    for (int i = 0; i < n; ++i) gainSets_[slot]->gains[i] = combinedGainsDb[i];
-    // Cada instancia procesa un único canal: recordamos cuál es para que
-    // process() lea siempre el slot correcto (antes R nunca se aplicaba).
-    isRight_.store(rightChannel, std::memory_order_relaxed);
-    dirty_.store(true, std::memory_order_release);
-}
-
-void EqDsp::rebuildCoefficients(bool rightChannel) {
-    const int slot = rightChannel ? 1 : 0;
-    if (!gainSets_[slot]) return;
-    const auto& gains = gainSets_[slot]->gains;
-    for (int i = 0; i < bands_; ++i) {
-        const float g = i < static_cast<int>(gains.size()) ? gains[i] : 0.0f;
-        if (std::abs(g - lastApplied_[i]) > 0.01f || g == 0.0f) {
-            cachedCoeffs_[i] = makePeaking(bandFreqs_[i], sampleRate_, g, q_);
-            lastApplied_[i] = g;
-        }
-    }
-    dirty_.store(false, std::memory_order_relaxed);
+void EqDsp::setGains(bool /*rightChannel*/, const std::vector<float>& combinedGainsDb) {
+    std::lock_guard<std::mutex> lock(writerMutex_);
+    std::atomic_store(&current_, buildSet(combinedGainsDb));
 }
 
 void EqDsp::process(float* samples, int numSamples) {
-    const int slot = isRight_.load(std::memory_order_relaxed) ? 1 : 0;
-    if (dirty_.load(std::memory_order_acquire)) {
-        rebuildCoefficients(slot == 1);
+    auto snap = std::atomic_load(&current_);
+    if (!snap) return;
+
+    if (stateReset_.exchange(false, std::memory_order_relaxed)) {
+        z1_.fill(0.0f);
+        z2_.fill(0.0f);
+        lastGain_.fill(0.0f);
     }
-    for (int i = 0; i < bands_; ++i) {
-        if (std::abs(lastApplied_[i]) < 0.001f) continue;  // banda sin ganancia: sin filtrar
-        BiquadState& f = filters_[i];
-        f.coeffs = cachedCoeffs_[i];
-        for (int s = 0; s < numSamples; ++s) samples[s] = f.process(samples[s]);
+
+    const int n = std::min(snap->bands, kMaxBands);
+    for (int i = 0; i < n; ++i) {
+        const float g = snap->gain[i];
+        const bool active = std::abs(g) >= 0.001f;
+        const bool wasActive = std::abs(lastGain_[i]) >= 0.001f;
+        // (Re)activación de la banda: reinicia el estado para evitar un clic.
+        if (active != wasActive) { z1_[i] = 0.0f; z2_[i] = 0.0f; }
+        lastGain_[i] = g;
+        if (!active) continue;  // banda sin ganancia: sin filtrar
+
+        const BiquadCoeffs& c = snap->coeffs[i];
+        float& z1 = z1_[i];
+        float& z2 = z2_[i];
+        for (int s = 0; s < numSamples; ++s) {
+            const float x = samples[s];
+            const float y = c.b0 * x + z1;
+            z1 = c.b1 * x - c.a1 * y + z2;
+            z2 = c.b2 * x - c.a2 * y;
+            samples[s] = y;
+        }
     }
 }
 

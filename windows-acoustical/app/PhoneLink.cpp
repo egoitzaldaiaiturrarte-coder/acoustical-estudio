@@ -74,12 +74,19 @@ void PhoneLink::pollDevices() {
     }
 
     const auto out = runAdb("devices -l");
-    // Salida esperada: "List of devices attached\nSERIAL\tdevice ..."
+    // Salida esperada: "List of devices attached\nSERIAL\tdevice usb:1-1 ..."
+    // Con "-l" el estado NO está al final de la línea (termina en
+    // transport_id:N), así que endsWith("device") nunca coincidía y el
+    // móvil no se detectaba jamás. Se analiza el campo de estado.
     juce::String serial;
     for (const auto& line : juce::StringArray::fromLines(out)) {
         const auto t = line.trim();
-        if (t.isNotEmpty() && t.containsChar('\t') && t.endsWith("device")) {
-            serial = t.upToFirstOccurrenceOf("\t", false, false);
+        if (t.isEmpty() || !t.containsChar('\t')) continue;
+        const auto s = t.upToFirstOccurrenceOf("\t", false, false).trim();
+        const auto state = t.fromFirstOccurrenceOf("\t", false, false).trim();
+        // Estados de adb: device, offline, unauthorized, nopermissions…
+        if (s.isNotEmpty() && state.startsWith("device")) {
+            serial = s;
             break;
         }
     }
@@ -116,15 +123,17 @@ bool PhoneLink::connectAndExchange(const juce::var& send, juce::var& reply) {
         return false;
     }
     // TCP es un flujo: la respuesta puede llegar en varios segmentos o superar
-    // 64 KB (payloads de 124 bandas). Leer una sola vez trunca el JSON. Acumulamos
-    // hasta que el móvil cierra la conexión (el servidor la cierra al terminar),
-    // con un tope de seguridad para no colgarnos si no cierra.
+    // 64 KB (payloads de 124 bandas). Hay que leer HASTA que el móvil cierre la
+    // conexión (el servidor la cierra al terminar). Antes se leía con
+    // shouldBlock=false sin esperar: la primera read podía devolver 0 bytes
+    // (el móvil aún no ha respondido) y el bucle salía, truncando el JSON.
     juce::MemoryBlock raw;
     char buffer[65536];
     const juce::int64 maxBytes = 8 * 1024 * 1024;
     for (juce::int64 total = 0; total < maxBytes;) {
+        if (socket.waitUntilReady(true, 5000) <= 0) break;  // timeout o error
         const int n = socket.read(buffer, sizeof(buffer), false);
-        if (n <= 0) break;
+        if (n <= 0) break;  // 0 = cierre, -1 = error
         raw.append(buffer, static_cast<size_t>(n));
         total += n;
     }
@@ -197,6 +206,7 @@ juce::String PhoneLink::httpGet(const juce::String& path, juce::MemoryBlock& bod
     juce::MemoryBlock raw;
     char buffer[16384];
     for (;;) {
+        if (socket.waitUntilReady(true, 5000) <= 0) break;
         const int n = socket.read(buffer, sizeof(buffer), false);
         if (n <= 0) break;
         raw.append(buffer, static_cast<size_t>(n));
@@ -233,10 +243,13 @@ bool PhoneLink::httpDownloadToFile(const juce::String& path, const juce::File& d
         return false;
     }
 
+    // Timeout más amplio: el instalador son decenas de MB por el túnel USB.
+    const int kReadTimeoutMs = 15000;
     juce::MemoryBlock pending;
     char buffer[65536];
     int headerEnd = -1;
     while (headerEnd < 0) {
+        if (socket.waitUntilReady(true, kReadTimeoutMs) <= 0) break;
         const int n = socket.read(buffer, sizeof(buffer), false);
         if (n <= 0) break;
         pending.append(buffer, static_cast<size_t>(n));
@@ -268,6 +281,7 @@ bool PhoneLink::httpDownloadToFile(const juce::String& path, const juce::File& d
         total += preBody;
     }
     while (total < maxBytes) {
+        if (socket.waitUntilReady(true, kReadTimeoutMs) <= 0) break;
         const int n = socket.read(buffer, sizeof(buffer), false);
         if (n <= 0) break;
         out.write(buffer, static_cast<size_t>(n));

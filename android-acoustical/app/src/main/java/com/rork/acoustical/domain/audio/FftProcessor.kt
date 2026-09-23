@@ -11,7 +11,7 @@ import kotlin.math.sqrt
  *
  * @param size must be a power of two (512, 1024, 2048, 4096, 8192).
  */
-class FftProcessor(private val size: Int) {
+class FftProcessor(private val size: Int) : AutoCloseable {
 
     private val real: FloatArray = FloatArray(size)
     private val imag: FloatArray = FloatArray(size)
@@ -181,5 +181,25 @@ class FftProcessor(private val size: Int) {
             binFrequencies[i] = i * binHz
         }
         return binFrequencies
+    }
+
+    @Volatile
+    private var closed = false
+
+    /**
+     * Libera el plan FFT nativo (ventana, tablas de bit-reversal y twiddles) si se
+     * está usando el núcleo C compartido. Sin esto cada configure() filtraba un
+     * plan nativo que nunca se recuperaba.
+     */
+    override fun close() {
+        if (closed) return
+        closed = true
+        if (useNative) {
+            try {
+                NativeDsp.nativeFftFree(nativeHandle)
+            } catch (t: Throwable) {
+                // Librería nativa ya descargada — nada que liberar
+            }
+        }
     }
 }

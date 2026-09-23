@@ -13,6 +13,10 @@ class SplMeter {
 public:
     explicit SplMeter(float calibrationOffset = 120.0f) : calibrationOffset_(calibrationOffset) {}
 
+    // Calibración en caliente: el offset total = referencia + ajuste del usuario.
+    void setCalibrationOffset(float db) { calibrationOffset_ = db; }
+    float calibrationOffset() const { return calibrationOffset_; }
+
     float computeSpl(const float* samples, int count) {
         if (count <= 0) return 0.0f;
         double sumSquares = 0.0;

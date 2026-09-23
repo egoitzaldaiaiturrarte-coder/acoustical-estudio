@@ -7,6 +7,7 @@
 #include "FftProcessor.h"
 #include "RoomCorrector.h"
 #include "EqDsp.h"
+#include "NoiseProfiler.h"
 #include "StandardFrequencies.h"
 #include <cmath>
 #include <cstdio>
@@ -128,6 +129,28 @@ int main() {
     BiquadCoeffs id = makePeaking(1000.0f, sr, 0.0f, 1.41f);
     CHECK(nearF(id.b1, id.a1, 1e-5f) && nearF(id.b2, id.a2, 1e-5f) &&
           nearF(id.b0, 1.0f, 1e-5f), "makePeaking(0dB) == flat response");
+
+    // --- 7) Regresión A2: la sustracción de ruido NUNCA amplifica ---
+    // En la fórmula antigua (dominio dB) con ruido a -60 dB y señal a -57 dB
+    // devolvía -60 - (-60*0.5) = -30 dB: +30 dB de AMPLIFICACIÓN del ruido.
+    {
+        NoiseProfiler profiler(fftSize / 2, 50, 6.0f);
+        std::vector<float> noiseMags(fftSize / 2, -60.0f);
+        profiler.startCapture();
+        bool done = false;
+        for (int i = 0; i < 50 && !done; ++i) done = profiler.feedFrame(noiseMags);
+        CHECK(done, "noise capture completes");
+        CHECK(profiler.hasProfile(), "noise profile stored");
+
+        std::vector<float> signal(fftSize / 2, -57.0f);  // 3 dB sobre el ruido (compuerta)
+        const auto sub = profiler.subtractNoise(signal);
+        bool neverAmplifies = true;
+        for (size_t i = 0; i < sub.size(); ++i)
+            if (sub[i] > signal[i] + 0.01f) { neverAmplifies = false; break; }
+        CHECK(neverAmplifies, "subtractNoise never amplifies the signal");
+        CHECK(sub[0] < -54.0f, "transition zone attenuates (linear-domain subtraction)");
+        std::printf("  NoiseProfiler: medido=-57 dB, ruido=-60 dB -> %.2f dB\n", sub[0]);
+    }
 
     if (g_fail == 0) std::printf("\nENGINE WIRING: ALL PASSED\n");
     else std::printf("\nENGINE WIRING: %d FAILURES\n", g_fail);

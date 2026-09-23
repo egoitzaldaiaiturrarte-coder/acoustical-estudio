@@ -93,6 +93,7 @@ data class MeshPeer(
     val role: MeshRole = MeshRole.LISTENER,
     val lastSeenMs: Long = 0L,
     val currentSpl: Float = 0f,
+    val corrections: List<Float> = emptyList(),
     val isActive: Boolean = false
 ) {
     @Serializable

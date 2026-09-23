@@ -15,6 +15,7 @@
 #include "SignalGenerator.h"
 
 #include <atomic>
+#include <array>
 #include <memory>
 #include <deque>
 #include <functional>
@@ -30,7 +31,7 @@ struct AnalysisResult {
     float spl = 0.0f, peakSpl = 0.0f, averageSpl = 0.0f;
     float correctionIntensity = 0.0f;
     long long framesAnalyzed = 0;
-    const std::vector<float>* noiseProfile = nullptr;  // propiedad del profiler
+    std::vector<float> noiseProfile;              // copia (segura de mantener)
 
     // Curvas combinadas por banda (EQ manual + ecuas dinámicos + bandas de apoyo)
     std::vector<float> combinedGainsL;
@@ -55,8 +56,16 @@ public:
 
     // === Configuración (port de configure()) ===
     void configure(const AudioConfig& config);
-    const AudioConfig& config() const { return config_; }
-    const std::vector<float>& bandFrequencies() const { return bandFrequencies_; }
+    // Devuelven COPIAS bajo lock: config_/bandFrequencies_ los reescribe
+    // configure() desde otro hilo (una referencia se quedaría colgada).
+    AudioConfig config() const {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        return config_;
+    }
+    std::vector<float> bandFrequencies() const {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        return bandFrequencies_;
+    }
     std::vector<EqBand> bands() const;
     void setBandGain(int index, float gainDb);
     void resetBands();
@@ -81,10 +90,17 @@ public:
     void clearNoiseProfile();
     bool hasNoiseProfile() const;
 
+    // Calibración del medidor SPL: ajuste (dB) sobre la referencia de +120 dB.
+    void setSplCalibrationOffset(float adjustDb);
+    float splCalibrationOffset() const;
+
     // === Los tres ecuas dinámicos ===
     SweeperProcessor& sweeperFor(int index);   // acceso a parámetros en vivo
     void setDynamicEqConfig(int index, const DynamicEqConfig& cfg);
     void setDynamicEqEnabled(int index, bool enabled);
+    // Estado actual (copias bajo lock; para presets y UI)
+    DynamicEqConfig dynamicEqConfig(int index) const;
+    bool dynamicEqEnabled(int index) const;
     void setDynamicEqInterval(int index, int ms);
     void setDynamicEqMaxGain(int index, float gainDb);
     void setDynamicEqSpeed(int index, float speed);
@@ -100,8 +116,18 @@ public:
     SignalGenerator& signalGenerator() { return generator_; }
 
 private:
+    // Eventos de un tick que se recogen bajo stateMutex_ y se despachan fuera.
+    struct TickEvents {
+        std::vector<std::pair<SweepProcess, SweepStep>> sweeps;
+        AnalysisResult analysis;
+        bool hasAnalysis = false;
+        float noiseProgress = -1.0f;  // -1 = sin progreso este tick
+        bool noiseComplete = false;
+    };
+
     void engineLoop();
-    void analyzeFrame(const std::vector<float>& samples, int sampleRate);
+    void analyzeFrameLocked(const std::vector<float>& samples, int sampleRate, TickEvents& ev);
+    void setDynamicEqConfigLocked(int index, const DynamicEqConfig& cfg);
     float supportGainAt(float freqHz) const;
     float supportTaper(float freqHz, const SupportBand& band) const;
     std::vector<float> addSupportGains(const std::vector<float>& gains, int eqIndex) const;
@@ -119,15 +145,25 @@ private:
     std::unique_ptr<RoomCorrector> corrector_;
     std::unique_ptr<SplMeter> splMeter_;
     std::unique_ptr<NoiseProfiler> noiseProfiler_;
-    std::vector<std::unique_ptr<SweeperProcessor>> sweepers_;
+    std::array<std::unique_ptr<SweeperProcessor>, kDynamicEqCount> sweepers_{};
+    int sweepersBandCount_ = -1;
     std::vector<DynamicEqConfig> dynamicCfgs_;
     std::vector<bool> sweeperEnabled_;
     std::vector<std::vector<SupportBand>> supportBandsByEq_;
+    int eqSampleRate_ = 0;  // tasa real con la que se preparó el EqDsp (ver A3)
 
     std::vector<float> referenceLevels_;
     std::atomic<bool> referenceCaptured_{false};
+    float splCalibrationDb_ = 0.0f;  // ajuste del usuario sobre la referencia +120
 
-    // Anillo de audio de entrada (pushSamples desde el hilo de audio)
+    // Sincronización:
+    //  - stateMutex_ protege todo el estado estructural compartido entre la UI
+    //    y el hilo del motor (config, bandas, fft, corrector, sweepers, …).
+    //    El hilo de audio NO lo toca.
+    //  - threadMutex_ protege start()/stop().
+    //  - ringMutex_ protege el anillo de entrada (hilo de audio <-> motor).
+    mutable std::mutex stateMutex_;
+    std::mutex threadMutex_;
     mutable std::mutex ringMutex_;
     std::deque<float> ring_;
     size_t ringCapacity_ = 8192 * 4;

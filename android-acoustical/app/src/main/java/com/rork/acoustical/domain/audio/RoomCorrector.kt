@@ -23,13 +23,30 @@ class RoomCorrector(
     private val bandFrequencies: FloatArray,
     private val sampleRate: Int,
     private val fftBinCount: Int,
-    private val maxGainDb: Float,
-    private val smoothingFactor: Float,
-    private val noiseFloorDb: Float,
-    private val correctionPeriodMs: Long = TWO_BAND_PERIOD_MS
+    private var maxGainDb: Float,
+    private var smoothingFactor: Float,
+    private var noiseFloorDb: Float,
+    private var correctionPeriodMs: Long = TWO_BAND_PERIOD_MS
 ) {
 
     private val bandCount: Int = bandFrequencies.size
+
+    /**
+     * Update parameters in place (hot path): no rebuild, no lost correction
+     * state. Structural changes (bands/sample rate/FFT size) still require a
+     * new instance.
+     */
+    fun updateParams(
+        maxGainDb: Float,
+        smoothingFactor: Float,
+        noiseFloorDb: Float,
+        correctionPeriodMs: Long
+    ) {
+        this.maxGainDb = maxGainDb
+        this.smoothingFactor = smoothingFactor
+        this.noiseFloorDb = noiseFloorDb
+        this.correctionPeriodMs = correctionPeriodMs
+    }
 
     /** Long-lived target gain per band; smoothed toward on every frame. */
     private var targetGains = FloatArray(bandCount)

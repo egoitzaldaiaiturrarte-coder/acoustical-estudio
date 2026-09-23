@@ -212,20 +212,9 @@ private:
             mutate([v](auto& c) { c.targetSpl = static_cast<float>(v); });
         }, 1.0, 1);
         endRow();
-        addSlider("Posición X (izq/der)", -1, 1, 0.01, 0, [this](double) { /* SPL */ });
-        endRow();
-        addSlider("Posición Y (atrás/frente)", -1, 1, 0.01, 0, [this](double) { /* SPL */ });
-        endRow();
-        addSlider("Distancia", 0, 1, 0.01, 0.5, [this](double) { /* SPL */ });
-        endRow();
-        addSlider("Tamaño del elemento", 0, 1, 0.01, 0.5, [this](double) { /* SPL */ });
-        endRow();
-        addCombo("Ciclo de verificación", {"15 s", "30 s", "60 s", "120 s"}, 2,
-                 [](int) { /* verificación automática EQ3 */ });
-        endRow();
-        addCombo("Calidad de la verificación", {"Baja", "Normal", "Alta"}, 1, [](int) {});
-        endRow();
-        addCombo("Profundidad de bits", {"16 bits", "24 bits"}, 1, [](int) {});
+        addSlider("Calibración SPL (dB)", -20, 20, 0.5, engine_.splCalibrationOffset(), [this](double v) {
+            engine_.setSplCalibrationOffset(static_cast<float>(v));
+        }, 1.0, 1);
         endRow();
 
         // --- Generador de señales ---

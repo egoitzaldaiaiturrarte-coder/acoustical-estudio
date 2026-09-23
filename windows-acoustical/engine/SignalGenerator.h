@@ -11,10 +11,11 @@ class SignalGenerator {
 public:
     enum class Waveform { Sine, BandSine, LogSweep, PinkNoise, WhiteNoise, Silence };
 
-    void setWaveform(Waveform w) { waveform_ = w; phase_ = 0.0; sweepPhase_ = 0.0; }
+    void setWaveform(Waveform w) { waveform_ = w; phase_ = 0.0; sweepPhase_ = 0.0; sweepIntPhase_ = 0.0; }
     void setFrequency(float hz) { frequency_ = hz; }
     void setSweepRange(float startHz, float endHz, float seconds) {
         sweepStartHz_ = startHz; sweepEndHz_ = endHz; sweepSeconds_ = seconds;
+        sweepPhase_ = 0.0; sweepIntPhase_ = 0.0;
     }
     void setLevelDb(float db) { amplitude_ = std::pow(10.0f, db / 20.0f); }
     Waveform waveform() const { return waveform_; }
@@ -31,7 +32,8 @@ private:
     float amplitude_ = 0.5f;
     float sweepStartHz_ = 20.0f, sweepEndHz_ = 20000.0f, sweepSeconds_ = 5.0f;
     double phase_ = 0.0;
-    double sweepPhase_ = 0.0;
+    double sweepPhase_ = 0.0;   // tiempo t (s) dentro del barrido
+    double sweepIntPhase_ = 0.0; // fase integrada del barrido (radianes)
     // Estado del filtro de ruido rosa (aproximación -3 dB/octava)
     float pinkB0_ = 0, pinkB1_ = 0, pinkB2_ = 0, pinkB3_ = 0, pinkB4_ = 0, pinkB5_ = 0, pinkB6_ = 0;
 };

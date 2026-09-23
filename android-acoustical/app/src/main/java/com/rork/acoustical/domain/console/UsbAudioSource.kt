@@ -13,6 +13,7 @@ import android.hardware.usb.UsbManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.Build
 import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -362,7 +363,13 @@ class UsbAudioSource(private val context: Context) {
             }
         }
         val filter = IntentFilter(ACTION_USB_PERMISSION)
-        context.registerReceiver(permissionReceiver, filter)
+        // En API 33+ el flag de exportación es obligatorio (sin él lanza
+        // SecurityException). El broadcast de permiso USB lo emite el sistema.
+        if (Build.VERSION.SDK_INT >= 33) {
+            context.registerReceiver(permissionReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            context.registerReceiver(permissionReceiver, filter)
+        }
     }
 
     private fun unregisterPermissionReceiver() {

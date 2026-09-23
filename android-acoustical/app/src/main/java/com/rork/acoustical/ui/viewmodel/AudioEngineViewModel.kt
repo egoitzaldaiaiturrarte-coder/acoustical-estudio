@@ -1501,14 +1501,27 @@ class AudioEngineViewModel(
     // === Audio Config ===
 
     fun updateConfig(transform: (AudioConfig) -> AudioConfig) {
-        val newConfig = transform(_uiState.value.config)
+        val old = _uiState.value.config
+        val newConfig = transform(old)
+        // Estructural = toca lo que el bucle de análisis capturó al hacer
+        // start() (buffer/FFT/tasa). Solo esos casos requieren restart; el
+        // resto (ganancias, suavizado, umbral…) se actualiza en caliente sin
+        // parar el motor (M4: antes cada tick del slider hacía
+        // stop+rebuild+start en el hilo principal).
+        val structural = old.bandCount != newConfig.bandCount ||
+            old.fftSize != newConfig.fftSize ||
+            old.sampleRate != newConfig.sampleRate
+
         _uiState.update { it.copy(config = newConfig) }
 
-        val wasRunning = _uiState.value.isRunning
-        if (wasRunning) engine?.stop()
-        engine?.configure(newConfig)
+        if (structural && _uiState.value.isRunning) {
+            engine?.stop()
+            engine?.configure(newConfig)
+            engine?.start()
+        } else {
+            engine?.configure(newConfig)
+        }
         syncBandsFromEngine()
-        if (wasRunning) engine?.start()
     }
 
     fun setSampleRate(rate: SampleRate) = updateConfig { it.copy(sampleRate = rate) }
