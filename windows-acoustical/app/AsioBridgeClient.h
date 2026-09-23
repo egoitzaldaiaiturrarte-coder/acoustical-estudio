@@ -75,7 +75,8 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         connected_.store(false, std::memory_order_relaxed);
         if (header_) {
-            ::UnmapViewOfSection(handle_);
+            // UnmapViewOfFile recibe el puntero de la vista (no el handle).
+            ::UnmapViewOfFile(header_);
             ::CloseHandle(handle_);
             handle_ = nullptr;
             header_ = nullptr;

@@ -35,6 +35,17 @@ jobs:
             dsp/acoustical_dsp.c dsp/test_jni.cpp -o /tmp/test_jni -lm
           /tmp/test_jni
 
+      # El camino #ifdef _WIN32 del puente ASIO solo compila en MSVC: se
+      # valida aquí contra un windows.h con las firmas reales de las API
+      # (pilla typos como UnmapViewOfSection antes del job de Windows).
+      - name: Syntax-check del puente ASIO (camino Win32)
+        run: |
+          g++ -std=c++17 -fsyntax-only \
+            -Iwindows-acoustical/tools/fakewin \
+            -Iwindows-acoustical/asio-bridge \
+            -Iwindows-acoustical/app \
+            windows-acoustical/tools/test_winbridge.cpp
+
   android:
     # Full Android build: runs the pure-Kotlin DSP unit tests, builds the
     # native libacoustical_dsp.so, and assembles the debug APK.

@@ -3,6 +3,7 @@
 // con anillos de audio float32 intercalados para reproducción (Cubase → app →
 // tarjeta real) y captura (tarjeta/cable virtual → app → Cubase).
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 namespace bridge {

@@ -189,13 +189,12 @@ class InternalCaptureService : Service() {
                 val read = record.read(shortBuffer, 0, CAPTURE_FFT_SIZE)
                 when {
                     read < 0 -> {
-                        // Error real (no "aún no hay datos"): evita el spin loop
-                        // a 100% de CPU que dejaba el bucle en `continue` puro.
-                        if (record.error != AudioRecord.ERROR_INVALID_OPERATION) {
-                            Log.e(TAG, "AudioRecord.read error: ${record.error}")
-                            break
-                        }
-                        continue
+                        // Valor negativo = error real de read()
+                        // (ERROR_BAD_STATE/ERROR_INVALID_OPERATION/…): salir
+                        // del bucle en vez de hacer spin a 100% de CPU.
+                        // "Aún no hay datos" es read == 0 (caso de abajo).
+                        Log.e(TAG, "AudioRecord.read devolvió error: $read (estado=${record.state})")
+                        break
                     }
                     read == 0 -> {
                         try { Thread.sleep(2) } catch (_: InterruptedException) {}
