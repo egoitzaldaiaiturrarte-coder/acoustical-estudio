@@ -46,6 +46,16 @@ jobs:
             -Iwindows-acoustical/app \
             windows-acoustical/tools/test_winbridge.cpp
 
+      # Protocolo del enlace móvil↔PC (SyncClient + BeaconListener) contra un
+      # "móvil falso" en loopback: baliza UDP, emparejamiento por código,
+      # sync push/pull, HTTP /manifest + /payload con SHA-256. Compila los
+      # mismos .cpp que la app de Windows (JUCE directo, sin X11/freetype).
+      - name: Test del protocolo Wi-Fi (móvil falso, JUCE)
+        run: |
+          git clone --quiet --depth 1 --branch 7.0.12 \
+            https://github.com/juce-framework/JUCE.git /tmp/juce
+          JUCE_DIR=/tmp/juce bash windows-acoustical/tools/build_lantest.sh /tmp/AcousticalLanTest --run
+
   android:
     # Full Android build: runs the pure-Kotlin DSP unit tests, builds the
     # native libacoustical_dsp.so, and assembles the debug APK.
