@@ -171,7 +171,7 @@ class PhoneSyncManager private constructor(context: Context) {
         _status.value = "Código nuevo: vuelve a pegarlo en el PC (Ajustes > Móvil)"
     }
 
-    private fun newCode(): String = 100000 + SecureRandom().nextInt(900000)
+    private fun newCode(): String = (100000 + SecureRandom().nextInt(900000)).toString()
 
     private fun codeOk(sent: String?): Boolean =
         sent != null && sent.isNotEmpty() && sent == pairCode()
