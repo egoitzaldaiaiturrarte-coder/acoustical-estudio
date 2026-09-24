@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -41,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.rork.acoustical.domain.audio.SweepDirection
@@ -422,16 +424,52 @@ private fun WindowsPcCard() {
             Text("PC / Windows", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                "Al conectar el móvil por USB, el ordenador sincroniza los ajustes y se actualiza solo: instala la versión nueva sin compilar ni tocar nada.",
+                "El ordenador te encuentra por Wi-Fi (sin cable) o por USB de respaldo: sincroniza los ajustes y se actualiza solo: instala la versión nueva sin compilar ni tocar nada.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                if (serverRunning) "Servidor USB activo (puerto 41041)" else "Servidor iniciándose…",
+                if (serverRunning) "Servidor activo (puerto 41041, Wi-Fi y USB)" else "Servidor iniciándose…",
                 style = MaterialTheme.typography.labelSmall,
                 color = if (serverRunning) CyanGlow else AmberAccent
             )
+            // --- Emparejamiento Wi-Fi: el PC pega este código una sola vez ---
+            var pairCode by remember { mutableStateOf(sync.pairCode()) }
+            val lanIp = remember { sync.lanIp() }
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Código Wi-Fi:",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    pairCode,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = CyanGlow,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 4.sp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(onClick = {
+                    sync.regenerateCode()
+                    pairCode = sync.pairCode()
+                }) { Text("Regenerar") }
+            }
+            Text(
+                "En el PC: Ajustes > Móvil > pega el código una vez. Después el PC te encuentra solo por Wi-Fi.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (lanIp.isNotEmpty()) {
+                Text(
+                    "IP de este móvil en la red: $lanIp (por si el PC necesita la IP a mano)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Text(
                 if (payloadReady) {
                     "Paquete de Windows listo (v${sync.installedPayloadVersion() ?: "?"}) — se instalará al conectar el PC"
@@ -504,7 +542,7 @@ private fun HubPcCard() {
             Text("Hub del PC (multiruta)", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                "Gobierna las salidas del ordenador desde aquí: la ruta 1 es la principal y las demás son auxiliares (Bluetooth, HDMI, USB…). Los comandos viajan por el cable USB.",
+                "Gobierna las salidas del ordenador desde aquí: la ruta 1 es la principal y las demás son auxiliares (Bluetooth, HDMI, USB…). Los comandos viajan por Wi-Fi (o USB de respaldo).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

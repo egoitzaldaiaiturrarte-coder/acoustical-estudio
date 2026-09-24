@@ -20,30 +20,41 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.MessageDigest
+import java.security.SecureRandom
 
 /**
- * Servidor de sincronización y actualización por USB (puerto 41041).
+ * Servidor de sincronización y actualización (puerto 41041).
  *
- * Solo escucha en 127.0.0.1: la única forma de llegar hasta él es el
- * reenvío de puertos de adb (cable USB), nunca la red Wi-Fi del móvil.
+ * Escucha en todas las interfaces: el PC (Acoustical Estudio para Windows)
+ * se conecta directo por Wi-Fi —lo descubre con la baliza UDP del puerto
+ * 41042— o por el túnel adb de USB, como antes.
  *
- * El PC (Acoustical Estudio para Windows) lo usa para tres cosas:
+ * Seguridad: los ajustes (JSON push/pull y HTTP /sync) exigen el código de
+ * emparejamiento de 6 dígitos (se genera una vez y se muestra en
+ * Ajustes > PC/Windows). /manifest y /payload son solo lectura de datos
+ * públicos de la release de GitHub, así que quedan abiertos.
+ *
+ * El PC lo usa para tres cosas:
  *  1. Sincronizar ajustes: JSON simple {"type":"push"/"pull","payload":...}
  *     o HTTP POST/GET /sync.
  *  2. Saber si lleva una versión nueva de Windows: GET /manifest.
- *  3. Descargarse el instalador de esa versión por el propio cable: GET /payload.
+ *  3. Descargarse el instalador de esa versión (Wi-Fi o cable): GET /payload.
  *
  * El paquete de Windows se configura una vez en Ajustes > PC/Windows (tu
  * repositorio de GitHub o un enlace directo) y queda verificado (SHA-256) en
  * el móvil: las versiones nuevas se detectan y descargan solas, y el PC se
- * actualiza al conectarlo por el cable, incluso sin internet.
+ * actualiza al conectarse, incluso sin internet en el PC.
  */
 class PhoneSyncManager private constructor(context: Context) {
 
@@ -64,18 +75,20 @@ class PhoneSyncManager private constructor(context: Context) {
     val status: StateFlow<String> = _status.asStateFlow()
 
     @Volatile private var serverThread: Thread? = null
+    @Volatile private var beaconThread: Thread? = null
 
     init {
         _payloadReady.value = payloadFile() != null
     }
 
-    /** Arranca el servidor (una sola vez); es daemon y muere con la app. */
+    /** Arranca el servidor y la baliza (una sola vez); son daemons y mueren con la app. */
     fun start() {
         if (serverThread?.isAlive == true) return
         val thread = Thread({ acceptLoop() }, "acoustical-sync-server")
         thread.isDaemon = true
         serverThread = thread
         thread.start()
+        startBeacon()
         maybeAutoCheck()
     }
 
@@ -83,8 +96,9 @@ class PhoneSyncManager private constructor(context: Context) {
 
     private fun acceptLoop() {
         try {
-            // Solo loopback: accesible únicamente por adb forward (USB) o apps locales
-            ServerSocket(PORT, 4, InetAddress.getByName("127.0.0.1")).use { server ->
+            // Todas las interfaces: el PC llega por Wi-Fi directo o por el
+            // túnel adb (USB). El código de emparejamiento protege los ajustes.
+            ServerSocket(PORT, 4).use { server ->
                 _serverRunning.value = true
                 while (!Thread.currentThread().isInterrupted) {
                     val client = try {
@@ -102,10 +116,80 @@ class PhoneSyncManager private constructor(context: Context) {
                 }
             }
         } catch (e: Exception) {
-            _status.value = "Servidor USB no disponible: ${e.message ?: "error"}"
+            _status.value = "Servidor de sincronización no disponible: ${e.message ?: "error"}"
         } finally {
             _serverRunning.value = false
         }
+    }
+
+    // === Baliza Wi-Fi: el PC la oye por UDP y se conecta sin cable ===
+
+    private fun startBeacon() {
+        if (beaconThread?.isAlive == true) return
+        beaconThread = Thread({
+            val sock = runCatching { DatagramSocket().also { it.setBroadcast(true) } }
+                .getOrNull() ?: return@Thread
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    val payload = beaconJson().toByteArray(Charsets.UTF_8)
+                    sock.send(DatagramPacket(payload, payload.size,
+                        InetAddress.getByName("255.255.255.255"), BEACON_PORT))
+                } catch (e: Exception) {
+                    // Sin Wi-Fi en este momento: se reintenta en el siguiente ciclo
+                }
+                Thread.sleep(BEACON_INTERVAL_MS)
+            }
+            runCatching { sock.close() }
+        }, "acoustical-beacon").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun beaconJson(): String = buildJsonObject {
+        put("app", "acoustical")
+        put("port", PORT)
+        put("ver", BuildConfig.VERSION_NAME)
+        put("dev", Build.MODEL)
+    }.toString()
+
+    // === Emparejamiento Wi-Fi: código de 6 dígitos (se pega una vez en el PC) ===
+
+    fun pairCode(): String {
+        var c = prefs.getString(KEY_CODE, null)
+        if (c == null) {
+            c = newCode()
+            prefs.edit().putString(KEY_CODE, c).apply()
+        }
+        return c
+    }
+
+    /** Genera un código nuevo: invalida a los PC ya emparejados. */
+    fun regenerateCode() {
+        val c = newCode()
+        prefs.edit().putString(KEY_CODE, c).apply()
+        _status.value = "Código nuevo: vuelve a pegarlo en el PC (Ajustes > Móvil)"
+    }
+
+    private fun newCode(): String = 100000 + SecureRandom().nextInt(900000)
+
+    private fun codeOk(sent: String?): Boolean =
+        sent != null && sent.isNotEmpty() && sent == pairCode()
+
+    /** IP del móvil en la red Wi-Fi (para mostrarla / IP manual en el PC). */
+    fun lanIp(): String {
+        val ifaces = runCatching { NetworkInterface.getNetworkInterfaces() }.getOrNull()
+            ?: return ""
+        while (ifaces.hasMoreElements()) {
+            val ni = ifaces.nextElement()
+            if (!ni.isUp || ni.isLoopback || ni.isVirtual) continue
+            val addrs = ni.inetAddresses
+            while (addrs.hasMoreElements()) {
+                val a = addrs.nextElement()
+                if (a is Inet4Address && !a.isLoopbackAddress) return a.hostAddress ?: ""
+            }
+        }
+        return ""
     }
 
     private fun handle(socket: Socket) {
@@ -182,6 +266,18 @@ class PhoneSyncManager private constructor(context: Context) {
             }
         }
 
+        // /sync mueve ajustes: exige el código de emparejamiento.
+        // /manifest y /payload son solo lectura de datos públicos.
+        if (path == "/sync") {
+            val sentCode = lines.firstOrNull { it.startsWith("X-Acoustical-Code:", ignoreCase = true) }
+                ?.substringAfter(':')?.trim()
+            if (!codeOk(sentCode)) {
+                writeHttp(socket, "403 Forbidden", "application/json",
+                    """{"type":"pair","ok":false,"error":"code"}""".toByteArray(Charsets.UTF_8))
+                return
+            }
+        }
+
         when {
             method == "GET" && path == "/manifest" -> respondJson(socket, manifestJson())
             method == "GET" && path == "/sync" -> respondJson(socket, currentSyncJson())
@@ -222,6 +318,12 @@ class PhoneSyncManager private constructor(context: Context) {
         val obj = runCatching {
             Json.parseToJsonElement(String(acc.toByteArray(), Charsets.UTF_8).trim()).jsonObject
         }.getOrNull() ?: return
+
+        // Emparejamiento: sin código válido no se mueve ningún ajuste
+        if (!codeOk(obj.textContent("code"))) {
+            writeRawJson(socket, """{"type":"pair","ok":false,"error":"code"}""")
+            return
+        }
 
         when (obj.textContent("type")) {
             "push" -> {
@@ -545,9 +647,11 @@ class PhoneSyncManager private constructor(context: Context) {
 
     companion object {
         const val PORT = 41041
+        const val BEACON_PORT = 41042
 
         private const val PREFS = "acoustical_phone_sync"
         private const val KEY_SYNC_STATE = "sync_state"
+        private const val KEY_CODE = "pair_code"
         private const val KEY_VERSION = "windows_version"
         private const val KEY_SHA256 = "windows_sha256"
         private const val KEY_URL = "windows_url"
@@ -555,6 +659,7 @@ class PhoneSyncManager private constructor(context: Context) {
         private const val KEY_LAST_CHECK = "last_update_check"
 
         private const val READ_TIMEOUT_MS = 600
+        private const val BEACON_INTERVAL_MS = 2000L
         private const val MAX_HEADER_BYTES = 64 * 1024
         private const val MAX_MESSAGE_BYTES = 1024 * 1024
         private const val MAX_PAYLOAD_BYTES = 512L * 1024 * 1024
