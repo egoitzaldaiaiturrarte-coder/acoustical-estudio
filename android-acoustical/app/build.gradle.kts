@@ -13,8 +13,8 @@ android {
         applicationId = "com.rork.acoustical"
         minSdk = 24
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.3.3"
+        versionCode = 7
+        versionName = "1.4.0"
     }
 
     // Llave de firma del proyecto (en el repo, que es privado). Todos los
