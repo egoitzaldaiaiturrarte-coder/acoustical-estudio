@@ -1,4 +1,6 @@
+// PhoneLink.cpp
 #include "PhoneLink.h"
+#include "SyncClient.h"
 
 #include <juce_cryptography/juce_cryptography.h>
 
@@ -25,7 +27,10 @@ bool installAdbDriverOnce(const juce::File& driverFolder) {
 #endif
 }
 
-PhoneLink::PhoneLink(juce::File adbExecutable) : adb_(std::move(adbExecutable)) {}
+PhoneLink::PhoneLink(juce::File adbExecutable) : adb_(std::move(adbExecutable)) {
+    beacon_ = std::make_unique<BeaconListener>(BEACON_PORT);
+    loadConfig();
+}
 
 PhoneLink::~PhoneLink() {
     stopWatchdog();
@@ -33,10 +38,14 @@ PhoneLink::~PhoneLink() {
 }
 
 void PhoneLink::startWatchdog() {
-    startTimerHz(1);   // ~cada 1 s; el propio sondeo de adb no necesita más
+    startTimerHz(1);   // ~cada 1 s; ni la baliza ni el sondeo de adb piden más
+    beacon_->start([](const juce::String&, const juce::var&) {});
 }
 
-void PhoneLink::stopWatchdog() { stopTimer(); }
+void PhoneLink::stopWatchdog() {
+    stopTimer();
+    if (beacon_) beacon_->stop();
+}
 
 juce::String PhoneLink::runAdb(const juce::String& args, int timeoutMs) {
     if (!adb_.existsAsFile()) return {};
@@ -46,29 +55,75 @@ juce::String PhoneLink::runAdb(const juce::String& args, int timeoutMs) {
     return p.readAllProcessOutput().trim();
 }
 
+namespace {
+// Validación estricta de la IP manual (a.b.c.d, octetos 0-255)
+bool isPlainIp(const juce::String& s) {
+    const auto parts = juce::StringArray::fromTokens(s, ".");
+    if (parts.size() != 4) return false;
+    for (const auto& p : parts) {
+        if (p.isEmpty() || p.length() > 3) return false;
+        for (int i = 0; i < p.length(); ++i)
+            if (!juce::CharacterFunctions::isDigit(p.getCharPointer()[i])) return false;
+        const int v = p.getIntValue();
+        if (v < 0 || v > 255) return false;
+    }
+    return true;
+}
+}  // namespace
+
+// ============================================================
+// Selección de transporte: Wi-Fi → IP manual → USB
+// ============================================================
+
 void PhoneLink::timerCallback() { pollDevices(); }
 
-void PhoneLink::setStatus(const juce::String& s) {
-    const juce::ScopedLock lock(statusLock_);
-    lastInfo_ = s;
-}
-
-juce::String PhoneLink::lastSyncInfo() const {
-    const juce::ScopedLock lock(statusLock_);
-    return lastInfo_;
-}
-
 void PhoneLink::pollDevices() {
+    decideEndpoint();
+
+    // Un fallo puntual de red no debe dejar el enlace atascado: se reintenta
+    if (state_.load() == State::SyncError) {
+        const juce::ScopedLock lock(endpointLock_);
+        if (!endpointHost_.isEmpty()) state_.store(State::Connected);
+    }
+
     // Sondeo periódico de sincronización: trae los comandos del Hub que el
     // móvil haya encolado (viajan en la respuesta "sync")
     if (state_.load() == State::Connected && ++syncPollCounter_ >= 3) {
         syncPollCounter_ = 0;
         requestSync();
     }
+}
+
+void PhoneLink::decideEndpoint() {
+    // 1) Wi-Fi: el móvil anuncia su IP con la baliza UDP
+    if (beacon_ && beacon_->isFresh(BEACON_TTL_MS)) {
+        const auto ip = beacon_->lastIp();
+        if (ip.isNotEmpty()) {
+            if (endpointChanged(ip, Transport::WiFi)) {
+                setStatus("Móvil conectado (Wi-Fi): " + ip);
+                requestSync();
+                checkForUpdate();
+            }
+            return;
+        }
+    }
+
+    // 2) IP del móvil puesta a mano (routers que bloquean la baliza)
+    const juce::String manualIp = manualPhoneIp();  // copia thread-safe
+    if (isPlainIp(manualIp)) {
+        if (endpointChanged(manualIp, Transport::ManualIp)) {
+            setStatus("Móvil por IP manual: " + manualIp);
+            requestSync();
+            checkForUpdate();
+        }
+        return;
+    }
+
+    // 3) Respaldo USB: detección y túnel por adb, como antes
     if (!adb_.existsAsFile()) {
-        if (state_.load() != State::NoAdb) {
+        if (endpointChanged({}, Transport::None)) {
             state_.store(State::NoAdb);
-            setStatus("adb no encontrado");
+            setStatus("Esperando el móvil (Wi-Fi)… (adb no disponible)");
         }
         return;
     }
@@ -83,9 +138,9 @@ void PhoneLink::pollDevices() {
         const auto t = line.trim();
         if (t.isEmpty() || !t.containsChar('\t')) continue;
         const auto s = t.upToFirstOccurrenceOf("\t", false, false).trim();
-        const auto state = t.fromFirstOccurrenceOf("\t", false, false).trim();
+        const auto st = t.fromFirstOccurrenceOf("\t", false, false).trim();
         // Estados de adb: device, offline, unauthorized, nopermissions…
-        if (s.isNotEmpty() && state.startsWith("device")) {
+        if (s.isNotEmpty() && st.startsWith("device")) {
             serial = s;
             break;
         }
@@ -93,56 +148,70 @@ void PhoneLink::pollDevices() {
 
     if (serial.isEmpty()) {
         deviceSerial_ = {};
-        state_.store(State::WaitingForPhone);
-        setStatus("Esperando el móvil…");
-        driverAttempted_ = false;
+        if (endpointChanged({}, Transport::None))
+            setStatus("Esperando el móvil (Wi-Fi o USB)…");
         return;
     }
 
-    if (serial != deviceSerial_ || state_.load() != State::Connected) {
-        deviceSerial_ = serial;
+    deviceSerial_ = serial;
+    if (endpointChanged("127.0.0.1", Transport::USB)) {
         // Reenvío de puertos: el PC habla con el servidor de sincronización de
         // la app Android a través de adb (sin Wi-Fi, solo USB).
         runAdb("-s " + serial + " forward tcp:" + juce::String(SYNC_PORT)
                + " tcp:" + juce::String(SYNC_PORT));
-        state_.store(State::Connected);
-        setStatus("Móvil conectado: " + serial);
+        setStatus("Móvil conectado (USB): " + serial);
         requestSync();
         checkForUpdate();
     }
 }
 
-bool PhoneLink::connectAndExchange(const juce::var& send, juce::var& reply) {
-    if (deviceSerial_.isEmpty()) return false;
-    juce::StreamingSocket socket;
-    if (!socket.connect("127.0.0.1", SYNC_PORT, 1500)) return false;
-    const auto line = juce::JSON::toString(send, true);
-    const auto utf8 = line.toUTF8();
-    if (!socket.write(utf8.getAddress(), static_cast<int>(utf8.sizeInBytes() - 1))) {
-        socket.close();
+bool PhoneLink::endpointChanged(const juce::String& host, PhoneLink::Transport t) {
+    const juce::ScopedLock lock(endpointLock_);
+    if (!host.isEmpty() && host == endpointHost_ && t == transport_) return false;
+    if (host.isEmpty() && endpointHost_.isEmpty() && transport_ == Transport::None) return false;
+    endpointHost_ = host;
+    transport_ = t;
+    state_.store(host.isEmpty() ? State::WaitingForPhone : State::Connected);
+    return true;
+}
+
+PhoneLink::Transport PhoneLink::transport() const {
+    const juce::ScopedLock lock(endpointLock_);
+    return transport_;
+}
+
+juce::String PhoneLink::deviceSerial() const {
+    const juce::ScopedLock lock(endpointLock_);
+    if (transport_ == Transport::USB) return deviceSerial_;
+    return endpointHost_;
+}
+
+void PhoneLink::setStatus(const juce::String& s) {
+    const juce::ScopedLock lock(statusLock_);
+    lastInfo_ = s;
+}
+
+juce::String PhoneLink::lastSyncInfo() const {
+    const juce::ScopedLock lock(statusLock_);
+    return lastInfo_;
+}
+
+// ============================================================
+// Sincronización (por el transporte activo)
+// ============================================================
+
+bool PhoneLink::exchange(const juce::var& send, juce::var& reply) {
+    juce::String host;
+    {
+        const juce::ScopedLock lock(endpointLock_);
+        if (endpointHost_.isEmpty()) return false;
+        host = endpointHost_;
+    }
+    if (!SyncClient::exchange(host, SYNC_PORT, send, reply, pairCode())) {
+        if (state_.load() == State::Connected) state_.store(State::SyncError);
         return false;
     }
-    // TCP es un flujo: la respuesta puede llegar en varios segmentos o superar
-    // 64 KB (payloads de 124 bandas). Hay que leer HASTA que el móvil cierre la
-    // conexión (el servidor la cierra al terminar). Antes se leía con
-    // shouldBlock=false sin esperar: la primera read podía devolver 0 bytes
-    // (el móvil aún no ha respondido) y el bucle salía, truncando el JSON.
-    juce::MemoryBlock raw;
-    char buffer[65536];
-    const juce::int64 maxBytes = 8 * 1024 * 1024;
-    for (juce::int64 total = 0; total < maxBytes;) {
-        if (socket.waitUntilReady(true, 5000) <= 0) break;  // timeout o error
-        const int n = socket.read(buffer, sizeof(buffer), false);
-        if (n <= 0) break;  // 0 = cierre, -1 = error
-        raw.append(buffer, static_cast<size_t>(n));
-        total += n;
-    }
-    socket.close();
-    if (raw.getSize() == 0) return false;
-    reply = juce::JSON::parse(
-        juce::String::fromUTF8(static_cast<const char*>(raw.getData()),
-                               static_cast<int>(raw.getSize())));
-    return !reply.isVoid();
+    return true;
 }
 
 bool PhoneLink::pushSync(const juce::var& payload) {
@@ -150,8 +219,8 @@ bool PhoneLink::pushSync(const juce::var& payload) {
     auto obj = new juce::DynamicObject();
     obj->setProperty("type", "push");
     obj->setProperty("payload", payload);
-    if (!connectAndExchange(juce::var(obj), reply)) {
-        state_.store(State::SyncError);
+    if (!exchange(juce::var(obj), reply)) {
+        setStatus("Abre Acoustical en el móvil para sincronizar");
         return false;
     }
     setStatus("Ajustes enviados al móvil");
@@ -162,14 +231,78 @@ bool PhoneLink::requestSync() {
     juce::var reply;
     auto obj = new juce::DynamicObject();
     obj->setProperty("type", "pull");
-    if (!connectAndExchange(juce::var(obj), reply)) {
-        state_.store(State::SyncError);
+    if (!exchange(juce::var(obj), reply)) {
         setStatus("Abre Acoustical en el móvil para sincronizar");
+        return false;
+    }
+    // El móvil sin emparejar responde con un error de código: se muestra una
+    // vez y el sondeo de 3 s reintenta hasta que el usuario lo introduzca.
+    if (auto* o = reply.getDynamicObject();
+        o != nullptr && o->getProperty("type").toString() == "pair") {
+        setStatus("Introduce el código del móvil en Ajustes > Móvil");
         return false;
     }
     setStatus("Sincronizado con el móvil");
     if (onSync) onSync(reply);
     return true;
+}
+
+// ============================================================
+// Configuración persistente (código de emparejamiento + IP manual)
+// ============================================================
+
+juce::File PhoneLink::configPath() const {
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile("Acoustical").getChildFile("phonelink.json");
+}
+
+void PhoneLink::loadConfig() {
+    const auto f = configPath();
+    if (!f.existsAsFile()) return;
+    if (auto* o = juce::JSON::parse(f.loadFileAsString()).getDynamicObject()) {
+        pairCode_ = o->getProperty("pairCode").toString();
+        manualIp_ = o->getProperty("manualIp").toString();
+    }
+}
+
+void PhoneLink::saveConfig() {
+    juce::String code, ip;
+    {
+        const juce::ScopedLock lock(configLock_);
+        code = pairCode_;
+        ip = manualIp_;
+    }
+    auto* o = new juce::DynamicObject();
+    o->setProperty("pairCode", code);
+    o->setProperty("manualIp", ip);
+    configPath().getParentDirectory().createDirectory();
+    configPath().replaceWithText(juce::JSON::toString(juce::var(o), true));
+}
+
+void PhoneLink::setPairCode(const juce::String& code) {
+    {
+        const juce::ScopedLock lock(configLock_);
+        pairCode_ = code.trim();
+    }
+    saveConfig();
+}
+
+void PhoneLink::setManualPhoneIp(const juce::String& ip) {
+    {
+        const juce::ScopedLock lock(configLock_);
+        manualIp_ = ip.trim();
+    }
+    saveConfig();
+}
+
+juce::String PhoneLink::pairCode() const {
+    const juce::ScopedLock lock(configLock_);
+    return pairCode_;
+}
+
+juce::String PhoneLink::manualPhoneIp() const {
+    const juce::ScopedLock lock(configLock_);
+    return manualIp_;
 }
 
 // ============================================================
@@ -191,105 +324,24 @@ void PhoneLink::checkForUpdate() {
     });
 }
 
-/** GET por el túnel adb; devuelve las cabeceras ("" si falla) y el cuerpo. */
 juce::String PhoneLink::httpGet(const juce::String& path, juce::MemoryBlock& body, int timeoutMs) {
-    body.setSize(0);
-    juce::StreamingSocket socket;
-    if (!socket.connect("127.0.0.1", SYNC_PORT, timeoutMs)) return {};
-    const auto request = "GET " + path + " HTTP/1.0\r\nHost: phone\r\nConnection: close\r\n\r\n";
-    const auto utf8 = request.toUTF8();
-    if (!socket.write(utf8.getAddress(), static_cast<int>(utf8.sizeInBytes() - 1))) {
-        socket.close();
-        return {};
+    juce::String host;
+    {
+        const juce::ScopedLock lock(endpointLock_);
+        host = endpointHost_;
     }
-
-    juce::MemoryBlock raw;
-    char buffer[16384];
-    for (;;) {
-        if (socket.waitUntilReady(true, 5000) <= 0) break;
-        const int n = socket.read(buffer, sizeof(buffer), false);
-        if (n <= 0) break;
-        raw.append(buffer, static_cast<size_t>(n));
-    }
-    socket.close();
-
-    const char* p = static_cast<const char*>(raw.getData());
-    const int size = static_cast<int>(raw.getSize());
-    int headerEnd = -1;
-    for (int i = 0; i + 3 < size; ++i) {
-        if (p[i] == '\r' && p[i + 1] == '\n' && p[i + 2] == '\r' && p[i + 3] == '\n') {
-            headerEnd = i;
-            break;
-        }
-    }
-    if (headerEnd < 0) return {};
-
-    const auto headers = juce::String::fromUTF8(p, headerEnd);
-    const int status = headers.fromFirstOccurrenceOf(" ", false, false)
-                            .upToFirstOccurrenceOf(" ", false, false).getIntValue();
-    if (status != 200) return {};
-    body.append(p + headerEnd + 4, static_cast<size_t>(size - headerEnd - 4));
-    return headers;
+    if (host.isEmpty()) return {};
+    return SyncClient::httpGet(host, SYNC_PORT, path, body, pairCode(), timeoutMs);
 }
 
-/** Descarga en streaming (ideal para un instalador de decenas de MB). */
 bool PhoneLink::httpDownloadToFile(const juce::String& path, const juce::File& dest, juce::int64 maxBytes) {
-    juce::StreamingSocket socket;
-    if (!socket.connect("127.0.0.1", SYNC_PORT, 3000)) return false;
-    const auto request = "GET " + path + " HTTP/1.0\r\nHost: phone\r\nConnection: close\r\n\r\n";
-    const auto utf8 = request.toUTF8();
-    if (!socket.write(utf8.getAddress(), static_cast<int>(utf8.sizeInBytes() - 1))) {
-        socket.close();
-        return false;
+    juce::String host;
+    {
+        const juce::ScopedLock lock(endpointLock_);
+        host = endpointHost_;
     }
-
-    // Timeout más amplio: el instalador son decenas de MB por el túnel USB.
-    const int kReadTimeoutMs = 15000;
-    juce::MemoryBlock pending;
-    char buffer[65536];
-    int headerEnd = -1;
-    while (headerEnd < 0) {
-        if (socket.waitUntilReady(true, kReadTimeoutMs) <= 0) break;
-        const int n = socket.read(buffer, sizeof(buffer), false);
-        if (n <= 0) break;
-        pending.append(buffer, static_cast<size_t>(n));
-        const char* p = static_cast<const char*>(pending.getData());
-        const int size = static_cast<int>(pending.getSize());
-        for (int i = 0; i + 3 < size; ++i) {
-            if (p[i] == '\r' && p[i + 1] == '\n' && p[i + 2] == '\r' && p[i + 3] == '\n') {
-                headerEnd = i;
-                break;
-            }
-        }
-        if (headerEnd < 0 && size > 1024 * 1024) { socket.close(); return false; }
-    }
-    if (headerEnd < 0) { socket.close(); return false; }
-
-    const char* p = static_cast<const char*>(pending.getData());
-    const auto headers = juce::String::fromUTF8(p, headerEnd);
-    const int status = headers.fromFirstOccurrenceOf(" ", false, false)
-                            .upToFirstOccurrenceOf(" ", false, false).getIntValue();
-    if (status != 200) { socket.close(); return false; }
-
-    juce::FileOutputStream out(dest);
-    if (!out.openedOk()) { socket.close(); return false; }
-
-    const int preBody = static_cast<int>(pending.getSize()) - (headerEnd + 4);
-    juce::int64 total = 0;
-    if (preBody > 0) {
-        out.write(p + headerEnd + 4, static_cast<size_t>(preBody));
-        total += preBody;
-    }
-    while (total < maxBytes) {
-        if (socket.waitUntilReady(true, kReadTimeoutMs) <= 0) break;
-        const int n = socket.read(buffer, sizeof(buffer), false);
-        if (n <= 0) break;
-        out.write(buffer, static_cast<size_t>(n));
-        total += n;
-    }
-    out.flush();
-    socket.close();
-    return total > 0;
+    if (host.isEmpty()) return false;
+    return SyncClient::httpDownloadToFile(host, SYNC_PORT, path, dest, pairCode(), maxBytes);
 }
 
 juce::String PhoneLink::installedVersion() const {
@@ -374,7 +426,7 @@ void PhoneLink::runUpdateCheck() {
 
     // Todo a una carpeta temporal dedicada; nunca se ejecuta nada más que el
     // instalador verificado con su SHA-256.
-    setStatus("Actualizando a " + info.version + ": descargando por USB…");
+    setStatus("Actualizando a " + info.version + ": descargando del móvil…");
     const auto tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
                              .getChildFile("AcousticalUpdate");
     tempDir.deleteRecursively();

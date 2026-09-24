@@ -7,6 +7,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <AcousticalEngine.h>
+#include "PhoneLink.h"
 #include "Theme.h"
 
 class SettingsPanel : public juce::Component {
@@ -14,9 +15,9 @@ public:
     std::function<void()> onBeforeChange;   // guardar estado actual (deshacer)
     std::function<void()> onAfterChange;    // guardado automático
 
-    SettingsPanel(acoustical::AcousticalEngine& engine,
+    SettingsPanel(acoustical::AcousticalEngine& engine, PhoneLink* phone,
                   std::function<void(bool)> onGeneratorActive)
-        : engine_(engine), onGeneratorActive_(std::move(onGeneratorActive)) {
+        : engine_(engine), phone_(phone), onGeneratorActive_(std::move(onGeneratorActive)) {
         scroller_.setViewedComponent(new juce::Component(), true);
         addAndMakeVisible(scroller_);
         rebuild();
@@ -244,8 +245,63 @@ private:
         endRow();
 
         endGroupIfOpen();
+
+        // --- Móvil (Wi-Fi / USB) ---
+        addPhoneGroup();
+        endGroupIfOpen();
+
         contentHeight_ = y_ + 16;
         resized();
+    }
+
+    // === Móvil (Wi-Fi / USB) ===
+
+    void styleEditor(juce::TextEditor* ed) {
+        ed->setMultiLine(false, false);
+        ed->setColour(juce::TextEditor::backgroundColourId, theme::surface);
+        ed->setColour(juce::TextEditor::textColourId, juce::Colours::whitesmoke);
+        ed->setColour(juce::TextEditor::outlineColourId, theme::surfaceHi);
+    }
+
+    void addPhoneGroup() {
+        addGroup("Móvil (Wi-Fi / USB)");
+        auto* codeEd = new juce::TextEditor();
+        styleEditor(codeEd);
+        codeEd->setText(phone_ ? phone_->pairCode() : juce::String(), false);
+        widgets_.add(codeEd);
+        addControlRow("Código del móvil", codeEd);
+        endRow();
+        auto* ipEd = new juce::TextEditor();
+        styleEditor(ipEd);
+        ipEd->setText(phone_ ? phone_->manualPhoneIp() : juce::String(), false);
+        widgets_.add(ipEd);
+        addControlRow("IP manual (opcional)", ipEd);
+        endRow();
+        auto* saveCode = new juce::TextButton("Guardar código");
+        saveCode->onClick = [this, codeEd] {
+            if (phone_) phone_->setPairCode(codeEd->getText().trim());
+        };
+        widgets_.add(saveCode);
+        content().addAndMakeVisible(saveCode);
+        saveCode->setBounds(242, y_ - 6, 180, 30);
+        auto* saveIp = new juce::TextButton("Guardar IP");
+        saveIp->onClick = [this, ipEd] {
+            if (phone_) phone_->setManualPhoneIp(ipEd->getText().trim());
+        };
+        widgets_.add(saveIp);
+        content().addAndMakeVisible(saveIp);
+        saveIp->setBounds(432, y_ - 6, 180, 30);
+        endRow();
+        auto* hint = new juce::Label(
+            {}, "El código aparece en la app del móvil (Ajustes > PC/Windows). Pégalo una vez "
+               "aquí y el PC encontrará al móvil por Wi-Fi solo; el cable USB queda de respaldo. "
+               "La IP manual es solo por si tu red bloquea la baliza.");
+        hint->setColour(juce::Label::textColourId, theme::textDim);
+        hint->setJustificationType(juce::Justification::centredLeft);
+        rowLabels_.add(hint);
+        content().addAndMakeVisible(hint);
+        hint->setBounds(24, y_ + 6, 612, 36);
+        endRow();
     }
 
     // === Modos rápidos ===
@@ -351,9 +407,13 @@ private:
             "GENERADOR DE SEÑALES\n"
             "Seno por banda y barrido log sirven para verificar cada banda a mano;\n"
             "ruido rosa para probar el sistema completo. Sale a través del EQ.\n\n"
-            "MÓVIL POR USB\n"
-            "Conecta el móvil: se sincronizan perfiles y ajustes en las dos direcciones.\n"
-            "Las actualizaciones de Windows llegan por el propio cable (con tu permiso).");
+            "MÓVIL (Wi-Fi / USB)\n"
+            "El móvil y el PC están en la misma red Wi-Fi: la app del móvil anuncia su\n"
+            "dirección y el PC la encuentra solo (no hace falta cable ni escribir IPs).\n"
+            "La primera vez, pega en Ajustes > Móvil el código de 6 dígitos que muestra\n"
+            "la app del móvil (Ajustes > PC/Windows); queda guardado para siempre.\n"
+            "Sin Wi-Fi, el cable USB sigue funcionando de respaldo, como antes.\n"
+            "Las actualizaciones de Windows llegan del móvil (con tu permiso, verificadas).");
     }
 
     // === Ecuas dinámicos ===
@@ -436,5 +496,6 @@ private:
     float supportGain_[3][4] = {};
 
     acoustical::AcousticalEngine& engine_;
+    PhoneLink* phone_ = nullptr;
     std::function<void(bool)> onGeneratorActive_;
 };

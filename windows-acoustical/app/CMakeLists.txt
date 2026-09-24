@@ -6,6 +6,8 @@ juce_add_gui_app(AcousticalEstudio
 target_sources(AcousticalEstudio PRIVATE
     Main.cpp
     PhoneLink.cpp
+    SyncClient.cpp
+    BeaconListener.cpp
 )
 
 target_compile_definitions(AcousticalEstudio PRIVATE
@@ -13,7 +15,7 @@ target_compile_definitions(AcousticalEstudio PRIVATE
     JUCE_USE_CURL=0
     NOMINMAX
     JUCE_APPLICATION_NAME_STRING="Acoustical Estudio"
-    JUCE_APPLICATION_VERSION_STRING="1.3.3"
+    JUCE_APPLICATION_VERSION_STRING="1.4.0"
 )
 
 if(MSVC)

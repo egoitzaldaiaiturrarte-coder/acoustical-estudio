@@ -175,10 +175,18 @@ public:
         addAndMakeVisible(*eqCanvas_);
 
         // === Pestañas ===
+        // Enlace con el móvil (Wi-Fi con respaldo USB): se crea antes que el
+        // panel de Ajustes porque este muestra su estado y el emparejamiento
+        auto adb = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+                       .getParentDirectory().getChildFile("adb/adb.exe");
+        phoneLink_ = std::make_unique<PhoneLink>(adb);
+        phoneLink_->onSync = [this](const juce::var& payload) { applyPhoneSync(payload); };
+        phoneLink_->startWatchdog();
+
         spectrumView_ = std::make_unique<SpectrumView>();
         routingMatrix_ = std::make_unique<RoutingMatrix>(deviceManager_);
         loadSavedSettings();  // últimos valores funcionales
-        settingsPanel_ = std::make_unique<SettingsPanel>(engine_, [this](bool active) {
+        settingsPanel_ = std::make_unique<SettingsPanel>(engine_, phoneLink_.get(), [this](bool active) {
             generatorActive_.store(active);
         });
         settingsPanel_->onBeforeChange = [this] { pushUndo(); };
@@ -206,13 +214,6 @@ public:
 
         // Motor arrancado por defecto: solo hay que tener el audio seleccionado
         if (engine_.start()) powerButton_.setButtonText("Parar");
-
-        // Vigilante USB: adb + sincronización con el móvil
-        auto adb = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-                       .getParentDirectory().getChildFile("adb/adb.exe");
-        phoneLink_ = std::make_unique<PhoneLink>(adb);
-        phoneLink_->onSync = [this](const juce::var& payload) { applyPhoneSync(payload); };
-        phoneLink_->startWatchdog();
     }
 
     // Control del generador de señales (desde Ajustes)
