@@ -15,6 +15,7 @@
 #include "RouteHub.h"
 #include "HubPanel.h"
 #include "PhoneLink.h"
+#include "RemoteAudioLink.h"
 #include "AsioBridgeClient.h"
 
 class ConsoleComponent : public juce::Component,
@@ -205,10 +206,20 @@ public:
                        .getParentDirectory().getChildFile("adb/adb.exe");
         phoneLink_ = std::make_unique<PhoneLink>(adb);
         phoneLink_->onSync = [this](const juce::var& payload) { applyPhoneSync(payload); };
+        // Puente de audio Wi-Fi (M2/M3): descubre los móviles por baliza; su
+        // micrófono pasa a ser una entrada del PC y las rutas del Hub pueden
+        // mandar audio a sus altavoces.
+        remoteAudio_ = std::make_unique<RemoteAudioLink>();
+        remoteAudio_->setCodeProvider([pl = phoneLink_.get()] { return pl->pairCode(); });
+        phoneLink_->onBeacon = [ra = remoteAudio_.get()](const juce::String& ip, const juce::var& info) {
+            ra->noteBeacon(ip, info.getProperty("id", juce::var()).toString(),
+                           info.getProperty("dev", juce::var()).toString());
+        };
+        remoteAudio_->start();
         phoneLink_->startWatchdog();
 
         spectrumView_ = std::make_unique<SpectrumView>();
-        routingMatrix_ = std::make_unique<RoutingMatrix>(deviceManager_);
+        routingMatrix_ = std::make_unique<RoutingMatrix>(deviceManager_, *remoteAudio_);
         loadSavedSettings();  // últimos valores funcionales
         settingsPanel_ = std::make_unique<SettingsPanel>(engine_, phoneLink_.get(), [this](bool active) {
             generatorActive_.store(active);
@@ -224,7 +235,7 @@ public:
             }
         };
         hub_ = std::make_unique<RouteHub>(deviceManager_);
-        hubPanel_ = std::make_unique<HubPanel>(*hub_);
+        hubPanel_ = std::make_unique<HubPanel>(*hub_, *remoteAudio_);
         tabs_ = std::make_unique<juce::TabbedComponent>(juce::TabbedButtonBar::TabsAtTop);
         tabs_->addTab("EQ", theme::surface, eqCanvas_.get(), false);
         tabs_->addTab(juce::String::fromUTF8("Ecuas dinámicos"), theme::surface, &eqCardsPanel_, false);
@@ -254,6 +265,7 @@ public:
     ~ConsoleComponent() override {
         phoneLink_->stopWatchdog();
         deviceManager_.removeAudioCallback(this);
+        remoteAudio_->stop();
         engine_.stop();
     }
 
@@ -381,6 +393,22 @@ private:
                 const float g = ch == 0 ? inL : (ch == 1 ? inR : 1.0f);
                 for (int s = 0; s < numSamples; ++s) mono[s] += in[s] * g;
             }
+
+        // Móviles (M2): cada micrófono remoto es una entrada más, con su
+        // ganancia propia (Ruteos > Entradas > Móviles). Llegan por UDP a
+        // 48 kHz; pullMic resamplea a la tasa del dispositivo.
+        {
+            const auto mics = remoteAudio_->activeMicIps();
+            for (const auto& ip : mics) {
+                if (remoteMicBuf_.size() < static_cast<size_t>(numSamples))
+                    remoteMicBuf_.resize(static_cast<size_t>(numSamples));
+                remoteAudio_->pullMic(ip, remoteMicBuf_.data(), numSamples,
+                                      lastSampleRate_);
+                const float g = remoteAudio_->micGain(ip);
+                for (int s = 0; s < numSamples; ++s)
+                    mono[s] += remoteMicBuf_[static_cast<size_t>(s)] * g;
+            }
+        }
 
         // Generador de señales: es con estado de fase, se genera UNA vez por
         // bloque y se comparte entre la salida de la tarjeta real y el
@@ -748,6 +776,10 @@ private:
     std::array<std::unique_ptr<DynamicEqCard>, 3> cards_;
     juce::Component eqCardsPanel_;
     std::unique_ptr<SpectrumView> spectrumView_;
+    // Puente de audio Wi-Fi (M2/M3). Declarado ANTES que routingMatrix_,
+    // hub_ y hubPanel_ (los usan por referencia) y que phoneLink_ (su
+    // proveedor de código la apunta): se destruye después de todos.
+    std::unique_ptr<RemoteAudioLink> remoteAudio_;
     std::unique_ptr<RoutingMatrix> routingMatrix_;
     std::unique_ptr<SettingsPanel> settingsPanel_;
     std::unique_ptr<juce::AudioDeviceSelectorComponent> audioPanel_;
@@ -771,4 +803,5 @@ private:
     double lastSampleRate_ = 48000.0;
     std::vector<float> genBuf_;          // señal del generador (una generación por bloque)
     std::vector<float> bridgeBufL_, bridgeBufR_;  // audio entrante de Cubase (puente ASIO)
+    std::vector<float> remoteMicBuf_;    // micrófono remoto en curso (M2, una entrada por móvil)
 };

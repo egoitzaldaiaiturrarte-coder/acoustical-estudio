@@ -7,10 +7,12 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "Theme.h"
+#include "RemoteAudioLink.h"
 
 class RoutingMatrix : public juce::Component, private juce::Timer {
 public:
-    explicit RoutingMatrix(juce::AudioDeviceManager& dm) : deviceManager_(dm) {
+    explicit RoutingMatrix(juce::AudioDeviceManager& dm, RemoteAudioLink& link)
+        : deviceManager_(dm), link_(link) {
         addAndMakeVisible(statusLabel_);
         statusLabel_.setFont(juce::Font(13.0f));
         statusLabel_.setColour(juce::Label::textColourId, theme::textDim);
@@ -52,6 +54,8 @@ public:
             inputGainR_.store(static_cast<float>(gainR_.getValue()),
                               std::memory_order_relaxed);
         };
+        // Móviles en vivo (M2): una fila por micrófono remoto
+        entradasGroup_->addAndMakeVisible(phonesPanel_);
         rebuildRefBox(true);
 
         // === Volumen general (salida) ===
@@ -90,7 +94,8 @@ public:
         statusLabel_.setBounds(bounds.removeFromTop(44.0f).reduced(12, 6));
         auto gainRow = bounds.removeFromBottom(48.0f).reduced(120, 8);
         gainSlider_.setBounds(gainRow);
-        entradasGroup_->setBounds(bounds.removeFromTop(150.0f).reduced(12, 4));
+        entradasGroup_->setBounds(bounds.removeFromTop(
+            150.0f + 36.0f * static_cast<double>(phoneRows_.size())).reduced(12, 4));
         const auto g = entradasGroup_->getLocalBounds();
         refLabel_.setBounds(12, 34, 130, 22);
         refBox_.setBounds(146, 32, g.getWidth() - 158, 26);
@@ -98,9 +103,102 @@ public:
         gainL_.setBounds(146, 70, g.getWidth() - 158, 26);
         gainRLabel_.setBounds(12, 108, 130, 22);
         gainR_.setBounds(146, 106, g.getWidth() - 158, 26);
+        // Móviles (M2): filas bajo los niveles L/R
+        phonesPanel_.setBounds(12, 140, g.getWidth() - 24,
+                               36.0 * static_cast<double>(phoneRows_.size()));
+        for (size_t i = 0; i < phoneRows_.size(); ++i)
+            phoneRows_[i]->setBounds(0, static_cast<int>(i * 36.0),
+                                     phonesPanel_.getWidth(), 32);
     }
 
 private:
+    // === Móviles (M2): micrófonos remotos como entradas del análisis ===
+    // Una fila por móvil visto (aparece/desaparece sola): nombre, botón de
+    // micrófono (el PC le pide al móvil que emita), ganancia y nivel.
+    class PhoneRow : public juce::Component {
+    public:
+        PhoneRow(RemoteAudioLink& link, const juce::String& ip)
+            : link_(link), ip_(ip) {
+            addAndMakeVisible(label_);
+            label_.setFont(juce::Font(13.0f));
+            label_.setColour(juce::Label::textColourId, theme::textDim);
+            label_.setTooltip(juce::String::fromUTF8(
+                "Micrófono del móvil: al activarlo, suena en el PC como una entrada "
+                "más (pasa por el análisis y los ecuas)"));
+
+            addAndMakeVisible(micButton_);
+            micButton_.setButtonText("Mic OFF");
+            micButton_.setClickingTogglesState(true);
+            micButton_.setColour(juce::TextButton::buttonOnColourId, theme::eq1Cyan);
+            micButton_.setTooltip(juce::String::fromUTF8(
+                "Pedir al móvil que emita su micrófono hacia el PC (y parar)"));
+            micButton_.onClick = [this] {
+                if (link_.setMicOn(ip_, !link_.micOn(ip_))) refresh();
+            };
+
+            addAndMakeVisible(gain_);
+            gain_.setRange(0.0, 2.0, 0.01);
+            gain_.setValue(link_.micGain(ip_), juce::dontSendNotification);
+            gain_.setTextValueSuffix(juce::String::fromUTF8(" · nivel del móvil"));
+            gain_.setTooltip(juce::String::fromUTF8(
+                "Ganancia del micrófono del móvil antes del análisis"));
+            gain_.onValueChange = [this] {
+                link_.setMicGain(ip_, static_cast<float>(gain_.getValue()));
+            };
+
+            addAndMakeVisible(levelLabel_);
+            levelLabel_.setFont(juce::Font(12.0f));
+            levelLabel_.setColour(juce::Label::textColourId, theme::textDim);
+
+            refresh();
+        }
+
+        void resized() override {
+            auto b = getLocalBounds();
+            label_.setBounds(b.removeFromLeft(300));
+            levelLabel_.setBounds(b.removeFromRight(90));
+            micButton_.setBounds(b.removeFromLeft(90).withHeight(b.getHeight()));
+            gain_.setBounds(b.reduced(0, 4));
+        }
+
+        void refresh() {
+            const auto* d = link_.deviceByIp(ip_);
+            const auto name = d != nullptr ? RemoteAudioLink::displayName(*d)
+                                           : juce::String::fromUTF8("Móvil ") + ip_;
+            label_.setText(name, juce::dontSendNotification);
+            const bool on = link_.micOn(ip_);
+            micButton_.setToggleState(on, juce::dontSendNotification);
+            micButton_.setButtonText(on ? "Mic ON" : "Mic OFF");
+            gain_.setValue(link_.micGain(ip_), juce::dontSendNotification);
+            const float db = link_.micLevelDb(ip_);
+            levelLabel_.setText(db < -119.0f
+                ? juce::String::fromUTF8("sin señal")
+                : juce::String(db, 1) + juce::String::fromUTF8(" dB"),
+                juce::dontSendNotification);
+        }
+
+    private:
+        RemoteAudioLink& link_;
+        juce::String ip_;
+        juce::Label label_, levelLabel_;
+        juce::ToggleButton micButton_;
+        juce::Slider gain_;
+    };
+
+    // Reconstruye las filas cuando el conjunto de móviles en vivo cambia.
+    void rebuildPhoneRows() {
+        const auto live = link_.liveDevices();
+        if (live.size() == phoneRows_.size()) return;
+        for (auto& r : phoneRows_) phonesPanel_.removeChildComponent(r.get());
+        phoneRows_.clear();
+        for (const auto& d : live) {
+            auto row = std::make_unique<PhoneRow>(link_, d.ip);
+            phonesPanel_.addAndMakeVisible(*row);
+            phoneRows_.push_back(std::move(row));
+        }
+        resized();   // vuelve a calcular la altura del grupo
+    }
+
     // Nombres de las entradas que ofrece el tipo de dispositivo actual
     // (WASAPI/ASIO…). Vacío si no hay tipo activo.
     juce::StringArray inputDeviceNames() const {
@@ -148,6 +246,10 @@ private:
     }
 
     void timerCallback() override {
+        // Móviles (M2): las filas aparecen/desaparecen solas según los vivos
+        rebuildPhoneRows();
+        for (auto& r : phoneRows_) r->refresh();
+
         if (auto* d = deviceManager_.getCurrentAudioDevice()) {
             const double sr = d->getCurrentSampleRate();
             const int bs = d->getCurrentBufferSizeSamples();
@@ -180,4 +282,9 @@ private:
     juce::Slider gainL_, gainR_;
     std::atomic<float> inputGainL_{1.0f}, inputGainR_{1.0f};
     juce::String lastDeviceName_, lastInputList_;
+
+    // Móviles en vivo (M2)
+    RemoteAudioLink& link_;
+    juce::Component phonesPanel_;
+    std::vector<std::unique_ptr<PhoneRow>> phoneRows_;
 };

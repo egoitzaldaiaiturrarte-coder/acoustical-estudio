@@ -16,7 +16,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <thread>
 #include <vector>
 
 class RouteHub {
@@ -88,10 +90,13 @@ public:
         refRing_.write(refMono_.data(), n);
         if (inputMono != nullptr) inRing_.write(inputMono, n);
 
-        // Fan-out hacia las rutas auxiliares abiertas y activadas
+        // Fan-out hacia las rutas auxiliares abiertas y activadas (físicas o
+        // de red: las de red no tienen dispositivo propio, sino un sink que
+        // manda las muestras por UDP a los altavoces del móvil, M3)
         for (int i = 1; i < NUM_ROUTES; ++i) {
             auto& rt = routes_[i];
-            if (rt.manager != nullptr && params_[i]->enabled.load())
+            if ((rt.manager != nullptr || rt.netSink != nullptr)
+                && params_[i]->enabled.load())
                 rt.ring.write(left, right, n);
         }
 
@@ -145,9 +150,36 @@ public:
         return true;
     }
 
+    /** Abre la ruta como salida DE RED (M3): en vez de un dispositivo físico,
+     *  un sink que recibe las muestras procesadas (fase/retardo/ganancia ya
+     *  aplicados) cada 10 ms. Típicamente el sink las manda por UDP a los
+     *  altavoces de un móvil (RemoteAudioLink::sendToPhone). */
+    bool openNetworkRoute(int index, const juce::String& name,
+                          std::function<void(const float*, const float*, int, double)> sink,
+                          juce::String& error) {
+        if (index <= 0 || index >= NUM_ROUTES) return false;
+        if (sink == nullptr) { error = juce::String::fromUTF8("sin destino"); return false; }
+        closeRoute(index);
+        auto& rt = routes_[index];
+        rt.netSink = std::move(sink);
+        rt.netName = name;
+        rt.openName = name;
+        rt.openRate = mainSampleRate_.load() > 8000.0 ? mainSampleRate_.load() : 48000.0;
+        params_[index]->enabled.store(true);
+        rt.netRunning.store(true);
+        rt.netThread = std::thread([this, index] { pumpNetworkRoute(index); });
+        return true;
+    }
+
     void closeRoute(int index) {
         if (index <= 0 || index >= NUM_ROUTES) return;
         auto& rt = routes_[index];
+        if (rt.netRunning.load()) {
+            rt.netRunning.store(false);
+            if (rt.netThread.joinable()) rt.netThread.join();
+        }
+        rt.netSink = nullptr;
+        rt.netName = {};
         if (rt.manager != nullptr) {
             if (rt.auxCallback != nullptr) rt.manager->removeAudioCallback(rt.auxCallback.get());
             rt.manager->closeAudioDevice();
@@ -175,7 +207,7 @@ public:
         }
         const auto& rt = routes_[index];
         info.name = rt.openName;
-        info.open = rt.manager != nullptr;
+        info.open = rt.manager != nullptr || rt.netSink != nullptr;
         info.sampleRate = rt.openRate;
         return info;
     }
@@ -485,6 +517,39 @@ private:
         std::vector<float> inL_, inR_, scratchL_, scratchR_;
     };
 
+    // === Hilo de bombeo de una ruta de red (M3) ===
+    // Lee el anillo (señal post-EQ que mete processMaster), aplica los
+    // parámetros de la ruta y manda tramas de 10 ms al sink (UDP al móvil).
+    void pumpNetworkRoute(int index) {
+        auto& rt = routes_[index];
+        std::vector<float> L, R;
+        while (rt.netRunning.load()) {
+            const double rate = mainSampleRate_.load();
+            if (rate <= 8000.0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
+            auto& ring = rt.ring;
+            const int target = static_cast<int>(std::lround(rate * 0.010));   // 10 ms
+            // Espera a tener la trama completa (a lo sumo 100 ms: si no hay
+            // señal, se envía silencio para que el reloj del móvil no se quede).
+            int waited = 0;
+            while (ring.buffered() < target && waited < 100 && rt.netRunning.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                waited += 2;
+            }
+            if (!rt.netRunning.load()) break;
+            if (ring.buffered() > Ring::CAP / 2) ring.reset();
+            if (L.size() < static_cast<size_t>(target)) {
+                L.resize(static_cast<size_t>(target));
+                R.resize(static_cast<size_t>(target));
+            }
+            ring.readLatest(L.data(), R.data(), target);
+            proc_[index]->process(L.data(), R.data(), target, rate, *params_[index]);
+            if (rt.netSink) rt.netSink(L.data(), R.data(), target, rate);
+        }
+    }
+
     friend class AuxCallback;
 
     // === Auto-alineación: correlación cruzada referencia ↔ micro ===
@@ -586,6 +651,12 @@ private:
         Ring ring;
         juce::String openName;
         double openRate = 0.0;
+        // Ruta de red (M3): sin dispositivo; un sink recibe las muestras
+        // procesadas cada 10 ms (típicamente: UDP a los altavoces del móvil).
+        std::function<void(const float*, const float*, int, double)> netSink;
+        juce::String netName;
+        std::thread netThread;
+        std::atomic<bool> netRunning{false};
     };
 
     juce::AudioDeviceManager& mainManager_;

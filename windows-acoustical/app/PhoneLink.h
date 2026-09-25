@@ -69,6 +69,10 @@ public:
 
     std::function<void(const juce::var&)> onSync;
 
+    // Baliza vista (IP + JSON {"app","port","ver","dev","id"}): la usa
+    // RemoteAudioLink para el registro de móviles del puente de audio Wi-Fi.
+    std::function<void(const juce::String& ip, const juce::var& info)> onBeacon;
+
 private:
     void timerCallback() override;
     void pollDevices();

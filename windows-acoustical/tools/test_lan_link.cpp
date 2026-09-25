@@ -12,9 +12,12 @@
 
 #include "../app/BeaconListener.h"
 #include "../app/SyncClient.h"
+#include "../app/RemoteAudioLink.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <thread>
 #include <vector>
@@ -436,6 +439,165 @@ int main() {
     check(dl && juce::SHA256(tmp).toHexString() == phone.payloadSha(),
           "SHA-256 del payload descargado coincide");
     tmp.deleteFile();
+
+    // 7) Puente de audio Wi-Fi (M2/M3): lazo UDP en loopback con un
+    //    "móvil falso". El móvil manda su micro (seno 440 Hz, 48 kHz, mono)
+    //    al puerto 41044 del PC y escucha en 41043 el control y la reproducción.
+    {
+        // Estado persistente de una ejecución anterior: borrar para que el
+        // test sea determinista (no re-pida micro al arrancar).
+        juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+            .getChildFile("Acoustical").getChildFile("remoteaudio.json").deleteFile();
+
+        RemoteAudioLink link;
+        link.setCodeProvider([&] { return kCode; });
+        link.start();
+        link.noteBeacon("127.0.0.1", "test-id", "MóvilTest");
+        check(link.deviceByIp("127.0.0.1") != nullptr, "baliza → móvil en el registro");
+        check(link.liveDevices().size() == 1, "liveDevices → 1 móvil en vivo");
+
+        // "Móvil" que recibe control y audio (puerto 41043)
+        juce::DatagramSocket phoneRx;
+        check(phoneRx.bindToPort(RemoteAudioLink::PLAY_PORT),
+              "móvil falso: oyente 41043 (control/reproducción)");
+
+        // "Móvil" que emite su micro (al puerto 41044)
+        std::atomic<bool> stopPhone{false};
+        std::thread phoneMic([&] {
+            juce::DatagramSocket s;
+            unsigned seq = 0;
+            double phase = 0.0;
+            while (!stopPhone.load()) {
+                const int n = 480;   // 10 ms a 48 kHz
+                std::vector<juce::uint8> bytes(8 + static_cast<size_t>(n) * 2);
+                bytes[0] = static_cast<juce::uint8>((seq >> 8) & 0xFF);
+                bytes[1] = static_cast<juce::uint8>(seq & 0xFF);
+                bytes[2] = static_cast<juce::uint8>((48000 >> 8) & 0xFF);
+                bytes[3] = static_cast<juce::uint8>(48000 & 0xFF);
+                bytes[4] = 0; bytes[5] = 1;   // ch=1 en big-endian
+                bytes[6] = 0; bytes[7] = 0;
+                for (int i = 0; i < n; ++i) {
+                    const short v = static_cast<short>(0.5 * 32767.0 * sin(phase));
+                    phase += 2.0 * M_PI * 440.0 / 48000.0;
+                    bytes[8 + 2 * i] = static_cast<juce::uint8>(v & 0xFF);
+                    bytes[9 + 2 * i] = static_cast<juce::uint8>((v >> 8) & 0xFF);
+                }
+                s.write("127.0.0.1", RemoteAudioLink::MIC_PORT, bytes.data(),
+                        static_cast<int>(bytes.size()));
+                seq = (seq + 1) & 0xFFFF;
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        });
+
+        // M2: las tramas llegan y el nivel se mide
+        for (int i = 0; i < 100 && link.micLevelDb("127.0.0.1") < -60.0f; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        check(link.micLevelDb("127.0.0.1") > -30.0f,
+              "M2: tramas del micro llegan al PC (nivel > -30 dB)");
+
+        // M2: pullMic devuelve el seno resampleado
+        {
+            std::vector<float> block(480);
+            double rmsSum = 0.0;
+            int zeros = 0;
+            for (int b = 0; b < 5; ++b) {
+                link.pullMic("127.0.0.1", block.data(), 480, 48000.0);
+                for (int s = 1; s < 480; ++s) {
+                    rmsSum += block[static_cast<size_t>(s)] * block[static_cast<size_t>(s)];
+                    if (b > 0 && (block[static_cast<size_t>(s)] >= 0.0f)
+                                != (block[static_cast<size_t>(s - 1)] >= 0.0f))
+                        ++zeros;
+                }
+            }
+            const double rms = std::sqrt(rmsSum / (5.0 * 479.0));
+            check(rms > 0.1 && rms < 0.4, "M2: pullMic resamplea el micro (RMS del seno 0,5)");
+            // 440 Hz en ~40 ms → ~18 ciclos → ~36 cruces de cero (margen amplio)
+            check(zeros > 15 && zeros < 70, "M2: la frecuencia llega correcta (~440 Hz)");
+        }
+
+        // M2: pedir el micro → el "móvil" recibe mic_start con el código
+        check(link.setMicOn("127.0.0.1", true), "M2: setMicOn(true) aceptado");
+        check(link.micOn("127.0.0.1"), "M2: estado micOn guardado");
+        {
+            juce::String senderIp;
+            int senderPort = 0;
+            char buf[512];
+            juce::String got;
+            for (int i = 0; i < 100 && got.isEmpty(); ++i) {
+                if (phoneRx.waitUntilReady(true, 100) == 1) {
+                    const int n = phoneRx.read(buf, sizeof(buf), false, senderIp, senderPort);
+                    if (n > 0) got = juce::String::fromUTF8(buf, n);
+                }
+            }
+            check(got.contains("mic_start"), "M2: el móvil recibió mic_start (UDP 41043)");
+            check(got.contains(kCode.toRawUTF8()), "M2: mic_start lleva el código de emparejamiento");
+            check(got.contains("41044"), "M2: mic_start lleva el puerto de destino (41044)");
+        }
+
+        // M3: sendToPhone → el "móvil" recibe la trama de audio
+        {
+            std::vector<float> L(480), R(480);
+            double phase = 0.0;
+            for (int i = 0; i < 480; ++i) {
+                L[static_cast<size_t>(i)] = static_cast<float>(0.5 * sin(phase));
+                R[static_cast<size_t>(i)] = static_cast<float>(0.25 * sin(phase));
+                phase += 2.0 * M_PI * 440.0 / 48000.0;
+            }
+            link.sendToPhone("127.0.0.1", L.data(), R.data(), 480, 48000.0);
+            juce::String senderIp;
+            int senderPort = 0;
+            char buf[2048];
+            int n = 0;
+            for (int i = 0; i < 100 && n < 10; ++i) {
+                if (phoneRx.waitUntilReady(true, 100) == 1) {
+                    n = phoneRx.read(buf, sizeof(buf), false, senderIp, senderPort);
+                    if (n > 0) break;
+                }
+            }
+            check(n == 8 + 480 * 2 * 2, "M3: el móvil recibió la trama (1928 bytes)");
+            if (n >= 8 + 4) {
+                const auto* d = reinterpret_cast<const juce::uint8*>(buf);
+                const unsigned rate = (static_cast<unsigned>(d[2]) << 8) | d[3];
+                const unsigned ch = (static_cast<unsigned>(d[4]) << 8) | d[5];
+                check(rate == 48000 && ch == 2, "M3: cabecera (rate=48000, ch=2)");
+                int maxL = 0, maxR = 0;
+                for (int i = 0; i < 480; ++i) {
+                    const short l = static_cast<short>(
+                        d[8 + i * 4] | (d[9 + i * 4] << 8));
+                    const short r = static_cast<short>(
+                        d[10 + i * 4] | (d[11 + i * 4] << 8));
+                    maxL = std::max(maxL, std::abs(static_cast<int>(l)));
+                    maxR = std::max(maxR, std::abs(static_cast<int>(r)));
+                }
+                check(maxL > 15000 && maxL < 17500, "M3: canal L en PCM16 (amplitud ≈ 0,5)");
+                check(maxR > 7000 && maxR < 9500, "M3: canal R en PCM16 (amplitud ≈ 0,25)");
+            }
+        }
+
+        // M2: parar el micro → el "móvil" recibe mic_stop
+        check(link.setMicOn("127.0.0.1", false), "M2: setMicOn(false) aceptado");
+        {
+            juce::String senderIp;
+            int senderPort = 0;
+            char buf[512];
+            juce::String got;
+            for (int i = 0; i < 100 && got.isEmpty(); ++i) {
+                if (phoneRx.waitUntilReady(true, 100) == 1) {
+                    const int n = phoneRx.read(buf, sizeof(buf), false, senderIp, senderPort);
+                    if (n > 0) {
+                        got = juce::String::fromUTF8(buf, n);
+                        if (got.contains("mic_stop")) break;
+                    }
+                }
+            }
+            check(got.contains("mic_stop"), "M2: el móvil recibió mic_stop");
+        }
+
+        stopPhone.store(true);
+        phoneMic.join();
+        phoneRx.shutdown();
+        link.stop();
+    }
 
     beacon.stop();
     phone.stop();

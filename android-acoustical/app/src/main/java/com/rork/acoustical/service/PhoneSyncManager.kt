@@ -89,11 +89,20 @@ class PhoneSyncManager private constructor(context: Context) {
     @Volatile private var serverThread: Thread? = null
     @Volatile private var beaconThread: Thread? = null
 
+    /** Puente de audio Wi-Fi (M2/M3): el micrófono de este móvil es una
+     *  entrada del PC y las rutas del Hub pueden mandar audio a su altavoz. */
+    val remoteAudio: RemoteAudioLink
+
+    /** IP del último PC que ha usado el canal de control (terreno para M4). */
+    @Volatile var lastPcIp: String? = null
+        private set
+
     init {
         _payloadReady.value = payloadFile() != null
+        remoteAudio = RemoteAudioLink(context, ::pairCode)
     }
 
-    /** Arranca el servidor y la baliza (una sola vez); son daemons y mueren con la app. */
+    /** Arranca el servidor, la baliza y el puente de audio (una sola vez). */
     fun start() {
         if (serverThread?.isAlive == true) return
         val thread = Thread({ acceptLoop() }, "acoustical-sync-server")
@@ -101,6 +110,7 @@ class PhoneSyncManager private constructor(context: Context) {
         serverThread = thread
         thread.start()
         startBeacon()
+        remoteAudio.start()
         maybeAutoCheck()
     }
 
@@ -163,7 +173,18 @@ class PhoneSyncManager private constructor(context: Context) {
         put("port", PORT)
         put("ver", BuildConfig.VERSION_NAME)
         put("dev", Build.MODEL)
+        put("id", deviceId())
     }.toString()
+
+    /** Identificador estable de este móvil (terreno para varios móviles, M4). */
+    private fun deviceId(): String {
+        var id = prefs.getString(KEY_DEVICE_ID, null)
+        if (id == null) {
+            id = java.util.UUID.randomUUID().toString()
+            prefs.edit().putString(KEY_DEVICE_ID, id).apply()
+        }
+        return id
+    }
 
     // === Emparejamiento Wi-Fi: código de 6 dígitos (se pega una vez en el PC) ===
 
@@ -205,6 +226,7 @@ class PhoneSyncManager private constructor(context: Context) {
     }
 
     private fun handle(socket: Socket) {
+        runCatching { lastPcIp = socket.inetAddress?.hostAddress }
         socket.soTimeout = READ_TIMEOUT_MS
         val input = socket.getInputStream().buffered()
         val first = ByteArray(8192)
@@ -697,6 +719,7 @@ class PhoneSyncManager private constructor(context: Context) {
         private const val PREFS = "acoustical_phone_sync"
         private const val KEY_SYNC_STATE = "sync_state"
         private const val KEY_CODE = "pair_code"
+        private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_VERSION = "windows_version"
         private const val KEY_SHA256 = "windows_sha256"
         private const val KEY_URL = "windows_url"

@@ -8,10 +8,11 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "Theme.h"
 #include "RouteHub.h"
+#include "RemoteAudioLink.h"
 
 class HubPanel : public juce::Component, private juce::Timer {
 public:
-    explicit HubPanel(RouteHub& hub) : hub_(hub) {
+    explicit HubPanel(RouteHub& hub, RemoteAudioLink& link) : hub_(hub), link_(link) {
         addAndMakeVisible(header_);
         header_.setFont(juce::Font(14.0f, juce::Font::bold));
         header_.setColour(juce::Label::textColourId, theme::textPrimary);
@@ -32,7 +33,7 @@ public:
                            "un micrófono en la entrada del PC)."), juce::dontSendNotification);
 
         for (int i = 0; i < RouteHub::NUM_ROUTES; ++i)
-            rows_[i] = std::make_unique<RouteRow>(hub_, i);
+            rows_[i] = std::make_unique<RouteRow>(hub_, link_, i);
 
         inner_.setSize(1320, RouteHub::NUM_ROUTES * ROW_H + 8);
         for (auto& row : rows_) inner_.addAndMakeVisible(row.get());
@@ -90,7 +91,7 @@ private:
     // Una fila = una ruta completa
     class RouteRow : public juce::Component {
     public:
-        RouteRow(RouteHub& hub, int index) : hub_(hub), index_(index) {
+        RouteRow(RouteHub& hub, RemoteAudioLink& link, int index) : hub_(hub), link_(link), index_(index) {
             const bool isMain = index_ == 0;
             addAndMakeVisible(title_);
             title_.setFont(juce::Font(13.0f, juce::Font::bold));
@@ -240,6 +241,31 @@ private:
         void connectSelectedDevice() {
             const auto name = selectedDeviceName();
             if (name.isEmpty()) return;
+
+            // Móvil por Wi-Fi (M3): en vez de un dispositivo físico, la ruta
+            // bombea las muestras por UDP a los altavoces del móvil.
+            if (name.startsWith("Móvil: ")) {
+                const auto ip = link_.findIpByName(name);
+                if (ip.isEmpty()) {
+                    status_.setText("El móvil ya no está en la red", juce::dontSendNotification);
+                    connectButton_.setButtonText("Conectar");
+                    return;
+                }
+                const auto ipCopy = ip;   // el sink vive más que el datagrama
+                juce::String error;
+                if (hub_.openNetworkRoute(index_, name,
+                        [this, ipCopy](const float* L, const float* R, int n, double rate) {
+                            link_.sendToPhone(ipCopy, L, R, n, rate);
+                        }, error)) {
+                    status_.setText("Conectado por Wi-Fi: " + name, juce::dontSendNotification);
+                    connectButton_.setButtonText("Conectado");
+                } else {
+                    status_.setText("No se pudo abrir la ruta: " + error, juce::dontSendNotification);
+                    connectButton_.setButtonText("Conectar");
+                }
+                return;
+            }
+
             juce::String error;
             if (hub_.openRoute(index_, name, error)) {
                 status_.setText("Conectado: " + name + juce::String::fromUTF8(" · ")
@@ -254,6 +280,7 @@ private:
         }
 
         RouteHub& hub_;
+        RemoteAudioLink& link_;
         int index_;
         juce::Label title_;
         juce::ComboBox deviceBox_;
@@ -274,6 +301,9 @@ private:
                 int id = 1;
                 for (const auto& d : devices_)
                     box->addItem(d, id++);
+                // Móviles en vivo (M3): se conectan como ruta de red Wi-Fi
+                for (const auto& p : link_.liveDevices())
+                    box->addItem(RemoteAudioLink::displayName(p), id++);
                 const auto open = hub_.routeInfo(i).name;
                 if (open.isNotEmpty()) {
                     for (int k = 0; k < box->getNumItems(); ++k)
@@ -287,6 +317,16 @@ private:
     }
 
     void timerCallback() override {
+        // Lista de dispositivos: se refresca solo si aparece/desaparece un móvil
+        {
+            juce::String sig;
+            for (const auto& p : link_.liveDevices()) sig << p.ip << ";";
+            if (sig != lastPhoneSig_) {
+                lastPhoneSig_ = sig;
+                refreshDevices();
+            }
+        }
+
         for (int i = 0; i < RouteHub::NUM_ROUTES; ++i) {
             auto& row = *rows_[static_cast<size_t>(i)];
             row.syncFromHub();
@@ -314,6 +354,15 @@ private:
             // Estado de conexión
             if (i > 0) {
                 const auto info = hub_.routeInfo(i);
+                // Ruta de red (M3): si el móvil se va de la red, cerrar la ruta
+                if (info.open && info.name.startsWith("Móvil: ")) {
+                    const auto ip = link_.findIpByName(info.name);
+                    if (ip.isEmpty() || !link_.isLive(ip, 10000)) {
+                        hub_.closeRoute(i);
+                        row.setStatus(juce::String::fromUTF8("El móvil se ha desconectado de la red"));
+                        continue;
+                    }
+                }
                 if (info.open && !row.statusText().contains("Alineada")
                     && !row.statusText().contains("Conectado")
                     && !row.statusText().contains("No se pudo")
@@ -325,10 +374,12 @@ private:
     }
 
     RouteHub& hub_;
+    RemoteAudioLink& link_;
     juce::Label header_, hintLabel_;
     juce::TextButton refreshButton_;
     juce::Viewport viewport_;
     juce::Component inner_;
     std::array<std::unique_ptr<RouteRow>, RouteHub::NUM_ROUTES> rows_{};
     juce::StringArray devices_;
+    juce::String lastPhoneSig_;
 };

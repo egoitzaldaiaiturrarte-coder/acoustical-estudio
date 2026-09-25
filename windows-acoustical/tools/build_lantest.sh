@@ -30,6 +30,7 @@ g++ -std=c++17 -O1 \
     "$ROOT/tools/test_lan_link.cpp" \
     "$ROOT/app/SyncClient.cpp" \
     "$ROOT/app/BeaconListener.cpp" \
+    "$ROOT/app/RemoteAudioLink.cpp" \
     "$JUCE/modules/juce_core/juce_core.cpp" \
     "$JUCE/modules/juce_events/juce_events.cpp" \
     "$JUCE/modules/juce_cryptography/juce_cryptography.cpp" \
@@ -40,9 +41,9 @@ g++ -std=c++17 -O1 \
     -o "$OUT"
 echo "Compilado: $OUT"
 
-# PhoneLink.cpp: solo compila en su totalidad en Windows (usa el registro y
-# ShellExecute), pero la lógica de transporte es multiplataforma y debe
-# compilarse aquí para pillar errores antes del job de Windows.
+# PhoneLink.cpp y RemoteAudioLink.cpp: se compilan aquí aunque no enlacen
+# (PhoneLink usa Windows en la mitad de su cuerpo) para pillar errores antes
+# del job de Windows.
 g++ -std=c++17 -fsyntax-only \
     -I"$JUCE/modules" -I"$JUCE" -I"$ROOT/app" \
     -DJUCE_WEB_BROWSER=0 -DJUCE_USE_CURL=0 -DJUCE_LOAD_CURL_SYMBOLS_LAZILY=0 \

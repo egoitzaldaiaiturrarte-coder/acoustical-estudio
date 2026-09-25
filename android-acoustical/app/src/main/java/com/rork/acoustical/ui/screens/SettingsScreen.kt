@@ -479,6 +479,31 @@ private fun WindowsPcCard() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            // --- Puente de audio Wi-Fi (M2/M3) ---
+            val micStreaming by sync.remoteAudio.micStreaming.collectAsState()
+            val pcPlaying by sync.remoteAudio.pcPlaying.collectAsState()
+            val micError by sync.remoteAudio.micError.collectAsState()
+            Text(
+                buildString {
+                    append("Micrófono → PC: ")
+                    append(if (micStreaming) "activo" else "inactivo")
+                    if (pcPlaying) append(" · Sonando en este móvil (desde el PC)")
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (micStreaming || pcPlaying) CyanGlow else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "Desde el PC: Ruteos > Entradas > Móviles (usar el micro) y la pestaña Hub (rutas a este altavoz).",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            micError?.let { err ->
+                Text(
+                    err,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AmberAccent
+                )
+            }
             Text(
                 if (payloadReady) {
                     "Paquete de Windows listo (v${sync.installedPayloadVersion() ?: "?"}) — se instalará al conectar el PC"

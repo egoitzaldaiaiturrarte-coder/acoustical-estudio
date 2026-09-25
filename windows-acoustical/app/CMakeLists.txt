@@ -8,6 +8,7 @@ target_sources(AcousticalEstudio PRIVATE
     PhoneLink.cpp
     SyncClient.cpp
     BeaconListener.cpp
+    RemoteAudioLink.cpp
 )
 
 target_compile_definitions(AcousticalEstudio PRIVATE
@@ -15,7 +16,7 @@ target_compile_definitions(AcousticalEstudio PRIVATE
     JUCE_USE_CURL=0
     NOMINMAX
     JUCE_APPLICATION_NAME_STRING="Acoustical Estudio"
-    JUCE_APPLICATION_VERSION_STRING="1.5.0"
+    JUCE_APPLICATION_VERSION_STRING="1.6.0"
 )
 
 if(MSVC)

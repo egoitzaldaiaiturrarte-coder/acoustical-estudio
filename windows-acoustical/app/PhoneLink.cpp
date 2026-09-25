@@ -39,7 +39,9 @@ PhoneLink::~PhoneLink() {
 
 void PhoneLink::startWatchdog() {
     startTimerHz(1);   // ~cada 1 s; ni la baliza ni el sondeo de adb piden más
-    beacon_->start([](const juce::String&, const juce::var&) {});
+    beacon_->start([this](const juce::String& ip, const juce::var& info) {
+        if (onBeacon) onBeacon(ip, info);
+    });
 }
 
 void PhoneLink::stopWatchdog() {
