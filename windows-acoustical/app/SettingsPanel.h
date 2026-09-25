@@ -14,6 +14,7 @@ class SettingsPanel : public juce::Component {
 public:
     std::function<void()> onBeforeChange;   // guardar estado actual (deshacer)
     std::function<void()> onAfterChange;    // guardado automático
+    std::function<void()> onReceiveFromPhone;  // "Recibir del móvil" (Ajustes del móvil)
 
     SettingsPanel(acoustical::AcousticalEngine& engine, PhoneLink* phone,
                   std::function<void(bool)> onGeneratorActive)
@@ -292,7 +293,25 @@ private:
         content().addAndMakeVisible(saveIp);
         saveIp->setBounds(536, y_ - 6, 180, 30);
         endRow();
-        // Pista en dos líneas cortas: una sola línea de ~200 caracteres se
+        // Ajustes en ambos sentidos: el botón "Sincronizar" de la barra superior
+        // manda PC → móvil; este toma la config actual del móvil y la aplica al PC.
+        {
+            auto* lab = new juce::Label({}, juce::String::fromUTF8("Ajustes del móvil"));
+            lab->setColour(juce::Label::textColourId, theme::textDim);
+            rowLabels_.add(lab);
+            content().addAndMakeVisible(lab);
+            lab->setBounds(16, y_, 300, 22);
+            auto* recv = new juce::TextButton(juce::String::fromUTF8("Recibir del móvil"));
+            recv->setTooltip(juce::String::fromUTF8(
+                "Toma los ajustes que tiene ahora el móvil y los aplica al PC "
+                "(el móvil también puede enviarlos desde su app)"));
+            recv->onClick = [this] { if (onReceiveFromPhone) onReceiveFromPhone(); };
+            widgets_.add(recv);
+            content().addAndMakeVisible(recv);
+            recv->setBounds(340, y_ - 6, 180, 30);
+        }
+        endRow();
+        // Pista en tres líneas cortas: una sola línea de ~200 caracteres se
         // recortaba en el panel estrecho.
         auto* hint1 = new juce::Label(
             {}, juce::String::fromUTF8("El código aparece en la app del móvil (Ajustes > PC/Windows): pégalo aquí "
@@ -300,19 +319,28 @@ private:
         auto* hint2 = new juce::Label(
             {}, juce::String::fromUTF8("La IP manual es solo por si tu red bloquea la baliza; el cable USB queda "
                 "de respaldo."));
+        auto* hint3 = new juce::Label(
+            {}, juce::String::fromUTF8("Ajustes: el botón Sincronizar (barra superior) manda PC → móvil; "
+                "«Recibir del móvil» hace lo contrario."));
         hint1->setFont(juce::Font(12.0f));
         hint2->setFont(juce::Font(12.0f));
+        hint3->setFont(juce::Font(12.0f));
         hint1->setColour(juce::Label::textColourId, theme::textDim);
         hint2->setColour(juce::Label::textColourId, theme::textDim);
+        hint3->setColour(juce::Label::textColourId, theme::textDim);
         hint1->setJustificationType(juce::Justification::centredLeft);
         hint2->setJustificationType(juce::Justification::centredLeft);
+        hint3->setJustificationType(juce::Justification::centredLeft);
         rowLabels_.add(hint1);
         rowLabels_.add(hint2);
+        rowLabels_.add(hint3);
         content().addAndMakeVisible(hint1);
         content().addAndMakeVisible(hint2);
+        content().addAndMakeVisible(hint3);
         hint1->setBounds(24, y_ + 2, 852, 16);
         hint2->setBounds(24, y_ + 20, 852, 16);
-        y_ += 50;
+        hint3->setBounds(24, y_ + 38, 852, 16);
+        y_ += 68;
     }
 
     // === Modos rápidos ===

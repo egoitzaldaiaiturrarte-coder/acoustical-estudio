@@ -74,6 +74,18 @@ class PhoneSyncManager private constructor(context: Context) {
     private val _status = MutableStateFlow("")
     val status: StateFlow<String> = _status.asStateFlow()
 
+    /** Config del PC recibida por su push ("Sincronizar"): (marca de tiempo, config).
+     *  El ViewModel la recoge y la aplica al motor local. */
+    private val _remoteConfig = MutableStateFlow<Pair<Long, JsonObject>?>(null)
+    val remoteConfig: StateFlow<Pair<Long, JsonObject>?> = _remoteConfig.asStateFlow()
+
+    /** Ajustes actuales de la app (JSON). El ViewModel lo publica cada vez que
+     *  cambian; viaja en cada respuesta de sync para que el PC siempre vea el
+     *  estado actual (dirección móvil → PC). */
+    @Volatile private var localConfigJson: String = ""
+
+    fun publishLocalConfig(json: String) { localConfigJson = json }
+
     @Volatile private var serverThread: Thread? = null
     @Volatile private var beaconThread: Thread? = null
 
@@ -405,6 +417,23 @@ class PhoneSyncManager private constructor(context: Context) {
     private val hubLock = Any()
     private val pendingHubCommands = ArrayDeque<JsonObject>()
 
+    /** Botón "Enviar mis ajustes al PC": deja los ajustes actuales encolados en
+     *  el estado pendiente. El PC, en su próximo sondeo (cada pocos segundos),
+     *  los aplica y lo confirma con un push "acked", con lo que se borra. */
+    fun pushMyConfigToPc() {
+        val cfg = runCatching { Json.parseToJsonElement(localConfigJson).jsonObject }.getOrNull()
+        if (cfg == null) {
+            _status.value = "Aún no hay ajustes que enviar al PC"
+            return
+        }
+        val staged = buildJsonObject {
+            putJsonObject("config") { cfg.forEach { (k, v) -> this[k] = v } }
+            put("sendToPc", true)
+        }
+        prefs.edit().putString(KEY_SYNC_STATE, staged.toString()).apply()
+        _status.value = "Enviando ajustes al PC… (se aplican en unos segundos)"
+    }
+
     // === Estado sincronizado ===
 
     private fun currentSyncJson(): String {
@@ -412,13 +441,29 @@ class PhoneSyncManager private constructor(context: Context) {
         val payload = runCatching { Json.parseToJsonElement(stored).jsonObject }
             .getOrElse { buildJsonObject { } }
         val out = LinkedHashMap(payload)
+        // La config en vivo viaja siempre: el PC la usa en "Recibir del móvil".
+        // Sobrescribe el eco de la última config que el PC haya enviado.
+        runCatching { Json.parseToJsonElement(localConfigJson).jsonObject }
+            .onSuccess { out["config"] = it }
         takePendingHubCommand()?.let { out["hubCmd"] = it }
         return "{\"type\":\"sync\",\"ok\":true,\"payload\":${JsonObject(out)}}"
     }
 
     private fun storeSyncPayload(text: String, fromPc: Boolean) {
         val valid = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
+        // Confirmación del PC de que aplicó los ajustes encolados: se borra el
+        // estado pendiente y ya no vuelve a enviarse.
+        if (valid.containsKey("acked") && !valid.containsKey("sendToPc")) {
+            prefs.edit().remove(KEY_SYNC_STATE).apply()
+            _status.value = "El PC ha aplicado tus ajustes"
+            return
+        }
         prefs.edit().putString(KEY_SYNC_STATE, valid.toString()).apply()
+        // Config enviada por el PC (su botón "Sincronizar"): el ViewModel la
+        // aplica al motor local.
+        (valid["config"] as? JsonObject)?.let { cfg ->
+            _remoteConfig.value = System.currentTimeMillis() to cfg
+        }
         _status.value = if (fromPc) "Ajustes recibidos del PC" else "Ajustes enviados al PC"
     }
 

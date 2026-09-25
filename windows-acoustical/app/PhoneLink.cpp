@@ -214,7 +214,7 @@ bool PhoneLink::exchange(const juce::var& send, juce::var& reply) {
     return true;
 }
 
-bool PhoneLink::pushSync(const juce::var& payload) {
+bool PhoneLink::pushSync(const juce::var& payload, const juce::String& statusMsg, juce::var* replyOut) {
     juce::var reply;
     auto obj = new juce::DynamicObject();
     obj->setProperty("type", "push");
@@ -223,11 +223,13 @@ bool PhoneLink::pushSync(const juce::var& payload) {
         setStatus(juce::String::fromUTF8("Abre Acoustical en el móvil para sincronizar"));
         return false;
     }
-    setStatus(juce::String::fromUTF8("Ajustes enviados al móvil"));
+    setStatus(statusMsg);
+    if (replyOut != nullptr) *replyOut = reply;
+    else if (onSync) onSync(reply);
     return true;
 }
 
-bool PhoneLink::requestSync() {
+bool PhoneLink::requestSync(juce::var* replyOut) {
     juce::var reply;
     auto obj = new juce::DynamicObject();
     obj->setProperty("type", "pull");
@@ -243,7 +245,8 @@ bool PhoneLink::requestSync() {
         return false;
     }
     setStatus(juce::String::fromUTF8("Sincronizado con el móvil"));
-    if (onSync) onSync(reply);
+    if (replyOut != nullptr) *replyOut = reply;
+    else if (onSync) onSync(reply);
     return true;
 }
 

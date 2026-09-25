@@ -118,7 +118,17 @@ public:
         addAndMakeVisible(syncButton_);
         syncButton_.setButtonText("Sincronizar");
         syncButton_.setTooltip(juce::String::fromUTF8("Sincronizar con el móvil (Wi-Fi / USB)"));
-        syncButton_.onClick = [this] { if (phoneLink_) phoneLink_->requestSync(); };
+        // "Sincronizar" = el PC envía su configuración completa al móvil y
+        // procesa la respuesta (config del móvil en vivo + comandos de Hub)
+        // en el mismo intercambio.
+        syncButton_.onClick = [this] {
+            if (!phoneLink_) return;
+            auto* pl = new juce::DynamicObject();
+            pl->setProperty("config", serializeEngine());
+            juce::var reply;
+            if (phoneLink_->pushSync(juce::var(pl), juce::String::fromUTF8("Sincronizado con el móvil"), &reply))
+                applyPhoneSync(reply, false);
+        };
 
         addAndMakeVisible(phoneLabel_);
         phoneLabel_.setFont(juce::Font(12.0f));
@@ -205,6 +215,14 @@ public:
         });
         settingsPanel_->onBeforeChange = [this] { pushUndo(); };
         settingsPanel_->onAfterChange = [this] { saveSettings(); };
+        settingsPanel_->onReceiveFromPhone = [this] {
+            if (!phoneLink_) return;
+            juce::var reply;
+            if (phoneLink_->requestSync(&reply)) {
+                applyPhoneSync(reply, true);
+                phoneLink_->setStatus(juce::String::fromUTF8("Ajustes recibidos del móvil"));
+            }
+        };
         hub_ = std::make_unique<RouteHub>(deviceManager_);
         hubPanel_ = std::make_unique<HubPanel>(*hub_);
         tabs_ = std::make_unique<juce::TabbedComponent>(juce::TabbedButtonBar::TabsAtTop);
@@ -567,19 +585,29 @@ private:
         return juce::var(obj);
     }
 
-    void applyPhoneSync(const juce::var& payload) {
+    void applyPhoneSync(const juce::var& payload, bool forceApply = false) {
         // Payload sincronizado desde la app móvil: perfiles, correcciones, ajustes
         auto* obj = payload.getDynamicObject();
         if (obj == nullptr) return;
+
+        // Ajustes del móvil. La respuesta de cada sondeo lleva siempre su config
+        // en vivo, pero el PC solo la APLICA en dos casos explícitos — nunca
+        // automático, para que el sondeo de 3 s no vaya sobreescribiendo el PC:
+        //  (a) staged: el móvil pulsó "Enviar mis ajustes al PC" (bandera
+        //      sendToPc). El PC confirma con un push "acked" y el móvil borra
+        //      su estado pendiente.
+        //  (b) forceApply: el usuario pulsó "Recibir del móvil" en Ajustes.
         const auto cfg = obj->getProperty("config");
         auto* cfgObj = cfg.getDynamicObject();
-        if (cfgObj != nullptr) {
-            auto c = engine_.config();
-            c.maxGainDb = static_cast<float>(static_cast<double>(cfgObj->getProperty("maxGainDb")));
-            c.smoothingFactor = static_cast<float>(static_cast<double>(cfgObj->getProperty("smoothingFactor")));
-            engine_.configure(c);
+        const bool staged = static_cast<bool>(obj->getProperty("sendToPc"));
+        if (cfgObj != nullptr && (forceApply || staged)) {
+            applyEngineConfigVar(juce::var(cfgObj));
+            if (staged) {
+                auto* ack = new juce::DynamicObject();
+                ack->setProperty("acked", true);
+                phoneLink_->pushSync(juce::var(ack), juce::String::fromUTF8("Ajustes del móvil aplicados"));
+            }
         }
-        settingsPanel_->refresh();
 
         // Comando del Hub enviado desde la app móvil (por USB)
         const auto hubCmd = obj->getProperty("hubCmd");
@@ -615,7 +643,13 @@ private:
     void loadSelectedPreset() {
         const auto f = presetsDir().getChildFile(presetBox_.getText() + ".json");
         if (!f.existsAsFile()) return;
-        const auto v = juce::JSON::parse(f);
+        applyEngineConfigVar(juce::JSON::parse(f));
+    }
+
+    // Aplica un JSON de configuración (el mismo formato de serializeEngine())
+    // al motor: campos escalares, curva del EQ manual y ecuas dinámicos.
+    // Sirve tanto a los presets como a la sincronización con el móvil.
+    void applyEngineConfigVar(const juce::var& v) {
         auto* obj = v.getDynamicObject();
         if (obj == nullptr) return;
         auto num = [](const juce::DynamicObject* o, const char* key, double def) {

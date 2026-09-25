@@ -48,9 +48,11 @@ public:
     juce::String deviceSerial() const;   // USB: serial adb; Wi-Fi/manual: IP del móvil
     juce::String lastSyncInfo() const;
 
-    // Sincronización: envía el estado actual y pide el del móvil
-    bool pushSync(const juce::var& payload);
-    bool requestSync();
+    // Sincronización: envía el estado actual y pide el del móvil.
+    // Con replyOut != nullptr la respuesta la gestiona el llamador (no onSync).
+    bool pushSync(const juce::var& payload, const juce::String& statusMsg, juce::var* replyOut = nullptr);
+    bool requestSync(juce::var* replyOut = nullptr);
+    void setStatus(const juce::String& s);
 
     // Comprueba con el móvil si hay una versión nueva de Windows; si la hay,
     // la descarga (Wi-Fi o USB), verifica su SHA-256 y lanza el instalador.
@@ -75,7 +77,6 @@ private:
     // true si el transporte destino cambió (y por tanto hay que (re)conectarse)
     bool endpointChanged(const juce::String& host, Transport t);
     bool exchange(const juce::var& send, juce::var& reply);
-    void setStatus(const juce::String& s);
 
     juce::File configPath() const;
     void loadConfig();

@@ -32,7 +32,7 @@ private:
 class AcousticalApplication : public juce::JUCEApplication {
 public:
     const juce::String getApplicationName() override { return "Acoustical Estudio"; }
-    const juce::String getApplicationVersion() override { return "1.4.1"; }
+    const juce::String getApplicationVersion() override { return "1.5.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
 
     void initialise(const juce::String&) override {

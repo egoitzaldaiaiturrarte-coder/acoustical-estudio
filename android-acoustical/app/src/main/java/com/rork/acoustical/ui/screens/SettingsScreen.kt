@@ -463,6 +463,15 @@ private fun WindowsPcCard() {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(modifier = Modifier.height(6.dp))
+            Button(onClick = { sync.pushMyConfigToPc() }) {
+                Text("Enviar mis ajustes al PC")
+            }
+            Text(
+                "Manda los ajustes actuales (motor, SPL, ruido y los 3 ecuas dinámicos) al PC; se aplican en unos segundos.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             if (lanIp.isNotEmpty()) {
                 Text(
                     "IP de este móvil en la red: $lanIp (por si el PC necesita la IP a mano)",

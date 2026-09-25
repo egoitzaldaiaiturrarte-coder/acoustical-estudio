@@ -75,6 +75,7 @@ import com.rork.acoustical.domain.model.DistanceStep
 import com.rork.acoustical.domain.model.GpsPoint
 import com.rork.acoustical.service.AudioAnalysisService
 import com.rork.acoustical.service.InternalCaptureService
+import com.rork.acoustical.service.PhoneSyncManager
 import com.rork.acoustical.service.ProfileStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -85,6 +86,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import kotlin.math.roundToInt
 
 /**
@@ -235,6 +242,8 @@ class AudioEngineViewModel(
     private var btAudioManager: BluetoothAudioManager? = null
     private var musicianTrackingJob: Job? = null
     private val engineerAgent = EngineerAgent()
+    // Servidor de sync con el PC (singleton de la app, arrancado en MainActivity)
+    private val phoneSync by lazy { PhoneSyncManager.get(getApplication()) }
     private var focusModeManager: FocusModeManager? = null
     private var walkieManager: WalkieTalkieManager? = null
     private var profileStore: ProfileStore? = null
@@ -247,6 +256,14 @@ class AudioEngineViewModel(
 
     init {
         _uiState.update { it.copy(dynamicEqs = defaultDynamicEqs()) }
+        // Publica los ajustes iniciales al servidor de sync (el PC siempre ve la
+        // config actual del móvil) y recoge la que el PC envíe ("Sincronizar").
+        publishLocalConfigToSync()
+        viewModelScope.launch {
+            phoneSync.remoteConfig.collect { pair ->
+                pair?.let { (_, cfg) -> applyRemoteConfig(cfg) }
+            }
+        }
         initInputs()
         engine = AudioEngine().also { eng ->
             eng.configure(_uiState.value.config)
@@ -785,6 +802,7 @@ class AudioEngineViewModel(
             )
         }
         pushed?.let { engine?.setDynamicEqConfig(index, it) }
+        publishLocalConfigToSync()
     }
 
     /** Quick mixer trim for one dynamic EQ (kept in its config). */
@@ -1522,6 +1540,100 @@ class AudioEngineViewModel(
             engine?.configure(newConfig)
         }
         syncBandsFromEngine()
+        publishLocalConfigToSync()
+    }
+
+    /**
+     * Publica la config actual al servidor de sync: el JSON viaja en cada
+     * respuesta de sync, de modo que el PC siempre ve el estado real del móvil
+     * (dirección móvil → PC, botón "Recibir del móvil" o "Sincronizar").
+     * Mismo formato de campos que serializeEngine() del PC; los campos que el
+     * móvil no tiene (eqGains) simplemente no aparecen.
+     */
+    private fun publishLocalConfigToSync() {
+        val st = _uiState.value
+        val json = buildJsonObject {
+            put("maxGainDb", st.config.maxGainDb.toDouble())
+            put("smoothingFactor", st.config.smoothingFactor.toDouble())
+            put("noiseFloorDb", st.config.noiseFloorDb.toDouble())
+            put("noiseSubtractionEnabled", st.config.noiseSubtractionEnabled)
+            put("correctionEnabled", st.config.correctionEnabled)
+            put("targetSpl", st.config.targetSpl.toDouble())
+            put("audioDelayMs", st.config.audioDelayMs.toDouble())
+            putJsonObject("dynamicEqs") {
+                st.dynamicEqs.forEachIndexed { i, eq ->
+                    putJsonObject("eq${i + 1}") {
+                        put("enabled", eq.enabled)
+                        put("intervalMs", eq.config.decisionIntervalMs.toDouble())
+                        put("maxGainDb", eq.config.maxGainDb.toDouble())
+                        put("mixerLevel", eq.config.mixerLevel.toDouble())
+                        put("speedMultiplier", eq.config.speedMultiplier.toDouble())
+                        put("extraSweeps", eq.config.extraSweeps.toDouble())
+                    }
+                }
+            }
+        }
+        phoneSync.publishLocalConfig(json.toString())
+    }
+
+    /**
+     * Aplica al motor local la config recibida del PC (su botón "Sincronizar"
+     * empuja la suya). Es el mismo JSON de serializeEngine(); se ignora lo que
+     * el móvil no tiene (la curva manual eqGains) y se conservan los valores
+     * locales si un campo falta.
+     */
+    private fun applyRemoteConfig(cfg: JsonObject) {
+        fun d(key: String): Double? = (cfg[key] as? JsonPrimitive)
+            ?.takeIf { it !is JsonNull }?.content?.toDoubleOrNull()
+        fun b(key: String): Boolean? = (cfg[key] as? JsonPrimitive)
+            ?.takeIf { it !is JsonNull }?.content?.toBooleanStrictOrNull()
+        val c = _uiState.value.config
+        val newCfg = c.copy(
+            maxGainDb = d("maxGainDb")?.toFloat() ?: c.maxGainDb,
+            smoothingFactor = d("smoothingFactor")?.toFloat() ?: c.smoothingFactor,
+            noiseFloorDb = d("noiseFloorDb")?.toFloat() ?: c.noiseFloorDb,
+            noiseSubtractionEnabled = b("noiseSubtractionEnabled") ?: c.noiseSubtractionEnabled,
+            correctionEnabled = b("correctionEnabled") ?: c.correctionEnabled,
+            targetSpl = d("targetSpl")?.toFloat() ?: c.targetSpl,
+            audioDelayMs = d("audioDelayMs")?.toFloat() ?: c.audioDelayMs
+        )
+        updateConfig { newCfg }
+        // Espejo del retardo a nivel de UI (setAudioDelayMs lo mantiene igual)
+        _uiState.update { it.copy(audioDelayMs = newCfg.audioDelayMs) }
+
+        (cfg["dynamicEqs"] as? JsonObject)?.forEach { (name, el) ->
+            val idx = name.removePrefix("eq").toIntOrNull()?.minus(1) ?: return@forEach
+            if (idx !in 0..2) return@forEach
+            val eq = el as? JsonObject ?: return@forEach
+            val di = (eq["intervalMs"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toIntOrNull()
+            val dg = (eq["maxGainDb"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            val dm = (eq["mixerLevel"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            val ds = (eq["speedMultiplier"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            val de = (eq["extraSweeps"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toIntOrNull()
+            val on = (eq["enabled"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toBooleanStrictOrNull()
+            if (di != null || dg != null || dm != null || ds != null || de != null) {
+                setDynamicEqConfig(idx) { cur ->
+                    cur.copy(
+                        decisionIntervalMs = di ?: cur.decisionIntervalMs,
+                        maxGainDb = dg ?: cur.maxGainDb,
+                        mixerLevel = dm ?: cur.mixerLevel,
+                        speedMultiplier = ds ?: cur.speedMultiplier,
+                        extraSweeps = de ?: cur.extraSweeps
+                    )
+                }
+            }
+            if (on != null && on != _uiState.value.dynamicEqs.getOrNull(idx)?.enabled) {
+                // Se aplica sin arrancar el motor de paso: el PC decide ajustes,
+                // no el estado del micro del móvil.
+                _uiState.update { st ->
+                    st.copy(dynamicEqs = st.dynamicEqs.mapIndexed { i, e ->
+                        if (i == idx) e.copy(enabled = on) else e
+                    })
+                }
+                engine?.setDynamicEqEnabled(idx, on && _uiState.value.isRunning)
+                publishLocalConfigToSync()
+            }
+        }
     }
 
     fun setSampleRate(rate: SampleRate) = updateConfig { it.copy(sampleRate = rate) }

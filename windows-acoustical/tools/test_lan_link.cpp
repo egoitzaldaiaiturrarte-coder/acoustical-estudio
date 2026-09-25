@@ -70,6 +70,51 @@ public:
     juce::int64 payloadSize() const { return static_cast<juce::int64>(payload_.size()); }
     juce::String payloadSha() const { return payloadSha_; }
 
+    // --- M1: ajustes en ambos sentidos ---
+
+    /** Simula el botón "Enviar mis ajustes al PC" de la app real. */
+    void stageSendToPc() { sendToPc_ = true; }
+    bool isStaged() const { return sendToPc_; }
+    /** La última config que el PC le empujó (su botón "Sincronizar"). */
+    juce::var lastReceivedConfig() const { return lastReceivedConfig_; }
+
+    /** Config "en vivo" del móvil: igual forma que la que publica el ViewModel. */
+    static juce::var fakeLocalConfig() {
+        auto* c = new juce::DynamicObject();
+        c->setProperty("maxGainDb", 14.0);
+        c->setProperty("smoothingFactor", 0.35);
+        c->setProperty("noiseFloorDb", -120.0);
+        c->setProperty("noiseSubtractionEnabled", true);
+        c->setProperty("correctionEnabled", false);
+        c->setProperty("targetSpl", 80.0);
+        c->setProperty("audioDelayMs", 30.0);
+        auto* eqs = new juce::DynamicObject();
+        auto* eq1 = new juce::DynamicObject();
+        eq1->setProperty("enabled", true);
+        eq1->setProperty("intervalMs", 600);
+        eq1->setProperty("maxGainDb", 15.0);
+        eq1->setProperty("mixerLevel", 0.7);
+        eq1->setProperty("speedMultiplier", 1.5);
+        eq1->setProperty("extraSweeps", 2);
+        eqs->setProperty("eq1", juce::var(eq1));
+        c->setProperty("dynamicEqs", juce::var(eqs));
+        return juce::var(c);
+    }
+
+    /** La respuesta de sync: estado guardado + config en vivo (+ bandera staged). */
+    juce::var currentSyncJson() const {
+        auto* payload = new juce::DynamicObject();
+        if (auto* s = stored_.getDynamicObject())
+            for (const auto& p : s->getProperties()) payload->setProperty(p.name, p.value);
+        if (sendToPc_) payload->setProperty("sendToPc", true);
+        payload->setProperty("config", fakeLocalConfig());
+        auto* o = new juce::DynamicObject();
+        o->setProperty("type", "sync");
+        o->setProperty("ok", true);
+        o->setProperty("payload", juce::var(payload));
+        return juce::var(o);
+    }
+
 private:
     void serverLoop() {
         juce::StreamingSocket listener;
@@ -133,15 +178,24 @@ private:
         }
         auto* o = v.getDynamicObject();
         const auto type = o ? o->getProperty("type").toString() : juce::String();
+        if (type != "push" && type != "pull") return;
         if (type == "push") {
-            // El "móvil" devuelve lo que le llegó (comprobable en el test)
+            // Mismo comportamiento que PhoneSyncManager.storeSyncPayload:
+            // "acked" → borra el estado pendiente; lo demás → se guarda y
+            // (si lleva config) queda como última config recibida del PC.
             if (auto* pl = o->getProperty("payload").getDynamicObject()) {
-                write(s, "{\"type\":\"sync\",\"ok\":true,\"payload\":" +
-                         juce::JSON::toString(juce::var(pl), false) + "}");
-                return;
+                if (static_cast<bool>(pl->getProperty("acked")) &&
+                    !static_cast<bool>(pl->getProperty("sendToPc"))) {
+                    sendToPc_ = false;
+                    stored_ = juce::var();
+                } else {
+                    stored_ = juce::var(pl);
+                    if (auto* c = pl->getProperty("config").getDynamicObject())
+                        lastReceivedConfig_ = juce::var(c);
+                }
             }
         }
-        write(s, "{\"type\":\"sync\",\"ok\":true,\"payload\":{\"config\":{\"maxGainDb\":12.5}}}");
+        write(s, juce::JSON::toString(currentSyncJson(), false));
     }
 
     void handleHttp(juce::StreamingSocket* s, const juce::String& text) {
@@ -160,8 +214,7 @@ private:
             return;
         }
         if (path == "/sync") {
-            const juce::String body =
-                "{\"type\":\"sync\",\"ok\":true,\"payload\":{\"config\":{\"maxGainDb\":12.5}}}";
+            const juce::String body = juce::JSON::toString(currentSyncJson(), false);
             write(s, "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n"
                      "Content-Length: " + juce::String(body.length()) +
                      "\r\nConnection: close\r\n\r\n" + body);
@@ -206,6 +259,9 @@ private:
     juce::String code_;
     std::vector<char> payload_;
     juce::String payloadSha_;
+    juce::var stored_;              // último push del PC (o estado staged)
+    bool sendToPc_ = false;         // "Enviar mis ajustes al PC" encolado
+    juce::var lastReceivedConfig_;  // última config empujada por el PC
     std::atomic<bool> running_{true}, listening_{false};
     std::thread server_, beacon_;
 };
@@ -214,6 +270,12 @@ juce::var pullMsg() {
     auto* o = new juce::DynamicObject();
     o->setProperty("type", "pull");
     return juce::var(o);
+}
+
+juce::DynamicObject* payloadOf(const juce::var& reply) {
+    if (auto* o = reply.getDynamicObject())
+        if (auto* p = o->getProperty("payload").getDynamicObject()) return p;
+    return nullptr;
 }
 
 }  // namespace
@@ -270,6 +332,80 @@ int main() {
               "push → el móvil devolvió el payload del PC");
     }
 
+    // 4b) Ajustes en ambos sentidos (M1): la config en vivo del móvil viaja en
+    //     cada respuesta; "Enviar mis ajustes al PC" (staged) + confirmación
+    //     "acked"; el push del PC llega íntegro al móvil.
+    {
+        // pull → config en vivo del móvil
+        check(SyncClient::exchange("127.0.0.1", kTcp, pullMsg(), reply, kCode) &&
+                  payloadOf(reply) != nullptr &&
+                  payloadOf(reply)->getProperty("config").getDynamicObject() != nullptr &&
+                  static_cast<double>(payloadOf(reply)->getProperty("config").getDynamicObject()
+                      ->getProperty("maxGainDb")) == 14.0 &&
+                  payloadOf(reply)->getProperty("config").getDynamicObject()->getProperty("dynamicEqs")
+                      .getDynamicObject() != nullptr,
+              "pull → config en vivo del móvil (escalares + ecuas)");
+
+        // El móvil encola "enviar mis ajustes al PC" → el sondeo del PC ve la bandera
+        phone.stageSendToPc();
+        check(SyncClient::exchange("127.0.0.1", kTcp, pullMsg(), reply, kCode) &&
+                  static_cast<bool>(payloadOf(reply)->getProperty("sendToPc")),
+              "staged → el sondeo del PC ve sendToPc=true");
+
+        // El PC confirma con "acked" → el móvil borra el estado pendiente
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("type", "push");
+            auto* pl = new juce::DynamicObject();
+            pl->setProperty("acked", true);
+            o->setProperty("payload", juce::var(pl));
+            check(SyncClient::exchange("127.0.0.1", kTcp, juce::var(o), reply, kCode) &&
+                      !phone.isStaged() &&
+                      !static_cast<bool>(payloadOf(reply)->getProperty("sendToPc")),
+                  "acked → el móvil borró el estado pendiente");
+        }
+
+        // El PC empuja su config completa (botón "Sincronizar") → el móvil la recibe
+        {
+            auto* c = new juce::DynamicObject();
+            c->setProperty("maxGainDb", 12.0);
+            c->setProperty("smoothingFactor", 0.3);
+            c->setProperty("correctionEnabled", true);
+            c->setProperty("targetSpl", 75.0);
+            c->setProperty("audioDelayMs", 25.0);
+            c->setProperty("noiseFloorDb", -120.0);
+            c->setProperty("noiseSubtractionEnabled", true);
+            auto* eqs = new juce::DynamicObject();
+            auto* eq1 = new juce::DynamicObject();
+            eq1->setProperty("enabled", true);
+            eq1->setProperty("intervalMs", 800);
+            eq1->setProperty("maxGainDb", 12.0);
+            eq1->setProperty("mixerLevel", 0.8);
+            eq1->setProperty("speedMultiplier", 1.0);
+            eq1->setProperty("extraSweeps", 1);
+            eqs->setProperty("eq1", juce::var(eq1));
+            c->setProperty("dynamicEqs", juce::var(eqs));
+            auto* eqG = new juce::DynamicObject();
+            eqG->setProperty("band0", 1.5);
+            c->setProperty("eqGains", juce::var(eqG));
+
+            auto* o = new juce::DynamicObject();
+            o->setProperty("type", "push");
+            auto* pl = new juce::DynamicObject();
+            pl->setProperty("config", juce::var(c));
+            o->setProperty("payload", juce::var(pl));
+            check(SyncClient::exchange("127.0.0.1", kTcp, juce::var(o), reply, kCode) &&
+                      phone.lastReceivedConfig().getDynamicObject() != nullptr &&
+                      static_cast<double>(phone.lastReceivedConfig().getDynamicObject()
+                          ->getProperty("maxGainDb")) == 12.0 &&
+                      phone.lastReceivedConfig().getDynamicObject()->getProperty("dynamicEqs")
+                          .getDynamicObject() != nullptr &&
+                      phone.lastReceivedConfig().getDynamicObject()->getProperty("eqGains")
+                          .getDynamicObject() != nullptr,
+                  "push del PC → el móvil guardó la config completa (escalares, ecuas, curva)");
+        }
+    }
+
     // 5) HTTP: /sync exige código, /manifest está abierto
     // (httpGet devuelve las cabeceras; el cuerpo va en `body`)
     auto bodyText = [](const juce::MemoryBlock& b) {
@@ -282,9 +418,14 @@ int main() {
     check(!SyncClient::httpGet("127.0.0.1", kTcp, "/manifest", body, kCode).isEmpty()
               && bodyText(body).contains("windows"),
           "GET /manifest → manifest JSON");
-    check(!SyncClient::httpGet("127.0.0.1", kTcp, "/sync", body, kCode).isEmpty()
-              && bodyText(body).contains("\"ok\":true"),
-          "GET /sync con código → ok");
+    {
+        const bool got = !SyncClient::httpGet("127.0.0.1", kTcp, "/sync", body, kCode).isEmpty();
+        juce::var parsed = got ? juce::JSON::parse(bodyText(body)) : juce::var();
+        auto* pobj = parsed.getDynamicObject();
+        check(got && pobj != nullptr && static_cast<bool>(pobj->getProperty("ok"))
+                  && payloadOf(parsed) != nullptr,
+              "GET /sync con código → ok (JSON válido con payload)");
+    }
 
     // 6) Descarga del "instalador" + verificación SHA-256 (flujo de actualización)
     const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory)
