@@ -249,7 +249,7 @@ public:
 
         const float lag = measureLagSamples();
         if (lag < 0.0f) {
-            setAlignmentError("Sin señal en la entrada del PC");
+            setAlignmentError(juce::String::fromUTF8("Sin señal en la entrada del PC"));
             finishAlignment();
             return -1;
         }

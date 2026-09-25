@@ -91,10 +91,10 @@ class AcousticalEditor : public juce::AudioProcessorEditor, private juce::Timer 
 public:
     explicit AcousticalEditor(AcousticalAudioProcessor& p)
         : AudioProcessorEditor(p), processor_(p),
-          correccion_(p.parameters(), "correction", "Corrección"),
+          correccion_(p.parameters(), "correction", juce::String::fromUTF8("Corrección")),
           link_(p.parameters(), "link", "Link L/R"),
-          ruido_(p.parameters(), "noiseSub", "Sustracción de ruido"),
-          maxGain_(p.parameters(), "maxGain", "Ganancia máx dB"),
+          ruido_(p.parameters(), "noiseSub", juce::String::fromUTF8("Sustracción de ruido")),
+          maxGain_(p.parameters(), "maxGain", juce::String::fromUTF8("Ganancia máx dB")),
           suavizado_(p.parameters(), "smoothing", "Suavizado") {
         theme::apply(*this);
 
@@ -118,8 +118,8 @@ public:
         for (int i = 0; i < 3; ++i) {
             const juce::String n = juce::String(i + 1);
             DynamicEqCard::Snapshot snap;
-            snap.title = juce::String("Ecu dinámico ") + n;
-            snap.directionLabel = i == 0 ? "Donde más se necesita"
+            snap.title = juce::String::fromUTF8("Ecu dinámico ") + n;
+            snap.directionLabel = i == 0 ? juce::String::fromUTF8("Donde más se necesita")
                                 : i == 1 ? "Empezando por los graves"
                                          : "Empezando por los agudos";
             snap.accent = i == 0 ? theme::eq1Cyan : i == 1 ? theme::eq2Amber : theme::eq3Magenta;
@@ -183,8 +183,8 @@ private:
         for (int i = 0; i < 3; ++i) {
             const juce::String n = juce::String(i + 1);
             DynamicEqCard::Snapshot card;
-            card.title = juce::String("Ecu dinámico ") + n;
-            card.directionLabel = i == 0 ? "Donde más se necesita"
+            card.title = juce::String::fromUTF8("Ecu dinámico ") + n;
+            card.directionLabel = i == 0 ? juce::String::fromUTF8("Donde más se necesita")
                                 : i == 1 ? "Empezando por los graves"
                                          : "Empezando por los agudos";
             card.accent = i == 0 ? theme::eq1Cyan : i == 1 ? theme::eq2Amber : theme::eq3Magenta;
@@ -196,8 +196,12 @@ private:
             if (sweeps[i].bandIndex >= 0) {
                 card.activeBand = sweeps[i].bandIndex;
                 card.channelBadge = sweeps[i].channel;
-                card.statusText = juce::String::formatted("%.0f Hz · %+.1f dB · suavizado %.0f ms",
-                    sweeps[i].centerFreqHz, sweeps[i].gainDb, sweeps[i].smoothingMs);
+                card.statusText = juce::String(sweeps[i].centerFreqHz, 0)
+                    + juce::String::fromUTF8(" Hz · ")
+                    + juce::String(sweeps[i].gainDb, 1, true)
+                    + juce::String::fromUTF8(" dB · suavizado ")
+                    + juce::String(sweeps[i].smoothingMs, 0)
+                    + juce::String::fromUTF8(" ms");
             }
             cards_[i]->setSnapshot(card);
         }

@@ -58,13 +58,16 @@ public:
             if (!bridge_.isConnected())
                 s = bridgeOk_
                     ? "Puent desconectado."
-                    : "Puent ASIO apagado. Ruta: maestro de Cubase → \"Bridge Out\" (suena por la "
-                      "tarjeta con el EQ aplicado); \"Bridge In\" → señal de prueba hacia Cubase.";
+                    : juce::String::fromUTF8("Puent ASIO apagado. Ruta: maestro de Cubase → \"Bridge Out\" (suena por la "
+                                             "tarjeta con el EQ aplicado); \"Bridge In\" → señal de prueba hacia Cubase.");
             else
-                s = juce::String::formatted(
-                    "Puent ASIO conectado · %u Hz · buffer %u — el audio de Cubase pasa por el EQ a "
-                    "la tarjeta real; la señal de prueba sale hacia Cubase.",
-                    bridge_.sampleRate(), bridge_.bufferSize());
+                s = juce::String::fromUTF8("Puent ASIO conectado · ")
+                    + juce::String(bridge_.sampleRate())
+                    + juce::String::fromUTF8(" Hz · buffer ")
+                    + juce::String(bridge_.bufferSize())
+                    + juce::String::fromUTF8(" — el audio de Cubase pasa por el EQ a "
+                                             "la tarjeta real; la señal de prueba sale "
+                                             "hacia Cubase.");
             bridgeStatus_.setText(s, juce::dontSendNotification);
         }
 
@@ -83,31 +86,38 @@ public:
         addAndMakeVisible(powerButton_);
         powerButton_.setButtonText("Motor");
         powerButton_.setColour(juce::TextButton::buttonColourId, theme::primaryDark);
+        powerButton_.setTooltip(juce::String::fromUTF8("Arrancar o parar el motor de audio"));
         powerButton_.onClick = [this] { toggleEngine(); };
 
         addAndMakeVisible(referenceButton_);
-        referenceButton_.setButtonText("Capturar referencia");
+        referenceButton_.setButtonText("Referencia");
+        referenceButton_.setTooltip(juce::String::fromUTF8("Capturar la referencia de la sala"));
         referenceButton_.onClick = [this] { engine_.captureReference(); };
 
         addAndMakeVisible(noiseButton_);
-        noiseButton_.setButtonText("Capturar ruido");
+        noiseButton_.setButtonText("Ruido");
+        noiseButton_.setTooltip(juce::String::fromUTF8("Capturar el ruido de fondo"));
         noiseButton_.onClick = [this] { engine_.startNoiseCapture(); };
 
         addAndMakeVisible(freezeButton_);
         freezeButton_.setButtonText("Congelar");
         freezeButton_.setClickingTogglesState(true);
         freezeButton_.setColour(juce::TextButton::buttonOnColourId, theme::eq2Amber);
+        freezeButton_.setTooltip(juce::String::fromUTF8("Congelar la pantalla (barra espaciadora); el audio sigue corrigiendo"));
 
         addAndMakeVisible(presetBox_);
         presetBox_.setTextWhenNothingSelected("Preset");
+        presetBox_.setTooltip(juce::String::fromUTF8("Cargar un preset guardado"));
         presetBox_.onChange = [this] { loadSelectedPreset(); };
 
         addAndMakeVisible(savePresetButton_);
         savePresetButton_.setButtonText("Guardar");
+        savePresetButton_.setTooltip(juce::String::fromUTF8("Guardar el preset actual"));
         savePresetButton_.onClick = [this] { saveCurrentPreset(); };
 
         addAndMakeVisible(syncButton_);
-        syncButton_.setButtonText("Sincronizar móvil");
+        syncButton_.setButtonText("Sincronizar");
+        syncButton_.setTooltip(juce::String::fromUTF8("Sincronizar con el móvil (Wi-Fi / USB)"));
         syncButton_.onClick = [this] { if (phoneLink_) phoneLink_->requestSync(); };
 
         addAndMakeVisible(phoneLabel_);
@@ -116,21 +126,22 @@ public:
 
         // === Selector de vista (los mismos nombres que las pestañas) ===
         addAndMakeVisible(viewBox_);
-        viewBox_.addItem("1 · EQ", 1);
-        viewBox_.addItem("2 · Ecuas dinámicos", 2);
-        viewBox_.addItem("3 · Hub", 3);
-        viewBox_.addItem("4 · Ruteos", 4);
-        viewBox_.addItem("5 · Ajustes", 5);
-        viewBox_.addItem("6 · Análisis", 6);
-        viewBox_.addItem("7 · Audio", 7);
+        viewBox_.addItem(juce::String::fromUTF8("1 · EQ"), 1);
+        viewBox_.addItem(juce::String::fromUTF8("2 · Ecuas dinámicos"), 2);
+        viewBox_.addItem(juce::String::fromUTF8("3 · Hub"), 3);
+        viewBox_.addItem(juce::String::fromUTF8("4 · Ruteos"), 4);
+        viewBox_.addItem(juce::String::fromUTF8("5 · Ajustes"), 5);
+        viewBox_.addItem(juce::String::fromUTF8("6 · Análisis"), 6);
+        viewBox_.addItem(juce::String::fromUTF8("7 · Audio"), 7);
         viewBox_.setSelectedId(1, juce::dontSendNotification);
         viewBox_.onChange = [this] {
             tabs_->setCurrentTabIndex(viewBox_.getSelectedId() - 1, true);
         };
 
         addAndMakeVisible(fullscreenButton_);
-        fullscreenButton_.setButtonText("Pantalla completa (F11)");
+        fullscreenButton_.setButtonText("Pantalla (F11)");
         fullscreenButton_.setClickingTogglesState(true);
+        fullscreenButton_.setTooltip(juce::String::fromUTF8("Pantalla completa (F11)"));
         fullscreenButton_.onClick = [this] { toggleFullscreen(); };
 
         // === Panel de audio: todas las tarjetas del PC con sus ajustes ===
@@ -140,24 +151,27 @@ public:
         audioTab_ = std::make_unique<AudioTab>(*audioPanel_, bridge_);
 
         addAndMakeVisible(lockButton_);
-        lockButton_.setButtonText("Bloquear faders");
+        lockButton_.setButtonText("Bloquear");
         lockButton_.setClickingTogglesState(true);
         lockButton_.setColour(juce::TextButton::buttonOnColourId, theme::eq2Amber);
+        lockButton_.setTooltip(juce::String::fromUTF8("Bloquear los faders (evita tocarlos sin querer)"));
         lockButton_.onClick = [this] { fadersLocked_ = lockButton_.getToggleState(); };
 
         addAndMakeVisible(undoButton_);
-        undoButton_.setButtonText("Desh");
+        undoButton_.setButtonText("Desh.");
+        undoButton_.setTooltip("Deshacer");
         undoButton_.onClick = [this] { undo(); };
 
         addAndMakeVisible(redoButton_);
-        redoButton_.setButtonText("Reh");
+        redoButton_.setButtonText("Reh.");
+        redoButton_.setTooltip("Rehacer");
         redoButton_.onClick = [this] { redo(); };
 
         // === Los tres ecuas dinámicos, idénticos y seguidos ===
         for (int i = 0; i < 3; ++i) {
             DynamicEqCard::Snapshot snap;
-            snap.title = juce::String("Ecu dinámico ") + juce::String(i + 1);
-            snap.directionLabel = i == 0 ? "Donde más se necesita"
+            snap.title = juce::String::fromUTF8("Ecu dinámico ") + juce::String(i + 1);
+            snap.directionLabel = i == 0 ? juce::String::fromUTF8("Donde más se necesita")
                                 : i == 1 ? "Empezando por los graves"
                                          : "Empezando por los agudos";
             snap.accent = i == 0 ? theme::eq1Cyan : i == 1 ? theme::eq2Amber : theme::eq3Magenta;
@@ -195,11 +209,11 @@ public:
         hubPanel_ = std::make_unique<HubPanel>(*hub_);
         tabs_ = std::make_unique<juce::TabbedComponent>(juce::TabbedButtonBar::TabsAtTop);
         tabs_->addTab("EQ", theme::surface, eqCanvas_.get(), false);
-        tabs_->addTab("Ecuas dinámicos", theme::surface, &eqCardsPanel_, false);
+        tabs_->addTab(juce::String::fromUTF8("Ecuas dinámicos"), theme::surface, &eqCardsPanel_, false);
         tabs_->addTab("Hub", theme::surface, hubPanel_.get(), false);
         tabs_->addTab("Ruteos", theme::surface, routingMatrix_.get(), false);
         tabs_->addTab("Ajustes", theme::surface, settingsPanel_.get(), false);
-        tabs_->addTab("Análisis", theme::surface, spectrumView_.get(), false);
+        tabs_->addTab(juce::String::fromUTF8("Análisis"), theme::surface, spectrumView_.get(), false);
         tabs_->addTab("Audio", theme::surface, audioTab_.get(), false);
         addAndMakeVisible(*tabs_);
 
@@ -340,9 +354,15 @@ private:
                                           int numSamples,
                                           const juce::AudioIODeviceCallbackContext&) override {
         std::vector<float> mono(static_cast<size_t>(numSamples), 0.0f);
+        // Niveles de entrada (Ruteos > Entradas): ganancia por canal,
+        // atómica (escrita por la UI, leída aquí) y aplicada antes del motor.
+        const float inL = routingMatrix_->inputGainL();
+        const float inR = routingMatrix_->inputGainR();
         for (int ch = 0; ch < numInputs; ++ch)
-            if (const auto* in = input[ch])
-                for (int s = 0; s < numSamples; ++s) mono[s] += in[s];
+            if (const auto* in = input[ch]) {
+                const float g = ch == 0 ? inL : (ch == 1 ? inR : 1.0f);
+                for (int s = 0; s < numSamples; ++s) mono[s] += in[s] * g;
+            }
 
         // Generador de señales: es con estado de fase, se genera UNA vez por
         // bloque y se comparte entre la salida de la tarjeta real y el
@@ -442,6 +462,13 @@ private:
     void timerCallback() override {
         // 0. Estado del puente ASIO (el driver puede cambiar de tasa con Cubase)
         if (bridge_.isConnected()) audioTab_->refreshStatus();
+        phoneLabel_.setText(phoneLink_ ? phoneLink_->lastSyncInfo() : juce::String(),
+                            juce::dontSendNotification);
+
+        // Congelar (barra espaciadora): la pantalla de análisis queda quieta;
+        // el motor de audio y el análisis siguen corriendo.
+        if (freezeButton_.getToggleState())
+            return;
 
         // 1. EQ principal con resaltados por ecu dinámico
         EqCanvas::Snapshot snap;
@@ -468,8 +495,8 @@ private:
         // 2. Tarjetas de los tres ecuas
         for (int i = 0; i < 3; ++i) {
             DynamicEqCard::Snapshot card;
-            card.title = juce::String("Ecu dinámico ") + juce::String(i + 1);
-            card.directionLabel = i == 0 ? "Donde más se necesita"
+            card.title = juce::String::fromUTF8("Ecu dinámico ") + juce::String(i + 1);
+            card.directionLabel = i == 0 ? juce::String::fromUTF8("Donde más se necesita")
                                 : i == 1 ? "Empezando por los graves"
                                          : "Empezando por los agudos";
             card.accent = i == 0 ? theme::eq1Cyan : i == 1 ? theme::eq2Amber : theme::eq3Magenta;
@@ -485,19 +512,18 @@ private:
                 if (sweepSteps_[i].bandIndex >= 0) {
                     card.activeBand = sweepSteps_[i].bandIndex;
                     card.channelBadge = activeChannel_[i];
-                    card.statusText = juce::String::formatted(
-                        "%.0f Hz · %+.1f dB · suavizado %.0f ms",
-                        sweepSteps_[i].centerFreqHz, sweepSteps_[i].gainDb,
-                        sweepSteps_[i].smoothingMs);
+                    card.statusText = juce::String(sweepSteps_[i].centerFreqHz, 0)
+                        + juce::String::fromUTF8(" Hz · ")
+                        + juce::String(sweepSteps_[i].gainDb, 1, true)
+                        + juce::String::fromUTF8(" dB · suavizado ")
+                        + juce::String(sweepSteps_[i].smoothingMs, 0)
+                        + juce::String::fromUTF8(" ms");
                 } else {
-                    card.statusText = "Esperando señal…";
+                    card.statusText = juce::String::fromUTF8("Esperando señal…");
                 }
             }
             cards_[i]->setSnapshot(card);
         }
-
-        phoneLabel_.setText(phoneLink_ ? phoneLink_->lastSyncInfo() : juce::String(),
-                            juce::dontSendNotification);
     }
 
     // === Presets (guardar/cargar/exportar) ===
@@ -651,16 +677,18 @@ private:
                 cards_[i]->setBounds(panel.removeFromTop(cardH).reduced(10, 5));
         }
         auto top = bounds.removeFromTop(44.0f).reduced(8.0f, 6.0f);
-        powerButton_.setBounds(top.removeFromLeft(84.0f));
-        referenceButton_.setBounds(top.removeFromLeft(138.0f).reduced(2.0f, 0.0f));
-        noiseButton_.setBounds(top.removeFromLeft(110.0f).reduced(2.0f, 0.0f));
-        freezeButton_.setBounds(top.removeFromLeft(92.0f).reduced(2.0f, 0.0f));
+        // Ancho fijo total ~1014 px: con la ventana mínima (1280) quedan
+        // ~250 px para el estado del móvil; antes eran ~30 px y se recortaba.
+        powerButton_.setBounds(top.removeFromLeft(72.0f));
+        referenceButton_.setBounds(top.removeFromLeft(92.0f).reduced(2.0f, 0.0f));
+        noiseButton_.setBounds(top.removeFromLeft(66.0f).reduced(2.0f, 0.0f));
+        freezeButton_.setBounds(top.removeFromLeft(84.0f).reduced(2.0f, 0.0f));
         viewBox_.setBounds(top.removeFromLeft(130.0f).reduced(4.0f, 0.0f));
-        presetBox_.setBounds(top.removeFromLeft(130.0f).reduced(4.0f, 0.0f));
-        savePresetButton_.setBounds(top.removeFromLeft(84.0f).reduced(2.0f, 0.0f));
-        syncButton_.setBounds(top.removeFromLeft(120.0f).reduced(2.0f, 0.0f));
-        fullscreenButton_.setBounds(top.removeFromLeft(130.0f).reduced(2.0f, 0.0f));
-        lockButton_.setBounds(top.removeFromLeft(124.0f).reduced(2.0f, 0.0f));
+        presetBox_.setBounds(top.removeFromLeft(120.0f).reduced(4.0f, 0.0f));
+        savePresetButton_.setBounds(top.removeFromLeft(76.0f).reduced(2.0f, 0.0f));
+        syncButton_.setBounds(top.removeFromLeft(92.0f).reduced(2.0f, 0.0f));
+        fullscreenButton_.setBounds(top.removeFromLeft(106.0f).reduced(2.0f, 0.0f));
+        lockButton_.setBounds(top.removeFromLeft(84.0f).reduced(2.0f, 0.0f));
         undoButton_.setBounds(top.removeFromLeft(46.0f).reduced(2.0f, 0.0f));
         redoButton_.setBounds(top.removeFromLeft(46.0f).reduced(2.0f, 0.0f));
         phoneLabel_.setBounds(top);

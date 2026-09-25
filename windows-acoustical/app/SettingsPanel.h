@@ -31,7 +31,7 @@ public:
     void resized() override {
         scroller_.setBounds(getLocalBounds());
         if (auto* c = scroller_.getViewedComponent())
-            c->setBounds(0, 0, 660, contentHeight_);
+            c->setBounds(0, 0, 900, contentHeight_);
     }
 
     void refresh() { rebuild(); }
@@ -63,7 +63,7 @@ private:
 
     void endGroupIfOpen() {
         if (!groupOpen_) return;
-        boxes_.getLast()->setBounds(4, groupStartY_ - 2, 652, y_ - groupStartY_ + 14);
+        boxes_.getLast()->setBounds(4, groupStartY_ - 2, 892, y_ - groupStartY_ + 14);
         groupOpen_ = false;
         y_ += 16;
     }
@@ -91,7 +91,7 @@ private:
         auto* t = new juce::ToggleButton(label);
         t->setToggleState(value, juce::dontSendNotification);
         t->onStateChange = [t, onChange] { onChange(t->getToggleState()); };
-        t->setBounds(24, y_, 590, 24);
+        t->setBounds(24, y_, 850, 24);
         widgets_.add(t);
         content().addAndMakeVisible(t);
         return t;
@@ -122,8 +122,8 @@ private:
         lab->setColour(juce::Label::textColourId, theme::textDim);
         rowLabels_.add(lab);
         content().addAndMakeVisible(lab);
-        lab->setBounds(16, y_, 218, 22);
-        ctl->setBounds(242, y_ - 2, 404, 26);
+        lab->setBounds(16, y_, 300, 22);
+        ctl->setBounds(340, y_ - 2, 546, 26);
     }
 
     void endRow() { y_ += 34; }
@@ -160,21 +160,21 @@ private:
                      });
                  });
         endRow();
-        addCombo("Intervalo de análisis", {"25 ms", "50 ms", "100 ms", "200 ms", "500 ms"},
+        addCombo(juce::String::fromUTF8("Intervalo de análisis"), {"25 ms", "50 ms", "100 ms", "200 ms", "500 ms"},
                  static_cast<int>(cfg.analysisInterval), [this](int i) {
                      mutate([i](auto& c) {
                          c.analysisInterval = static_cast<acoustical::AnalysisInterval>(i);
                      });
                  });
         endRow();
-        addCombo("Bandas", {"8", "10", "16", "31 · 1/3 oct", "124 · Ultra"},
+        addCombo("Bandas", {"8", "10", "16", juce::String::fromUTF8("31 · 1/3 oct"), juce::String::fromUTF8("124 · Ultra")},
                  static_cast<int>(cfg.bandCount), [this](int i) {
                      mutate([i](auto& c) {
                          c.bandCount = static_cast<acoustical::BandCount>(i);
                      });
                  });
         endRow();
-        addSlider("Ganancia máxima", 1, 50, 0.5, cfg.maxGainDb, [this](double v) {
+        addSlider(juce::String::fromUTF8("Ganancia máxima"), 1, 50, 0.5, cfg.maxGainDb, [this](double v) {
             mutate([v](auto& c) { c.maxGainDb = static_cast<float>(v); });
         });
         endRow();
@@ -186,11 +186,11 @@ private:
             mutate([v](auto& c) { c.noiseFloorDb = static_cast<float>(v); });
         }, 1.0, 1);
         endRow();
-        addToggle("Corrección activada", cfg.correctionEnabled, [this](bool on) {
+        addToggle(juce::String::fromUTF8("Corrección activada"), cfg.correctionEnabled, [this](bool on) {
             mutate([on](auto& c) { c.correctionEnabled = on; });
         });
         endRow();
-        addToggle("Sustracción de ruido", cfg.noiseSubtractionEnabled, [this](bool on) {
+        addToggle(juce::String::fromUTF8("Sustracción de ruido"), cfg.noiseSubtractionEnabled, [this](bool on) {
             mutate([on](auto& c) { c.noiseSubtractionEnabled = on; });
         });
         endRow();
@@ -213,14 +213,14 @@ private:
             mutate([v](auto& c) { c.targetSpl = static_cast<float>(v); });
         }, 1.0, 1);
         endRow();
-        addSlider("Calibración SPL (dB)", -20, 20, 0.5, engine_.splCalibrationOffset(), [this](double v) {
+        addSlider(juce::String::fromUTF8("Calibración SPL (dB)"), -20, 20, 0.5, engine_.splCalibrationOffset(), [this](double v) {
             engine_.setSplCalibrationOffset(static_cast<float>(v));
         }, 1.0, 1);
         endRow();
 
         // --- Generador de señales ---
-        addGroup("Generador de señales");
-        addCombo("Señal", {"Silencio", "Seno", "Seno por banda", "Barrido log",
+        addGroup(juce::String::fromUTF8("Generador de señales"));
+        addCombo(juce::String::fromUTF8("Señal"), {"Silencio", "Seno", "Seno por banda", "Barrido log",
                            "Ruido rosa", "Ruido blanco"}, 0, [this](int i) {
             auto& gen = engine_.signalGenerator();
             gen.setWaveform(static_cast<acoustical::SignalGenerator::Waveform>(
@@ -264,12 +264,12 @@ private:
     }
 
     void addPhoneGroup() {
-        addGroup("Móvil (Wi-Fi / USB)");
+        addGroup(juce::String::fromUTF8("Móvil (Wi-Fi / USB)"));
         auto* codeEd = new juce::TextEditor();
         styleEditor(codeEd);
         codeEd->setText(phone_ ? phone_->pairCode() : juce::String(), false);
         widgets_.add(codeEd);
-        addControlRow("Código del móvil", codeEd);
+        addControlRow(juce::String::fromUTF8("Código del móvil"), codeEd);
         endRow();
         auto* ipEd = new juce::TextEditor();
         styleEditor(ipEd);
@@ -277,41 +277,54 @@ private:
         widgets_.add(ipEd);
         addControlRow("IP manual (opcional)", ipEd);
         endRow();
-        auto* saveCode = new juce::TextButton("Guardar código");
+        auto* saveCode = new juce::TextButton(juce::String::fromUTF8("Guardar código"));
         saveCode->onClick = [this, codeEd] {
             if (phone_) phone_->setPairCode(codeEd->getText().trim());
         };
         widgets_.add(saveCode);
         content().addAndMakeVisible(saveCode);
-        saveCode->setBounds(242, y_ - 6, 180, 30);
+        saveCode->setBounds(340, y_ - 6, 180, 30);
         auto* saveIp = new juce::TextButton("Guardar IP");
         saveIp->onClick = [this, ipEd] {
             if (phone_) phone_->setManualPhoneIp(ipEd->getText().trim());
         };
         widgets_.add(saveIp);
         content().addAndMakeVisible(saveIp);
-        saveIp->setBounds(432, y_ - 6, 180, 30);
+        saveIp->setBounds(536, y_ - 6, 180, 30);
         endRow();
-        auto* hint = new juce::Label(
-            {}, "El código aparece en la app del móvil (Ajustes > PC/Windows). Pégalo una vez "
-               "aquí y el PC encontrará al móvil por Wi-Fi solo; el cable USB queda de respaldo. "
-               "La IP manual es solo por si tu red bloquea la baliza.");
-        hint->setColour(juce::Label::textColourId, theme::textDim);
-        hint->setJustificationType(juce::Justification::centredLeft);
-        rowLabels_.add(hint);
-        content().addAndMakeVisible(hint);
-        hint->setBounds(24, y_ + 6, 612, 36);
-        endRow();
+        // Pista en dos líneas cortas: una sola línea de ~200 caracteres se
+        // recortaba en el panel estrecho.
+        auto* hint1 = new juce::Label(
+            {}, juce::String::fromUTF8("El código aparece en la app del móvil (Ajustes > PC/Windows): pégalo aquí "
+                "una sola vez y el PC encontrará al móvil por Wi-Fi solo."));
+        auto* hint2 = new juce::Label(
+            {}, juce::String::fromUTF8("La IP manual es solo por si tu red bloquea la baliza; el cable USB queda "
+                "de respaldo."));
+        hint1->setFont(juce::Font(12.0f));
+        hint2->setFont(juce::Font(12.0f));
+        hint1->setColour(juce::Label::textColourId, theme::textDim);
+        hint2->setColour(juce::Label::textColourId, theme::textDim);
+        hint1->setJustificationType(juce::Justification::centredLeft);
+        hint2->setJustificationType(juce::Justification::centredLeft);
+        rowLabels_.add(hint1);
+        rowLabels_.add(hint2);
+        content().addAndMakeVisible(hint1);
+        content().addAndMakeVisible(hint2);
+        hint1->setBounds(24, y_ + 2, 852, 16);
+        hint2->setBounds(24, y_ + 20, 852, 16);
+        y_ += 50;
     }
 
     // === Modos rápidos ===
 
     void addModoRow() {
-        addGroup("Modos rápidos — toca, escucha y afina después a tu gusto");
-        const char* names[3] = {"Salón (música)", "Cine (graves)", "Estudio (precisión)"};
+        addGroup(juce::String::fromUTF8("Modos rápidos — toca, escucha y afina después a tu gusto"));
+        const juce::String names[3] = {juce::String::fromUTF8("Salón (música)"),
+                                       juce::String::fromUTF8("Cine (graves)"),
+                                       juce::String::fromUTF8("Estudio (precisión)")};
         for (int m = 0; m < 3; ++m) {
             auto* b = addButton(names[m], [this, m] { applyMode(m); });
-            b->setBounds(16 + m * 214, y_, 202, 32);
+            b->setBounds(16 + m * 292, y_, 272, 32);
         }
         endRow();
     }
@@ -375,14 +388,13 @@ private:
     }
 
     static juce::String helpText() {
-        return juce::String(
-            "PASO A PASO RECOMENDADO\n"
+        return juce::String::fromUTF8("PASO A PASO RECOMENDADO\n"
             "1. Pestaña Audio: elige tu tarjeta de entrada y salida (altavoces, HDMI,\n"
             "    Bluetooth, USB o interface). Ahí también van la frecuencia de muestreo\n"
             "    y el tamaño de buffer.\n"
-            "2. Pulsa Capturar ruido (barra superior) en silencio: aprende el fondo de\n"
+            "2. Pulsa Ruido (barra superior) en silencio: aprende el fondo de\n"
             "    tu sala y activa la sustracción de ruido.\n"
-            "3. Dale a Capturar referencia: el motor toma el nivel de cada banda y\n"
+            "3. Dale a Referencia: el motor toma el nivel de cada banda y\n"
             "    empieza a corregir solo.\n"
             "4. Los tres ecuas dinámicos trabajan solos: cian (donde más se necesita),\n"
             "    ámbar (graves) y magenta (agudos). Actívalos con F1, F2 y F3.\n\n"
@@ -397,7 +409,9 @@ private:
             "0,01 ms, suavizado con 3 decimales, SPL con décimas.\n\n"
             "DESHACER\n"
             "Ctrl+Z deshace cualquier cambio de ajustes, Ctrl+Shift+Z o Ctrl+Y lo rehace.\n"
-            "Bloquear faders evita mover el EQ por un toque accidental.\n\n"
+            "Bloquear evita mover el EQ por un toque accidental.\n"
+            "Congelar (barra espaciadora) detiene la pantalla para leer valores;\n"
+            "el audio sigue corrigiendo.\n\n"
             "AJUSTES PRINCIPALES\n"
             "Bandas: resolución del corrector (8/10/16/31/124 bandas).\n"
             "Intervalo de análisis: cada cuánto se mide la sala (25-500 ms).\n"
@@ -407,6 +421,11 @@ private:
             "GENERADOR DE SEÑALES\n"
             "Seno por banda y barrido log sirven para verificar cada banda a mano;\n"
             "ruido rosa para probar el sistema completo. Sale a través del EQ.\n\n"
+            "ENTRADAS (pestaña Ruteos)\n"
+            "Elige qué tarjeta escucha el micrófono de referencia (la referencia,\n"
+            "el ruido y el auto-alinear usan esa entrada) y ajusta el nivel de cada\n"
+            "canal L/R. El selector completo de dispositivos sigue en la pestaña\n"
+            "Audio; los dos se reflejan entre sí.\n\n"
             "MÓVIL (Wi-Fi / USB)\n"
             "El móvil y el PC están en la misma red Wi-Fi: la app del móvil anuncia su\n"
             "dirección y el PC la encuentra solo (no hace falta cable ni escribir IPs).\n"
@@ -422,19 +441,19 @@ private:
         const juce::String n = juce::String(index + 1);
         auto& sweeper = engine_.sweeperFor(index);  // acceso directo a parámetros en vivo
 
-        addGroup("Ecu dinámico " + n);
+        addGroup(juce::String::fromUTF8("Ecu dinámico ") + n);
         addToggle("Activado", index == 0, [this, index](bool on) {
             engine_.setDynamicEqEnabled(index, on);
         });
         endRow();
-        addSlider("Intervalo de decisión (ms)",
+        addSlider(juce::String::fromUTF8("Intervalo de decisión (ms)"),
                   acoustical::DynamicEqConfig::MIN_INTERVAL_MS,
                   acoustical::DynamicEqConfig::MAX_INTERVAL_MS, 50,
                   sweeper.decisionIntervalMs.load(), [this, index](double v) {
                       engine_.setDynamicEqInterval(index, static_cast<int>(v));
                   });
         endRow();
-        addSlider("Ganancia máxima (dB)", 1, 50, 0.5, sweeper.maxGainDb.load(),
+        addSlider(juce::String::fromUTF8("Ganancia máxima (dB)"), 1, 50, 0.5, sweeper.maxGainDb.load(),
                   [this, index](double v) {
                       engine_.setDynamicEqMaxGain(index, static_cast<float>(v));
                   }, 1.0, 1);
@@ -444,7 +463,7 @@ private:
                       engine_.setDynamicEqMixerLevel(index, static_cast<float>(v));
                   });
         endRow();
-        addCombo("Velocidad del suavizado", {"×0.5", "×1", "×2", "×4"}, 1,
+        addCombo("Velocidad del suavizado", {juce::String::fromUTF8("×0.5"), juce::String::fromUTF8("×1"), juce::String::fromUTF8("×2"), juce::String::fromUTF8("×4")}, 1,
                  [this, index](int i) {
                      static const float speeds[4] = {0.5f, 1.0f, 2.0f, 4.0f};
                      engine_.setDynamicEqSpeed(index, speeds[i]);
@@ -458,13 +477,13 @@ private:
 
         // Bandas de apoyo de frecuencia libre (4 por ecu, igual que en el móvil)
         for (int b = 0; b < 4; ++b) {
-            addSlider("Apoyo " + juce::String(b + 1) + " · frecuencia", 20, 20000, 1,
+            addSlider("Apoyo " + juce::String(b + 1) + juce::String::fromUTF8(" · frecuencia"), 20, 20000, 1,
                       250.0 * std::pow(4.0, b), [this, index, b](double v) {
                           supportFreq_[index][b] = static_cast<float>(v);
                           pushSupportBands(index);
                       }, 0.25, 1);
             endRow();
-            addSlider("Apoyo " + juce::String(b + 1) + " · ganancia (dB)", -12, 12, 0.25, 0,
+            addSlider("Apoyo " + juce::String(b + 1) + juce::String::fromUTF8(" · ganancia (dB)"), -12, 12, 0.25, 0,
                       [this, index, b](double v) {
                           supportGain_[index][b] = static_cast<float>(v);
                           pushSupportBands(index);

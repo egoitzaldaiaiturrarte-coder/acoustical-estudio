@@ -7,13 +7,13 @@ AcousticalAudioProcessor::createParameterLayout() {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
     layout.add(std::make_unique<juce::AudioParameterBool>(
-        juce::ParameterID{"correction", 1}, "Corrección", true));
+        juce::ParameterID{"correction", 1}, juce::String::fromUTF8("Corrección"), true));
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID{"maxGain", 1}, "Ganancia máxima", 1.0f, 50.0f, 12.0f));
+        juce::ParameterID{"maxGain", 1}, juce::String::fromUTF8("Ganancia máxima"), 1.0f, 50.0f, 12.0f));
     layout.add(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID{"smoothing", 1}, "Suavizado", 0.05f, 0.8f, 0.3f));
     layout.add(std::make_unique<juce::AudioParameterBool>(
-        juce::ParameterID{"noiseSub", 1}, "Sustracción de ruido", true));
+        juce::ParameterID{"noiseSub", 1}, juce::String::fromUTF8("Sustracción de ruido"), true));
     layout.add(std::make_unique<juce::AudioParameterBool>(
         juce::ParameterID{"link", 1}, "Canales L/R enlazados", true));
 

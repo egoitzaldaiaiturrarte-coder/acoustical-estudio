@@ -96,7 +96,7 @@ public:
                    juce::Justification::centredLeft);
         g.setFont(juce::Font(13.0f));
         g.setColour(theme::textDim);
-        g.drawText("Pico " + juce::String(peak, 1) + " · Medio " + juce::String(avg, 1),
+        g.drawText("Pico " + juce::String(peak, 1) + juce::String::fromUTF8(" · Medio ") + juce::String(avg, 1),
                    labels, juce::Justification::centredLeft);
     }
 

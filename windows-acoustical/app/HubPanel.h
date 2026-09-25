@@ -15,9 +15,9 @@ public:
         addAndMakeVisible(header_);
         header_.setFont(juce::Font(14.0f, juce::Font::bold));
         header_.setColour(juce::Label::textColourId, theme::textPrimary);
-        header_.setText("Hub del sistema · la salida principal se replica en "
+        header_.setText(juce::String::fromUTF8("Hub del sistema · la salida principal se replica en "
                         "todas las rutas activas, cada una con su fase, retardo "
-                        "y correcciones", juce::dontSendNotification);
+                        "y correcciones"), juce::dontSendNotification);
 
         addAndMakeVisible(refreshButton_);
         refreshButton_.setButtonText("Buscar dispositivos");
@@ -27,9 +27,9 @@ public:
         hintLabel_.setFont(juce::Font(12.0f));
         hintLabel_.setColour(juce::Label::textColourId, theme::textDim);
         hintLabel_.setJustificationType(juce::Justification::topLeft);
-        hintLabel_.setText("Auto-alinear: reproduce música, ponte donde quieras "
+        hintLabel_.setText(juce::String::fromUTF8("Auto-alinear: reproduce música, ponte donde quieras "
                            "el punto dulce y pulsa \"Medir\" en cada ruta (necesita "
-                           "un micrófono en la entrada del PC).", juce::dontSendNotification);
+                           "un micrófono en la entrada del PC)."), juce::dontSendNotification);
 
         for (int i = 0; i < RouteHub::NUM_ROUTES; ++i)
             rows_[i] = std::make_unique<RouteRow>(hub_, i);
@@ -95,13 +95,13 @@ private:
             addAndMakeVisible(title_);
             title_.setFont(juce::Font(13.0f, juce::Font::bold));
             title_.setColour(juce::Label::textColourId, isMain ? theme::eq1Cyan : theme::textPrimary);
-            title_.setText(isMain ? juce::String("Ruta 1 · Salida principal")
+            title_.setText(isMain ? juce::String::fromUTF8("Ruta 1 · Salida principal")
                                   : juce::String("Ruta ") + juce::String(index_ + 1),
                            juce::dontSendNotification);
 
             if (!isMain) {
                 addAndMakeVisible(deviceBox_);
-                deviceBox_.setTextWhenNothingSelected("Elegir dispositivo de salida…");
+                deviceBox_.setTextWhenNothingSelected(juce::String::fromUTF8("Elegir dispositivo de salida…"));
                 deviceBox_.onChange = [this] {
                     connectSelectedDevice();
                 };
@@ -125,7 +125,7 @@ private:
             };
 
             addAndMakeVisible(phaseToggle_);
-            phaseToggle_.setButtonText("Fase ⊖ (invertir)");
+            phaseToggle_.setButtonText(juce::String::fromUTF8("Fase ⊖ (invertir)"));
             phaseToggle_.setColour(juce::ToggleButton::textColourId, theme::textDim);
             phaseToggle_.onStateChange = [this] {
                 hub_.setPhaseInvert(index_, phaseToggle_.getToggleState());
@@ -177,7 +177,7 @@ private:
             measureButton_.setButtonText("Medir");
             measureButton_.onClick = [this] {
                 hub_.startAlignment(index_);
-                status_.setText("Midiendo… deja la música sonando",
+                status_.setText(juce::String::fromUTF8("Midiendo… deja la música sonando"),
                                 juce::dontSendNotification);
             };
 
@@ -242,7 +242,7 @@ private:
             if (name.isEmpty()) return;
             juce::String error;
             if (hub_.openRoute(index_, name, error)) {
-                status_.setText("Conectado: " + name + " · "
+                status_.setText("Conectado: " + name + juce::String::fromUTF8(" · ")
                                 + juce::String(hub_.routeInfo(index_).sampleRate, 0) + " Hz",
                                 juce::dontSendNotification);
                 connectButton_.setButtonText("Conectado");
@@ -297,14 +297,14 @@ private:
                 const int result = hub_.pollAlignment(i, ms);
                 if (result == 0) {
                     row.setStatus(hub_.alignmentStage() == 1
-                        ? "Midiendo la ruta principal (referencia)…"
-                        : "Midiendo esta ruta… deja la música sonando");
+                        ? juce::String::fromUTF8("Midiendo la ruta principal (referencia)…")
+                        : juce::String::fromUTF8("Midiendo esta ruta… deja la música sonando"));
                 } else if (result == 1) {
                     row.setStatus(i == 0 && !hub_.hasBaseline()
                                   ? juce::String("Referencia capturada: ya puedes medir el resto")
                                   : juce::String("Alineada: retardo ") + juce::String(hub_.delayMs(i), 2) + " ms");
                 } else {
-                    row.setStatus("Medición fallida: " + hub_.lastAlignmentError());
+                    row.setStatus(juce::String::fromUTF8("Medición fallida: ") + hub_.lastAlignmentError());
                 }
             } else if (hub_.alignmentStage() == 0
                        && row.statusText().contains("Midiendo")) {
@@ -318,7 +318,7 @@ private:
                     && !row.statusText().contains("Conectado")
                     && !row.statusText().contains("No se pudo")
                     && !row.statusText().contains("Midiendo"))
-                    row.setStatus("Conectado: " + info.name + " · "
+                    row.setStatus("Conectado: " + info.name + juce::String::fromUTF8(" · ")
                                   + juce::String(info.sampleRate, 0) + " Hz");
             }
         }

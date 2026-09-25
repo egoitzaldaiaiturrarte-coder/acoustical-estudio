@@ -100,7 +100,7 @@ void PhoneLink::decideEndpoint() {
         const auto ip = beacon_->lastIp();
         if (ip.isNotEmpty()) {
             if (endpointChanged(ip, Transport::WiFi)) {
-                setStatus("Móvil conectado (Wi-Fi): " + ip);
+                setStatus(juce::String::fromUTF8("Móvil conectado (Wi-Fi): ") + ip);
                 requestSync();
                 checkForUpdate();
             }
@@ -112,7 +112,7 @@ void PhoneLink::decideEndpoint() {
     const juce::String manualIp = manualPhoneIp();  // copia thread-safe
     if (isPlainIp(manualIp)) {
         if (endpointChanged(manualIp, Transport::ManualIp)) {
-            setStatus("Móvil por IP manual: " + manualIp);
+            setStatus(juce::String::fromUTF8("Móvil por IP manual: ") + manualIp);
             requestSync();
             checkForUpdate();
         }
@@ -123,7 +123,7 @@ void PhoneLink::decideEndpoint() {
     if (!adb_.existsAsFile()) {
         if (endpointChanged({}, Transport::None)) {
             state_.store(State::NoAdb);
-            setStatus("Esperando el móvil (Wi-Fi)… (adb no disponible)");
+            setStatus(juce::String::fromUTF8("Esperando el móvil (Wi-Fi)… (adb no disponible)"));
         }
         return;
     }
@@ -149,7 +149,7 @@ void PhoneLink::decideEndpoint() {
     if (serial.isEmpty()) {
         deviceSerial_ = {};
         if (endpointChanged({}, Transport::None))
-            setStatus("Esperando el móvil (Wi-Fi o USB)…");
+            setStatus(juce::String::fromUTF8("Esperando el móvil (Wi-Fi o USB)…"));
         return;
     }
 
@@ -159,7 +159,7 @@ void PhoneLink::decideEndpoint() {
         // la app Android a través de adb (sin Wi-Fi, solo USB).
         runAdb("-s " + serial + " forward tcp:" + juce::String(SYNC_PORT)
                + " tcp:" + juce::String(SYNC_PORT));
-        setStatus("Móvil conectado (USB): " + serial);
+        setStatus(juce::String::fromUTF8("Móvil conectado (USB): ") + serial);
         requestSync();
         checkForUpdate();
     }
@@ -220,10 +220,10 @@ bool PhoneLink::pushSync(const juce::var& payload) {
     obj->setProperty("type", "push");
     obj->setProperty("payload", payload);
     if (!exchange(juce::var(obj), reply)) {
-        setStatus("Abre Acoustical en el móvil para sincronizar");
+        setStatus(juce::String::fromUTF8("Abre Acoustical en el móvil para sincronizar"));
         return false;
     }
-    setStatus("Ajustes enviados al móvil");
+    setStatus(juce::String::fromUTF8("Ajustes enviados al móvil"));
     return true;
 }
 
@@ -232,17 +232,17 @@ bool PhoneLink::requestSync() {
     auto obj = new juce::DynamicObject();
     obj->setProperty("type", "pull");
     if (!exchange(juce::var(obj), reply)) {
-        setStatus("Abre Acoustical en el móvil para sincronizar");
+        setStatus(juce::String::fromUTF8("Abre Acoustical en el móvil para sincronizar"));
         return false;
     }
     // El móvil sin emparejar responde con un error de código: se muestra una
     // vez y el sondeo de 3 s reintenta hasta que el usuario lo introduzca.
     if (auto* o = reply.getDynamicObject();
         o != nullptr && o->getProperty("type").toString() == "pair") {
-        setStatus("Introduce el código del móvil en Ajustes > Móvil");
+        setStatus(juce::String::fromUTF8("Introduce el código del móvil en Ajustes > Móvil"));
         return false;
     }
-    setStatus("Sincronizado con el móvil");
+    setStatus(juce::String::fromUTF8("Sincronizado con el móvil"));
     if (onSync) onSync(reply);
     return true;
 }
@@ -389,14 +389,14 @@ bool PhoneLink::launchInstaller(const juce::File& installer) const {
 }
 
 void PhoneLink::runUpdateCheck() {
-    setStatus("Comprobando versión con el móvil…");
+    setStatus(juce::String::fromUTF8("Comprobando versión con el móvil…"));
     juce::MemoryBlock body;
     if (httpGet("/manifest", body).isEmpty()) return; // el móvil aún no sirve HTTP: silencio
 
     const auto manifest = juce::JSON::parse(
         juce::String::fromUTF8(static_cast<const char*>(body.getData()), static_cast<int>(body.getSize())));
     auto* obj = manifest.getDynamicObject();
-    if (obj == nullptr) { setStatus("Respuesta del móvil no válida"); return; }
+    if (obj == nullptr) { setStatus(juce::String::fromUTF8("Respuesta del móvil no válida")); return; }
 
     WindowsUpdateInfo info;
     if (auto* wObj = obj->getProperty("windows").getDynamicObject()) {
@@ -415,48 +415,48 @@ void PhoneLink::runUpdateCheck() {
 
     const auto local = installedVersion();
     if (info.version.isEmpty() || compareVersions(info.version, local) <= 0) {
-        setStatus("Acoustical al día (v" + local + ")");
+        setStatus(juce::String::fromUTF8("Acoustical al día (v") + local + ")");
         return;
     }
 
     if (!info.hasPayload || info.sha256.isEmpty()) {
-        setStatus("Versión " + info.version + " en el móvil: descárgala en la app (Ajustes > PC/Windows)");
+        setStatus(juce::String::fromUTF8("Versión ") + info.version + juce::String::fromUTF8(" en el móvil: descárgala en la app (Ajustes > PC/Windows)"));
         return;
     }
 
     // Todo a una carpeta temporal dedicada; nunca se ejecuta nada más que el
     // instalador verificado con su SHA-256.
-    setStatus("Actualizando a " + info.version + ": descargando del móvil…");
+    setStatus("Actualizando a " + info.version + juce::String::fromUTF8(": descargando del móvil…"));
     const auto tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
                              .getChildFile("AcousticalUpdate");
     tempDir.deleteRecursively();
     if (!tempDir.createDirectory().wasOk()) {
-        setStatus("No se pudo preparar la actualización");
+        setStatus(juce::String::fromUTF8("No se pudo preparar la actualización"));
         return;
     }
     const auto installer = tempDir.getChildFile("AcousticalEstudioSetup.exe");
     if (!httpDownloadToFile("/payload", installer, MAX_PAYLOAD_BYTES)) {
-        setStatus("Descarga fallida: vuelve a conectar el móvil");
+        setStatus(juce::String::fromUTF8("Descarga fallida: vuelve a conectar el móvil"));
         tempDir.deleteRecursively();
         return;
     }
 
     // Verificación estricta antes de ejecutar: tamaño y SHA-256 del manifest
     if (info.sizeBytes > 0 && installer.getSize() != info.sizeBytes) {
-        setStatus("Actualización cancelada: tamaño incorrecto");
+        setStatus(juce::String::fromUTF8("Actualización cancelada: tamaño incorrecto"));
         tempDir.deleteRecursively();
         return;
     }
     const auto hash = juce::SHA256(installer).toHexString();
     if (hash.equalsIgnoreCase(info.sha256) == false) {
-        setStatus("Actualización cancelada: la verificación SHA-256 no coincide");
+        setStatus(juce::String::fromUTF8("Actualización cancelada: la verificación SHA-256 no coincide"));
         tempDir.deleteRecursively();
         return;
     }
 
-    setStatus("Instalando " + info.version + "… (Windows pedirá permiso)");
+    setStatus("Instalando " + info.version + juce::String::fromUTF8("… (Windows pedirá permiso)"));
     if (launchInstaller(installer))
-        setStatus("Versión " + info.version + " instalándose: Acoustical se reiniciará");
+        setStatus(juce::String::fromUTF8("Versión ") + info.version + juce::String::fromUTF8(" instalándose: Acoustical se reiniciará"));
     else
         setStatus("No se pudo iniciar el instalador (falta el permiso de administrador)");
 }

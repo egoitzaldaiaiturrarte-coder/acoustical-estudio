@@ -10,8 +10,8 @@ class DynamicEqCard : public juce::Component, private juce::Timer {
 public:
     struct Snapshot {
         juce::Colour accent = theme::eq1Cyan;
-        juce::String title = "Ecu dinámico 1";
-        juce::String directionLabel = "Donde más se necesita";
+        juce::String title = juce::String::fromUTF8("Ecu dinámico 1");
+        juce::String directionLabel = juce::String::fromUTF8("Donde más se necesita");
         juce::String statusText;
         bool enabled = false;
         std::vector<float> gains;
