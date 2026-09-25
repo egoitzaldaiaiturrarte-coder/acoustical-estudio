@@ -421,16 +421,16 @@ class PhoneSyncManager private constructor(context: Context) {
      *  el estado pendiente. El PC, en su próximo sondeo (cada pocos segundos),
      *  los aplica y lo confirma con un push "acked", con lo que se borra. */
     fun pushMyConfigToPc() {
-        val cfg = runCatching { Json.parseToJsonElement(localConfigJson).jsonObject }.getOrNull()
-        if (cfg == null) {
+        val cfgText = localConfigJson
+        if (cfgText.isBlank()) {
             _status.value = "Aún no hay ajustes que enviar al PC"
             return
         }
-        val staged = buildJsonObject {
-            putJsonObject("config") { cfg.forEach { (k, v) -> this[k] = v } }
-            put("sendToPc", true)
-        }
-        prefs.edit().putString(KEY_SYNC_STATE, staged.toString()).apply()
+        // localConfigJson es un objeto JSON válido (el ViewModel lo genera con
+        // buildJsonObject), así que basta con incrustarlo; el estado resultante
+        // es {"config":{...},"sendToPc":true}, que currentSyncJson() ya sabe leer.
+        val staged = """{"config":$cfgText,"sendToPc":true}"""
+        prefs.edit().putString(KEY_SYNC_STATE, staged).apply()
         _status.value = "Enviando ajustes al PC… (se aplican en unos segundos)"
     }
 
