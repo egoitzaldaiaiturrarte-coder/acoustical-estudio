@@ -112,15 +112,20 @@ jobs:
 
       - name: Instalar Inno Setup
         shell: pwsh
-        run: choco install innosetup -y --no-progress
+        run: |
+          choco install innosetup -y --no-progress
+          # Anotar la version instalada (la imagen de GitHub cambia a veces)
+          choco list --local-only --exact innosetup | Out-Host
 
       - name: Generar el instalador
         shell: pwsh
         run: |
           # La version del instalador sale de app\CMakeLists.txt (fuente unica
-          # de verdad): se reescribe la linea #define AppVersion del .iss y se
-          # compila. (Reescribir en vez de usar /D: el comportamiento del
-          # /D depende de la version del preprocesador de Inno.)
+          # de verdad): se reescribe la linea #define AppVersion del .iss.
+          $ErrorActionPreference = 'Continue'   # el error se controla a mano; el runner pone 'Stop'
+          foreach ($req in @("app\CMakeLists.txt", "installer\acoustical.iss")) {
+              if (-not (Test-Path $req)) { throw "Falta el archivo $req (working dir: $PWD)" }
+          }
           $cmakeApp = Get-Content "app\CMakeLists.txt" -Raw
           $m = [regex]::Match($cmakeApp, 'JUCE_APPLICATION_VERSION_STRING="\K[0-9]+\.[0-9]+\.[0-9]+')
           if (-not $m.Success) { throw "No se encontro JUCE_APPLICATION_VERSION_STRING en app\CMakeLists.txt" }
@@ -133,19 +138,54 @@ jobs:
           $text = [regex]::Replace($text, '(?m)^#define\s+AppVersion\s+"[^"]*"', ('#define AppVersion "' + $ver + '"'))
           [System.IO.File]::WriteAllText($issPath, $text, (New-Object System.Text.UTF8Encoding($true)))
           Select-String -Path $issPath -Pattern 'AppVersion' | ForEach-Object { Write-Host ("  " + $_.Line.Trim()) }
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { throw "ISCC.exe no encontrado" }
-          & $iscc $issPath
-          if ($LASTEXITCODE -ne 0) {
-              throw "ISCC fallo con codigo $LASTEXITCODE — el error de Inno esta en las lineas anteriores a esta"
+          # Buscar ISCC: choco instala la ultima Inno (6 o 7, en el directorio
+          # que sea); aceptar cualquier una de las ubicaciones conocidas
+          $cands = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 7\ISCC.exe"
+          )
+          $iscc = $cands | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { $g = Get-Command ISCC.exe -ErrorAction SilentlyContinue; if ($g) { $iscc = $g.Source } }
+          if (-not $iscc) {
+              $cands | ForEach-Object { Write-Host ("  sin ISCC en: " + $_) }
+              throw "ISCC.exe no encontrado (Inno Setup 6 o 7)"
+          }
+          Write-Host ("ISCC: " + $iscc)
+          # Compilar; se guarda el output completo para poder leerlo a posteriori
+          New-Item -ItemType Directory -Force -Path "dist\installer" | Out-Null
+          if (Test-Path "dist\installer\iscc-output.txt") { Remove-Item "dist\installer\iscc-output.txt" -Force }
+          $isccOut = & $iscc $issPath 2>&1
+          $isccExit = $LASTEXITCODE
+          $isccOut | ForEach-Object { Write-Host "$_" }
+          ($isccOut | ForEach-Object { "$_" }) | Set-Content "dist\installer\iscc-output.txt" -Encoding utf8
+          # Diagnostico: siempre se genera (el siguiente paso lo sube si hay fallo)
+          $diag = @("version: $ver", "iscc: $iscc", "iscc_exit: $isccExit")
+          $diag += "----- ISCC: ultimas 80 lineas -----"
+          $diag += (Get-Content "dist\installer\iscc-output.txt" -Tail 80)
+          $diag += "----- contenido de dist\installer -----"
+          $diag += (Get-ChildItem "dist\installer" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+          $diag | Set-Content "dist\installer\installer-diagnostics.txt" -Encoding utf8
+          if ($isccExit -ne 0) {
+              throw "ISCC termino con codigo $isccExit — el detalle esta en el artefacto installer-diagnostics"
           }
           # Verificacion: el exe generado debe llamarse con la version correcta
           $expected = "dist\installer\AcousticalEstudioSetup-$ver.exe"
           if (-not (Test-Path $expected)) {
-              Get-ChildItem "dist\installer" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  dist: $($_.Name)" }
-              throw "El instalador no se llama como se esperaba: AcousticalEstudioSetup-$ver.exe"
+              throw "El instalador no se llama como se esperaba: AcousticalEstudioSetup-$ver.exe (detalle en installer-diagnostics)"
           }
           Write-Host "Instalador OK: $expected"
+
+      - name: Subir diagnostico del instalador (solo si fallo)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-diagnostics
+          path: |
+            windows-acoustical/dist/installer/installer-diagnostics.txt
+            windows-acoustical/dist/installer/iscc-output.txt
+          if-no-files-found: ignore
 
       - name: Calcular SHA-256 del instalador
         shell: pwsh

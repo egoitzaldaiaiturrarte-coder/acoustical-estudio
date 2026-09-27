@@ -38,7 +38,8 @@ Name: "cable"; Description: "Instalar el cable virtual de audio (pide aceptar el
 [Files]
 ; App de escritorio + adb + drivers ADB
 Source: "..\dist\app\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
-; Plugin VST3 (x64) - Cubase 5 lo busca en Common Files\VST3
+; Plugin VST3 (x64) - la via recomendada en Cubase 15 (se carga de
+; Common Files\VST3, que es donde lo busca por defecto)
 Source: "..\dist\plugin\Acoustical Dynamic EQ.vst3"; DestDir: "{cf}\VST3"; \
   Flags: recursesubdirs ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
 ; Plugin VST3 Win32 (Cubase 5 de 32 bits solo carga plugins de 32 bits)

@@ -1,4 +1,6 @@
-# Plugin VST para Cubase 5 — VST3 siempre; VST2.4 (32-bit) for Cubase 5.
+# Plugin VST — VST3 x64 (Cubase 15 y DAWs de 64 bits) + VST3/VST2.4 Win32
+# (Cubase 5 de 32 bits, que solo carga plugins de 32 bits). El VST3 es la via
+# recomendada en Cubase 15; el VST2 Win32 queda para la cubeta 32-bit.
 # The legacy VST2 SDK is vendored in windows-acoustical/vst2-sdk. Override with
 # the VST2_SDK_PATH env var if you have a different/complete SDK.
 set(_vst2_sdk "$ENV{VST2_SDK_PATH}")
