@@ -113,9 +113,30 @@ jobs:
       - name: Instalar Inno Setup
         shell: pwsh
         run: |
-          choco install innosetup -y --no-progress
-          # Anotar la version instalada (la imagen de GitHub cambia a veces)
-          choco list --local-only --exact innosetup | Out-Host
+          # Version FIJADA y bajada directa de la release oficial de Inno: no
+          # usar choco "latest" porque cambio la version (Inno 7 se instala en
+          # otra carpeta) y rompio el build dos veces seguidas.
+          $out = @()
+          $exit = 0
+          try {
+              $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+              $installer = Join-Path $env:TEMP "innosetup-6.7.3.exe"
+              Write-Host "Descargando Inno Setup 6.7.3 (release oficial)..."
+              Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+              $out += (& $installer /S /VERYSILENT /NORESTART 2>&1 | ForEach-Object { "$_" })
+              $exit = $LASTEXITCODE
+          } catch {
+              $exit = 1
+              $out += "ERROR: $($_.Exception.Message)"
+          }
+          $out | ForEach-Object { Write-Host $_ }
+          if (Test-Path "inno-install.log") { Remove-Item "inno-install.log" -Force }
+          ($out | ForEach-Object { $_ }) | Set-Content "inno-install.log" -Encoding utf8
+          $iscc6 = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc6)) {
+              throw "Inno Setup 6 no quedo instalado (sin ISCC en '$iscc6') - detalle en el artefacto installer-diagnostics"
+          }
+          Write-Host "Inno Setup 6.7.3 listo: $iscc6"
 
       - name: Generar el instalador
         shell: pwsh
@@ -177,12 +198,13 @@ jobs:
           }
           Write-Host "Instalador OK: $expected"
 
-      - name: Subir diagnostico del instalador (solo si fallo)
-        if: failure()
+      - name: Subir diagnosticos del instalador (cualquier resultado)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: installer-diagnostics
           path: |
+            windows-acoustical/inno-install.log
             windows-acoustical/dist/installer/installer-diagnostics.txt
             windows-acoustical/dist/installer/iscc-output.txt
           if-no-files-found: ignore
