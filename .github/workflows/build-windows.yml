@@ -118,20 +118,32 @@ jobs:
         shell: pwsh
         run: |
           # La version del instalador sale de app\CMakeLists.txt (fuente unica
-          # de verdad) y se le pasa a Inno con /DAppVersion.
+          # de verdad): se reescribe la linea #define AppVersion del .iss y se
+          # compila. (Reescribir en vez de usar /D: el comportamiento del
+          # /D depende de la version del preprocesador de Inno.)
           $cmakeApp = Get-Content "app\CMakeLists.txt" -Raw
           $m = [regex]::Match($cmakeApp, 'JUCE_APPLICATION_VERSION_STRING="\K[0-9]+\.[0-9]+\.[0-9]+')
           if (-not $m.Success) { throw "No se encontro JUCE_APPLICATION_VERSION_STRING en app\CMakeLists.txt" }
           $ver = $m.Value
           Write-Host "Version del instalador: $ver"
+          # Reescritura que preserva la codificacion (BOM) del .iss
+          $issPath = "installer\acoustical.iss"
+          $bytes = [System.IO.File]::ReadAllBytes($issPath)
+          $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+          $text = [regex]::Replace($text, '(?m)^#define\s+AppVersion\s+"[^"]*"', ('#define AppVersion "' + $ver + '"'))
+          [System.IO.File]::WriteAllText($issPath, $text, (New-Object System.Text.UTF8Encoding($true)))
+          Select-String -Path $issPath -Pattern 'AppVersion' | ForEach-Object { Write-Host ("  " + $_.Line.Trim()) }
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "ISCC.exe no encontrado" }
-          & $iscc "/DAppVersion=$ver" installer\acoustical.iss
+          & $iscc $issPath
+          if ($LASTEXITCODE -ne 0) {
+              throw "ISCC fallo con codigo $LASTEXITCODE — el error de Inno esta en las lineas anteriores a esta"
+          }
           # Verificacion: el exe generado debe llamarse con la version correcta
           $expected = "dist\installer\AcousticalEstudioSetup-$ver.exe"
           if (-not (Test-Path $expected)) {
-              $found = Get-ChildItem "dist\installer\*.exe" | Select-Object -First 1
-              throw "El instalador no se llama como se esperaba. Esperado: AcousticalEstudioSetup-$ver.exe ; encontrado: $($found.Name)"
+              Get-ChildItem "dist\installer" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  dist: $($_.Name)" }
+              throw "El instalador no se llama como se esperaba: AcousticalEstudioSetup-$ver.exe"
           }
           Write-Host "Instalador OK: $expected"
 
