@@ -3,7 +3,10 @@
 ; Espera en dist\ lo generado por tools\build_all.ps1.
 
 #define AppName "Acoustical Estudio"
-#define AppVersion "1.4.0"
+; La versión la pone la CI (ISCC /DAppVersion=... extraído de
+; app\CMakeLists.txt, la única fuente de verdad). Este valor es el respaldo
+; para compilar el instalador a mano fuera de la CI.
+#define AppVersion "1.6.1"
 #define AppExe "Acoustical Estudio.exe"
 
 [Setup]

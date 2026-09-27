@@ -1,5 +1,6 @@
 // RemoteAudioLink.cpp
 #include "RemoteAudioLink.h"
+#include "StartupLog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -46,10 +47,13 @@ void RemoteAudioLink::noteBeacon(const juce::String& ip, const juce::String& id,
                                  const juce::String& name) {
     if (ip.isEmpty()) return;
     bool reSendMic = false;
+    bool firstSight = false;
+    juce::String devName;
     {
         const std::lock_guard<std::mutex> lock(mtx_);
         auto& st = states_[ip];
-        if (st.dev.lastBeaconMs == 0) st.dev.ip = ip;
+        firstSight = (st.dev.lastBeaconMs == 0);
+        if (firstSight) st.dev.ip = ip;
         if (!id.isEmpty()) st.dev.id = id;
         if (!name.isEmpty()) st.dev.name = name;
         st.dev.lastBeaconMs = nowMs();
@@ -60,7 +64,11 @@ void RemoteAudioLink::noteBeacon(const juce::String& ip, const juce::String& id,
             && std::find(micOnPersisted_.begin(), micOnPersisted_.end(), ip)
                    != micOnPersisted_.end();
         if (reSendMic) st.dev.micOn = true;
+        devName = st.dev.name;
     }
+    if (firstSight)
+        startuplog::log(juce::String::fromUTF8("wifi-audio: móvil detectado ") + ip
+            + (devName.isNotEmpty() ? juce::String::fromUTF8(" (") + devName + ")" : juce::String()));
     if (reSendMic) sendMicStart(ip);
 }
 
@@ -136,8 +144,15 @@ void RemoteAudioLink::runReceive() {
     juce::DatagramSocket socket;
     if (!socket.bindToPort(MIC_PORT)) {
         running_.store(false);   // el puerto estaba ocupado: deshabilitado
+        startuplog::log(juce::String::fromUTF8(
+            "wifi-audio: NO se pudo abrir el puerto ") + juce::String(MIC_PORT)
+            + juce::String::fromUTF8(
+                " (¿otro programa lo usa? el micrófono de los móviles no "
+                "funcionará)"));
         return;
     }
+    startuplog::log(juce::String::fromUTF8("wifi-audio: oyente en el puerto ")
+        + juce::String(MIC_PORT) + juce::String::fromUTF8(" activo"));
     std::vector<juce::uint8> buffer(8192);
     while (running_.load()) {
         juce::String senderIp;
@@ -175,6 +190,9 @@ void RemoteAudioLink::runReceive() {
         ds->ring.write(mono.data(), samples);
         ds->dev.lastAudioMs = nowMs();
         ds->levelDb.store(peak > 1e-5f ? 20.0f * std::log10(peak) : -120.0f);
+        if (!ds->firstFrameLogged_.exchange(true))
+            startuplog::log(juce::String::fromUTF8("wifi-audio: primera trama del "
+                "micro del móvil ") + senderIp);
     }
     // Abortar cualquier wait en curso antes de que el objeto se destruya
     socket.shutdown();
@@ -269,6 +287,7 @@ void RemoteAudioLink::sendMicStart(const juce::String& ip) {
     o->setProperty("port", (double)MIC_PORT);
     o->setProperty("rate", 48000.0);
     o->setProperty("code", codeProvider_ ? codeProvider_() : juce::String());
+    startuplog::log(juce::String::fromUTF8("wifi-audio: pidiendo el micro al móvil ") + ip);
     sendControl(ip, juce::JSON::toString(juce::var(o)));
 }
 

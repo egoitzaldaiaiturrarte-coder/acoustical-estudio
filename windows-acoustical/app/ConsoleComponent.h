@@ -17,6 +17,7 @@
 #include "PhoneLink.h"
 #include "RemoteAudioLink.h"
 #include "AsioBridgeClient.h"
+#include "StartupLog.h"
 
 class ConsoleComponent : public juce::Component,
                          private juce::AudioIODeviceCallback,
@@ -81,6 +82,7 @@ public:
 
     ConsoleComponent(juce::AudioDeviceManager& dm, acoustical::AcousticalEngine& eng)
         : deviceManager_(dm), engine_(eng) {
+        startuplog::log(juce::String::fromUTF8("consola: construyendo la interfaz…"));
         theme::apply(*this);
 
         // === Barra superior: transport + presets + estado del móvil ===
@@ -257,6 +259,10 @@ public:
 
         // Motor arrancado por defecto: solo hay que tener el audio seleccionado
         if (engine_.start()) powerButton_.setButtonText("Parar");
+        startuplog::log(juce::String::fromUTF8("consola: lista (")
+            + (engine_.isRunning() ? juce::String::fromUTF8("motor arrancado")
+                                   : juce::String::fromUTF8("motor sin arrancar"))
+            + juce::String::fromUTF8(")"));
     }
 
     // Control del generador de señales (desde Ajustes)
@@ -383,6 +389,9 @@ private:
                                           float* const* output, int numOutputs,
                                           int numSamples,
                                           const juce::AudioIODeviceCallbackContext&) override {
+        // Contador para el log de diagnóstico (una sola vez; aquí NO se
+        // escribe en disco: esto corre en el hilo de audio).
+        audioBursts_.fetch_add(1, std::memory_order_relaxed);
         std::vector<float> mono(static_cast<size_t>(numSamples), 0.0f);
         // Niveles de entrada (Ruteos > Entradas): ganancia por canal,
         // atómica (escrita por la UI, leída aquí) y aplicada antes del motor.
@@ -489,6 +498,13 @@ private:
         lastSampleRate_ = device ? device->getCurrentSampleRate() : 48000.0;
     }
     void audioDeviceStopped() override {}
+    // El dispositivo avisó de un error (tarjeta desconectada, driver que
+    // falla…). Corre en el hilo de audio: solo guardamos el mensaje y lo
+    // volca al log el timer de UI (no se escribe en disco desde aquí).
+    void audioDeviceError(const juce::String& errorMessage) override {
+        const std::lock_guard<std::mutex> lock(analysisMutex_);
+        if (audioError_ != errorMessage) audioError_ = errorMessage;
+    }
 
     // === Estado compartido entre el hilo del motor y la UI ===
 
@@ -506,6 +522,22 @@ private:
     }
 
     void timerCallback() override {
+        // 0a. Diagnóstico: primer bloque de audio recibido (una sola vez) y
+        //     cualquier error del dispositivo pendiente de volcar al log.
+        if (!audioLogged_ && audioBursts_.load(std::memory_order_relaxed) > 0) {
+            audioLogged_ = true;
+            startuplog::log(juce::String::fromUTF8(
+                "audio: la tarjeta está entregando bloques de audio (el bucle "
+                "funciona)"));
+        }
+        {
+            const std::lock_guard<std::mutex> lock(analysisMutex_);
+            if (!audioError_.isEmpty()) {
+                startuplog::log(juce::String::fromUTF8("audio: ERROR del dispositivo: ")
+                    + audioError_);
+                audioError_ = juce::String();
+            }
+        }
         // 0. Estado del puente ASIO (el driver puede cambiar de tasa con Cubase)
         if (bridge_.isConnected()) audioTab_->refreshStatus();
         phoneLabel_.setText(phoneLink_ ? phoneLink_->lastSyncInfo() : juce::String(),
@@ -801,6 +833,10 @@ private:
     std::mutex dspMutex_;
 
     double lastSampleRate_ = 48000.0;
+    // Diagnóstico (ver StartupLog.h): el callback suma, el timer volca al log
+    std::atomic<int> audioBursts_{0};
+    bool audioLogged_ = false;
+    juce::String audioError_;   // protegido por analysisMutex_
     std::vector<float> genBuf_;          // señal del generador (una generación por bloque)
     std::vector<float> bridgeBufL_, bridgeBufR_;  // audio entrante de Cubase (puente ASIO)
     std::vector<float> remoteMicBuf_;    // micrófono remoto en curso (M2, una entrada por móvil)

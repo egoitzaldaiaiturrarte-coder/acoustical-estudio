@@ -144,6 +144,7 @@ private:
         std::atomic<float> gain{1.0f};
         std::atomic<float> levelDb{-120.0f};
         std::atomic<unsigned short> seqTx{0};
+        std::atomic<bool> firstFrameLogged_{false};   // diagnóstico
     };
 
     State* findState(const juce::String& ip) const;

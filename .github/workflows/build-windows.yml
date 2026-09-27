@@ -117,9 +117,23 @@ jobs:
       - name: Generar el instalador
         shell: pwsh
         run: |
+          # La version del instalador sale de app\CMakeLists.txt (fuente unica
+          # de verdad) y se le pasa a Inno con /DAppVersion.
+          $cmakeApp = Get-Content "app\CMakeLists.txt" -Raw
+          $m = [regex]::Match($cmakeApp, 'JUCE_APPLICATION_VERSION_STRING="\K[0-9]+\.[0-9]+\.[0-9]+')
+          if (-not $m.Success) { throw "No se encontro JUCE_APPLICATION_VERSION_STRING en app\CMakeLists.txt" }
+          $ver = $m.Value
+          Write-Host "Version del instalador: $ver"
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "ISCC.exe no encontrado" }
-          & $iscc installer\acoustical.iss
+          & $iscc "/DAppVersion=$ver" installer\acoustical.iss
+          # Verificacion: el exe generado debe llamarse con la version correcta
+          $expected = "dist\installer\AcousticalEstudioSetup-$ver.exe"
+          if (-not (Test-Path $expected)) {
+              $found = Get-ChildItem "dist\installer\*.exe" | Select-Object -First 1
+              throw "El instalador no se llama como se esperaba. Esperado: AcousticalEstudioSetup-$ver.exe ; encontrado: $($found.Name)"
+          }
+          Write-Host "Instalador OK: $expected"
 
       - name: Calcular SHA-256 del instalador
         shell: pwsh
