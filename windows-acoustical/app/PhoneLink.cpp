@@ -1,5 +1,6 @@
 // PhoneLink.cpp
 #include "PhoneLink.h"
+#include "StartupLog.h"
 #include "SyncClient.h"
 
 #include <juce_cryptography/juce_cryptography.h>
@@ -29,7 +30,9 @@ bool installAdbDriverOnce(const juce::File& driverFolder) {
 
 PhoneLink::PhoneLink(juce::File adbExecutable) : adb_(std::move(adbExecutable)) {
     beacon_ = std::make_unique<BeaconListener>(BEACON_PORT);
+    startuplog::log(juce::String::fromUTF8("phonelink: oyente de baliza creado"));
     loadConfig();
+    startuplog::log(juce::String::fromUTF8("phonelink: config cargada"));
 }
 
 PhoneLink::~PhoneLink() {
@@ -264,7 +267,11 @@ juce::File PhoneLink::configPath() const {
 void PhoneLink::loadConfig() {
     const auto f = configPath();
     if (!f.existsAsFile()) return;
-    if (auto* o = juce::JSON::parse(f.loadFileAsString()).getDynamicObject()) {
+    // `parsed` debe vivir todo el bloque: getDynamicObject() apunta a su
+    // interior. Si se dejara como temporal, moriría al terminar la
+    // condición del if y el cuerpo usaría un puntero colgante.
+    const auto parsed = juce::JSON::parse(f.loadFileAsString());
+    if (auto* o = parsed.getDynamicObject()) {
         pairCode_ = o->getProperty("pairCode").toString();
         manualIp_ = o->getProperty("manualIp").toString();
     }

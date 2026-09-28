@@ -62,7 +62,20 @@ typedef struct _EXCEPTION_RECORD {
     unsigned long long ExceptionInformation[EXCEPTION_MAXIMUM_PARAMETERS];
 } EXCEPTION_RECORD;
 typedef EXCEPTION_RECORD* PEXCEPTION_RECORD;
-typedef void* PCONTEXT;
+// CONTEXT (x64): solo los campos que usa la app; el real es mucho mas
+// grande (incluye XMM/vector). Nombres y tipos REALES del SDK.
+typedef struct _CONTEXT {
+    uint64_t P1Home, P2Home, P3Home, P4Home, P5Home, P6Home, P7Home, P8Home;
+    uint64_t ContextFlags;
+    uint64_t MxCsr;
+    uint64_t SegCs, SegDs, SegEs, SegFs, SegGs, SegSs;
+    uint64_t EFlags;
+    uint64_t Dr0, Dr1, Dr2, Dr3, Dr6, Dr7;
+    uint64_t Rax, Rcx, Rdx, Rbx, Rsp, Rbp, Rsi, Rdi;
+    uint64_t R8, R9, R10, R11, R12, R13, R14, R15;
+    uint64_t Rip;
+} CONTEXT;
+typedef CONTEXT* PCONTEXT;
 typedef struct _EXCEPTION_POINTERS {
     PEXCEPTION_RECORD ExceptionRecord;
     PCONTEXT ContextRecord;
@@ -98,7 +111,19 @@ BOOL    WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite,
 void    GetLocalTime(LPSYSTEMTIME lpSystemTime);
 // --- Filtro de excepciones (Main.cpp) ---
 LPTOP_LEVEL_EXCEPTION_FILTER SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExceptionFilter);
-#define GetCurrentProcess ((HANDLE)(intptr_t)-3)
+// --- Memoria de proceso (CrashFilter.h) ---
+BOOL    ReadProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress, LPVOID lpBuffer,
+                          SIZE_T nSize, SIZE_T* lpNumberOfBytesRead);
+DWORD   GetLastError(void);
+// Pseudo-handles: el SDK REAL declara las funciones (exportadas por
+// kernel32) y define además una macro función que intercepta la llamada
+// con paréntesis. Por eso en el SDK compilan AMBAS formas:
+//   GetCurrentProcess()  → macro → (HANDLE)-1
+//   GetCurrentProcess    → función de kernel32 → devuelve (HANDLE)-1
+// CrashFilter.h usa el literal reinterpret_cast<HANDLE>(0xFFFF...); ambas
+// declaraciones se mantienen aquí para ser fieles al SDK.
+HANDLE  GetCurrentProcess(void);
+#define GetCurrentProcess() ((HANDLE)(intptr_t)-1)
 #ifdef __cplusplus
 }
 #endif
