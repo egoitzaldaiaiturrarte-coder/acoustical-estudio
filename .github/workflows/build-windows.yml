@@ -357,14 +357,23 @@ jobs:
           $pdb = [System.IO.Path]::ChangeExtension($exe.FullName, ".pdb")
           if (Test-Path $pdb) { Copy-Item $pdb "dist\asan\AcousticalEstudio-ASan.pdb" -Force }
           # Runtime dinámico de ASan (MSVC): el exe lo exige junto a el.
-          # Viene incluido en el toolset de Visual Studio del runner
-          # (puede estar en Program Files o en Program Files (x86)).
+          # Viene incluido en el toolset de Visual Studio del runner. OJO: el
+          # runner tiene VARIOS toolsets de MSVC (14.16, 14.29, 14.4x…) y el
+          # build usa el MAS RECIENTE; hay que coger la DLL de ese toolset,
+          # no la primera que salga (una version antigua no exporta los
+          # __asan_* que el exe espera: "punto de entrada no encontrado").
           $asanDll = $null
           foreach ($root in @("C:\Program Files\Microsoft Visual Studio",
                               "C:\Program Files (x86)\Microsoft Visual Studio")) {
               if (Test-Path $root) {
-                  $asanDll = Get-ChildItem $root -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" `
-                      -ErrorAction SilentlyContinue | Select-Object -First 1
+                  $cands = @(Get-ChildItem $root -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" `
+                      -ErrorAction SilentlyContinue)
+                  $out += "DLLs candidatas: $($cands.FullName -join ' | ')"
+                  # version del toolset = segmento "MSVC\<x.y.z>\..." de la ruta
+                  $asanDll = $cands | Sort-Object {
+                      $m = [regex]::Match($_.FullName, 'MSVC\\([0-9.]+)\\')
+                      if ($m.Success) { [version]$m.Groups[1].Value } else { [version]'0.0' }
+                  } -Descending | Select-Object -First 1
                   if ($asanDll) { break }
               }
           }
@@ -373,6 +382,14 @@ jobs:
               throw "No se encontro clang_rt.asan_dynamic-x86_64.dll en Visual Studio (detalle en el artefacto asan-build-log)"
           }
           Copy-Item $asanDll.FullName "dist\asan\clang_rt.asan_dynamic-x86_64.dll" -Force
+          # Verificacion: la DLL debe exportar los simbolos que el exe
+          # importaba al compilar (canaria: __asan_delete_array).
+          $exports = @(dumpbin /exports "dist\asan\clang_rt.asan_dynamic-x86_64.dll" 2>&1 | ForEach-Object { "$_" })
+          if ($exports -notmatch '__asan_delete_array') {
+              $out += "dumpbin exports: $($exports -join ' | ')"
+              $out | Set-Content $log -Encoding utf8
+              throw "La DLL de ASan no exporta __asan_delete_array (version desajustada; candidatas en el log)"
+          }
           $out += "ASan runtime DLL: $($asanDll.FullName)"
           $out | Set-Content $log -Encoding utf8
           Write-Host "ASan exe: $($exe.FullName)"

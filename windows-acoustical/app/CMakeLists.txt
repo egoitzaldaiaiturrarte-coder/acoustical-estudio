@@ -16,7 +16,7 @@ target_compile_definitions(AcousticalEstudio PRIVATE
     JUCE_USE_CURL=0
     NOMINMAX
     JUCE_APPLICATION_NAME_STRING="Acoustical Estudio"
-    JUCE_APPLICATION_VERSION_STRING="1.6.7"
+    JUCE_APPLICATION_VERSION_STRING="1.6.8"
 )
 
 if(MSVC)
