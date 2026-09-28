@@ -166,11 +166,16 @@ public:
         while (pos + 1.0 <= static_cast<double>(inFrames) && w - rd < ringFrames) {
             const int i0 = static_cast<int>(pos);
             const double frac = pos - static_cast<double>(i0);
+            // i0+1 llega a inFrames cuando pos == inFrames-1 (p. ej. siempre
+            // que inRate == ringRate, step == 1.0): se aprisiona a la última
+            // muestra válida (con frac 0 el valor no cambia; evita la lectura
+            // fuera de bounds pillada por ASan: heap-buffer-overflow).
+            const int i1 = (i0 + 1 < inFrames) ? i0 + 1 : i0;
             const uint64_t idx = w % ringFrames;
             pb[idx * bridge::kChannels] = static_cast<float>(
-                inL[i0] * (1.0 - frac) + inL[i0 + 1] * frac);
+                inL[i0] * (1.0 - frac) + inL[i1] * frac);
             pb[idx * bridge::kChannels + 1] = static_cast<float>(
-                inR[i0] * (1.0 - frac) + inR[i0 + 1] * frac);
+                inR[i0] * (1.0 - frac) + inR[i1] * frac);
             ++w;
             pos += step;
         }
