@@ -11,5 +11,8 @@ int main() {
     // completo (cuerpo + firmas + formatos swprintf).
     (void)crashfilter::append;
     (void)crashfilter::filter;
+#ifdef __SANITIZE_ADDRESS__
+    (void)crashfilter::redirectStderrToLog;
+#endif
     return 0;
 }

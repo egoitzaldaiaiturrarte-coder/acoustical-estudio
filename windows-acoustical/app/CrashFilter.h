@@ -23,6 +23,7 @@
 #include <psapi.h>
 #include <shlobj.h>
 #include <cwchar>
+#include <cstdio>
 
 namespace crashfilter {
 
@@ -47,6 +48,26 @@ inline void append(const wchar_t* line) {
     WriteFile(h, line, static_cast<DWORD>(wcslen(line) * 2), &written, nullptr);
     CloseHandle(h);
 }
+
+#ifdef __SANITIZE_ADDRESS__
+// Build de diagnóstico ASan: sus informes van a stderr, que en una app GUI
+// no lleva a ningún sitio. Se reabre el stderr como
+// %AppData%\Acoustical\asan.log (sin buffer, para no perder nada cuando el
+// proceso se aborta). Se llama al inicio de initialise(), antes de que
+// pueda producirse el primer informe.
+inline void redirectStderrToLog() {
+    wchar_t base[MAX_PATH] = {};
+    if (SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, base) != S_OK)
+        return;
+    wchar_t full[MAX_PATH] = {};
+    swprintf(full, MAX_PATH, L"%s\\Acoustical\\asan.log", base);
+    char narrow[1024] = {};
+    WideCharToMultiByte(CP_UTF8, 0, full, -1, narrow,
+                        static_cast<int>(sizeof(narrow)) - 1, nullptr, nullptr);
+    if (freopen(narrow, "ab", stderr) == nullptr) return;
+    setvbuf(stderr, nullptr, _IONBF, 0);
+}
+#endif  // __SANITIZE_ADDRESS__
 
 // Volca hasta 256 B de memoria de nuestro propio proceso en hex
 // ("48 89 …"). Devuelve el nº de bytes volcados (0 = no leible).

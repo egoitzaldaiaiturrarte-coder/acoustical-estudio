@@ -19,6 +19,8 @@ typedef const void* LPCVOID;
 typedef void* LPSECURITY_ATTRIBUTES;
 typedef DWORD* LPDWORD;
 typedef void* LPOVERLAPPED;
+typedef char* LPSTR;
+typedef const char* LPCSTR;
 #define TRUE 1
 #define FALSE 0
 #define WINAPI
@@ -32,6 +34,8 @@ typedef void* LPOVERLAPPED;
 // Acceso a fichero (CreateFileW)
 #define FILE_READ_DATA     0x00000001
 #define FILE_APPEND_DATA   0x00000004
+#define GENERIC_WRITE      0x40000000
+#define CREATE_ALWAYS      2
 #define FILE_SHARE_READ    0x00000001
 #define FILE_SHARE_WRITE   0x00000002
 #define OPEN_ALWAYS        4
@@ -107,6 +111,12 @@ DWORD   SetFilePointer(HANDLE hFile, LONG lDistanceToMove, LONG* lpDistanceToMov
                        DWORD dwMoveMethod);
 BOOL    WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite,
                   LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped);
+// --- Conversion de cadenas (redirect ASan de CrashFilter.h) ---
+#define CP_UTF8 65001
+int     WideCharToMultiByte(unsigned int CodePage, DWORD dwFlags,
+                            LPCWSTR lpWideCharStr, int cchWideChar,
+                            LPSTR lpMultiByteStr, int cbMultiByte,
+                            LPCSTR lpDefaultChar, BOOL* lpUsedDefaultChar);
 // --- Tiempo ---
 void    GetLocalTime(LPSYSTEMTIME lpSystemTime);
 // --- Filtro de excepciones (Main.cpp) ---

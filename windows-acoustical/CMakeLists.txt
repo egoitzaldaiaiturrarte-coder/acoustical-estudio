@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(AcousticalEstudio VERSION 1.6.2 LANGUAGES C CXX)
+project(AcousticalEstudio VERSION 1.6.4 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,6 +9,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
+
+# Build de diagnóstico con AddressSanitizer (MSVC): -DACOUSTICAL_ASAN=ON.
+# Lo usa el job "asan" del workflow (binario para cazar la primera
+# violación de heap con la pila del hilo culpable).
+option(ACOUSTICAL_ASAN "Build with AddressSanitizer (diagnostic only)" OFF)
 
 # JUCE se descarga automáticamente la primera vez (necesita conexión a internet)
 include(FetchContent)

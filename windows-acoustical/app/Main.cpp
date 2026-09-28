@@ -84,6 +84,13 @@ public:
     void initialise(const juce::String&) override {
 #ifdef JUCE_WINDOWS
         SetUnhandledExceptionFilter(crashfilter::filter);
+#if defined(__SANITIZE_ADDRESS__)
+        // Build ASan de diagnóstico: sus informes (stderr) van a
+        // %AppData%\Acoustical\asan.log en vez de a la nada.
+        crashfilter::redirectStderrToLog();
+        startuplog::log(juce::String::fromUTF8(
+            "build ASan activo: los informes de memoria iran a asan.log"));
+#endif
 #endif
         startuplog::log(juce::String::fromUTF8("inicializando (")
             + juce::SystemStats::getJUCEVersion() + juce::String::fromUTF8(")"));

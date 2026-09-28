@@ -55,6 +55,15 @@ jobs:
             -Iwindows-acoustical/app \
             windows-acoustical/tools/test_crashfilter.cpp
 
+      # Mismo check con __SANITIZE_ADDRESS__: valida el bloque de
+      # redirección del stderr a asan.log (build de diagnóstico ASan).
+      - name: Syntax-check del filtro de crash (camino ASan)
+        run: |
+          g++ -std=c++17 -fsyntax-only -DJUCE_WINDOWS=1 -D__SANITIZE_ADDRESS__=1 \
+            -Iwindows-acoustical/tools/fakewin \
+            -Iwindows-acoustical/app \
+            windows-acoustical/tools/test_crashfilter.cpp
+
       # Protocolo del enlace móvil↔PC (SyncClient + BeaconListener) contra un
       # "móvil falso" en loopback: baliza UDP, emparejamiento por código,
       # sync push/pull, HTTP /manifest + /payload con SHA-256. Compila los
@@ -299,3 +308,53 @@ jobs:
           files: |
             windows-acoustical/dist/installer/*.exe
             windows-acoustical/dist/installer/*.sha256
+
+  asan:
+    # Build de DIAGNÓSTICO con AddressSanitizer (MSVC): instrumenta la app,
+    # el motor y los módulos de JUCE para capturar la PRIMERA violación de
+    # heap del proceso (nuestra o de una DLL cargada, p. ej. el driver de
+    # audio) con la pila exacta del hilo culpable. El exe reabre el stderr
+    # como %AppData%\Acoustical\asan.log (Main.cpp → crashfilter).
+    # Necesario mientras se caza la corrupción de heap que mata a la app en
+    # la máquina con salida HDMI LG TV (crash 0xC0000005 desde la v1.6.0).
+    runs-on: windows-latest
+    needs: build
+    defaults:
+      run:
+        working-directory: windows-acoustical
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Compilar la app con AddressSanitizer
+        shell: pwsh
+        run: |
+          cmake -S . -B build-asan -A x64 -DACOUSTICAL_ASAN=ON
+          cmake --build build-asan --config Release --target AcousticalEstudio --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Fallo al compilar la app con ASan" }
+          New-Item -ItemType Directory -Force -Path "dist\asan" | Out-Null
+          $exe = Get-ChildItem "build-asan" -Recurse -Filter "Acoustical*Estudio*.exe" |
+              Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
+          if (-not $exe) { throw "No se encontro el exe de ASan en build-asan\" }
+          Copy-Item $exe.FullName "dist\asan\AcousticalEstudio-ASan.exe" -Force
+          $pdb = [System.IO.Path]::ChangeExtension($exe.FullName, ".pdb")
+          if (Test-Path $pdb) { Copy-Item $pdb "dist\asan\AcousticalEstudio-ASan.pdb" -Force }
+          Write-Host "ASan exe: $($exe.FullName)"
+
+      - name: Subir el binario ASan como artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AcousticalEstudio-ASan
+          path: |
+            windows-acoustical/dist/asan/*
+          if-no-files-found: error
+
+      - name: Añadir el binario ASan al Release (solo al crear una etiqueta)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            windows-acoustical/dist/asan/AcousticalEstudio-ASan.exe
+            windows-acoustical/dist/asan/AcousticalEstudio-ASan.pdb
+          fail_on_unmatched_files: false
