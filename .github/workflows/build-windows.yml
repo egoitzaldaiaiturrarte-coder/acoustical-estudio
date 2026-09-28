@@ -148,14 +148,17 @@ jobs:
               if (-not (Test-Path $req)) { throw "Falta el archivo $req (working dir: $PWD)" }
           }
           $cmakeApp = Get-Content "app\CMakeLists.txt" -Raw
-          $m = [regex]::Match($cmakeApp, 'JUCE_APPLICATION_VERSION_STRING="\K[0-9]+\.[0-9]+\.[0-9]+')
+          # Grupo de captura (sin \K: el motor regex de .NET de pwsh no lo soporta)
+          $m = [regex]::Match($cmakeApp, 'JUCE_APPLICATION_VERSION_STRING\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
           if (-not $m.Success) { throw "No se encontro JUCE_APPLICATION_VERSION_STRING en app\CMakeLists.txt" }
-          $ver = $m.Value
+          $ver = $m.Groups[1].Value
           Write-Host "Version del instalador: $ver"
-          # Reescritura que preserva la codificacion (BOM) del .iss
+          # Reescritura que preserva la codificacion del .iss con BOM UNICO
+          # (el archivo original ya trae BOM: se quita antes de volver a escribir)
           $issPath = "installer\acoustical.iss"
           $bytes = [System.IO.File]::ReadAllBytes($issPath)
           $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+          if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
           $text = [regex]::Replace($text, '(?m)^#define\s+AppVersion\s+"[^"]*"', ('#define AppVersion "' + $ver + '"'))
           [System.IO.File]::WriteAllText($issPath, $text, (New-Object System.Text.UTF8Encoding($true)))
           Select-String -Path $issPath -Pattern 'AppVersion' | ForEach-Object { Write-Host ("  " + $_.Line.Trim()) }
@@ -208,6 +211,47 @@ jobs:
             windows-acoustical/dist/installer/installer-diagnostics.txt
             windows-acoustical/dist/installer/iscc-output.txt
           if-no-files-found: ignore
+
+      # Red de seguridad: si el job falla, publica los diagnosticos en la rama
+      # ci-diagnostics (se puede leer sin permisos via raw.githubusercontent).
+      - name: Publicar diagnosticos en rama ci-diagnostics (si el job fallo)
+        if: failure()
+        shell: pwsh
+        run: |
+          $ws = $env:GITHUB_WORKSPACE
+          $cands = @(
+            "$ws\windows-acoustical\inno-install.log",
+            "$ws\windows-acoustical\dist\installer\installer-diagnostics.txt",
+            "$ws\windows-acoustical\dist\installer\iscc-output.txt"
+          )
+          $files = @($cands | Where-Object { Test-Path $_ })
+          if ($files.Count -eq 0) {
+              # Ningun fichero de diagnostico llego a existir: volcar el estado
+              # del disco para saber porque (el fallo ocurrio antes de escribir)
+              $state = @(
+                "run: $env:GITHUB_RUN_ID / intento $env:GITHUB_RUN_ATTEMPT",
+                "ws: $ws",
+                "----- listado de $ws -----",
+                (Get-ChildItem $ws -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }),
+                "----- listado de $ws\windows-acoustical -----",
+                (Get-ChildItem "$ws\windows-acoustical" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+              )
+              $state | Set-Content "$ws\ws-state.txt" -Encoding utf8
+              $files += "$ws\ws-state.txt"
+          }
+          $repo = Join-Path $env:RUNNER_TEMP "diag-push"
+          git clone --quiet --depth 1 "https://x-access-token:${env:GITHUB_TOKEN}@github.com/${env:GITHUB_REPOSITORY}.git" $repo
+          foreach ($f in $files) {
+              Copy-Item $f (Join-Path $repo (Split-Path $f -Leaf)) -Force
+          }
+          Set-Location $repo
+          git config user.email "ci-diagnostics@acoustical.local"
+          git config user.name "CI Diagnostics"
+          git checkout -B ci-diagnostics
+          git add -A
+          git commit -m "diagnostico build run $env:GITHUB_RUN_ID ($(Get-Date -Format 'yyyyMMdd-HHmmss'))"
+          git push --force --quiet origin ci-diagnostics
+          Write-Host "Diagnosticos publicados en la rama ci-diagnostics"
 
       - name: Calcular SHA-256 del instalador
         shell: pwsh
