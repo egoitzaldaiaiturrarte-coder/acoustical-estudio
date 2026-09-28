@@ -16,11 +16,15 @@ target_compile_definitions(AcousticalEstudio PRIVATE
     JUCE_USE_CURL=0
     NOMINMAX
     JUCE_APPLICATION_NAME_STRING="Acoustical Estudio"
-    JUCE_APPLICATION_VERSION_STRING="1.6.1"
+    JUCE_APPLICATION_VERSION_STRING="1.6.2"
 )
 
 if(MSVC)
     target_compile_options(AcousticalEstudio PRIVATE /utf-8)
+    # psapi: el filtro de crash (Main.cpp) usa EnumProcessModules/
+    # GetModuleInformation/GetModuleBaseNameW para decir en qué módulo
+    # (exe o DLL) ha fallado la dirección del fault.
+    target_link_libraries(AcousticalEstudio PRIVATE psapi)
 endif()
 
 # Protocolo de memoria compartida del puente ASIO (AsioBridgeClient.h)

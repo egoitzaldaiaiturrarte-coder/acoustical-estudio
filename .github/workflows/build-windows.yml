@@ -46,6 +46,15 @@ jobs:
             -Iwindows-acoustical/app \
             windows-acoustical/tools/test_winbridge.cpp
 
+      # Filtro de crash (Camino solo-Windows de CrashFilter.h) contra las
+      # firmas reales de Win32 (fakewin): pilla typos de API antes del build.
+      - name: Syntax-check del filtro de crash (Win32)
+        run: |
+          g++ -std=c++17 -fsyntax-only -DJUCE_WINDOWS=1 \
+            -Iwindows-acoustical/tools/fakewin \
+            -Iwindows-acoustical/app \
+            windows-acoustical/tools/test_crashfilter.cpp
+
       # Protocolo del enlace móvil↔PC (SyncClient + BeaconListener) contra un
       # "móvil falso" en loopback: baliza UDP, emparejamiento por código,
       # sync push/pull, HTTP /manifest + /payload con SHA-256. Compila los
@@ -109,6 +118,18 @@ jobs:
       - name: Compilar app, plugin y driver ASIO (x64 + Win32)
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File tools\build_all.ps1
+
+      # El exe + PDB de la app (fuera del instalador): con el offset del crash
+      # que anota startup.log se localiza la función/línea exacta en el PDB.
+      - name: Subir el binario de la app (exe + PDB)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AcousticalEstudio-Binary
+          path: |
+            windows-acoustical/dist/app/Acoustical Estudio.exe
+            windows-acoustical/dist/app/Acoustical Estudio.pdb
+          if-no-files-found: ignore
 
       - name: Instalar Inno Setup
         shell: pwsh

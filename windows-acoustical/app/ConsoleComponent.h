@@ -156,12 +156,14 @@ public:
         fullscreenButton_.setClickingTogglesState(true);
         fullscreenButton_.setTooltip(juce::String::fromUTF8("Pantalla completa (F11)"));
         fullscreenButton_.onClick = [this] { toggleFullscreen(); };
+        startuplog::log(juce::String::fromUTF8("consola: barra superior lista"));
 
         // === Panel de audio: todas las tarjetas del PC con sus ajustes ===
         audioPanel_ = std::make_unique<juce::AudioDeviceSelectorComponent>(
             deviceManager_, 0, 16, 0, 16, false, false, true, false);
         audioPanel_->setItemHeight(36);
         audioTab_ = std::make_unique<AudioTab>(*audioPanel_, bridge_);
+        startuplog::log(juce::String::fromUTF8("consola: panel de audio listo"));
 
         addAndMakeVisible(lockButton_);
         lockButton_.setButtonText("Bloquear");
@@ -200,6 +202,7 @@ public:
         });
         eqCanvas_->onBandEditStart = [this] { if (!fadersLocked_) pushUndo(); };
         addAndMakeVisible(*eqCanvas_);
+        startuplog::log(juce::String::fromUTF8("consola: EQ y ecuas dinámicos listos"));
 
         // === Pestañas ===
         // Enlace con el móvil (Wi-Fi con respaldo USB): se crea antes que el
@@ -208,6 +211,7 @@ public:
                        .getParentDirectory().getChildFile("adb/adb.exe");
         phoneLink_ = std::make_unique<PhoneLink>(adb);
         phoneLink_->onSync = [this](const juce::var& payload) { applyPhoneSync(payload); };
+        startuplog::log(juce::String::fromUTF8("consola: enlace del móvil listo"));
         // Puente de audio Wi-Fi (M2/M3): descubre los móviles por baliza; su
         // micrófono pasa a ser una entrada del PC y las rutas del Hub pueden
         // mandar audio a sus altavoces.
@@ -219,10 +223,12 @@ public:
         };
         remoteAudio_->start();
         phoneLink_->startWatchdog();
+        startuplog::log(juce::String::fromUTF8("consola: oyente UDP y baliza activos"));
 
         spectrumView_ = std::make_unique<SpectrumView>();
         routingMatrix_ = std::make_unique<RoutingMatrix>(deviceManager_, *remoteAudio_);
         loadSavedSettings();  // últimos valores funcionales
+        startuplog::log(juce::String::fromUTF8("consola: ruteos y ajustes guardados listos"));
         settingsPanel_ = std::make_unique<SettingsPanel>(engine_, phoneLink_.get(), [this](bool active) {
             generatorActive_.store(active);
         });
@@ -238,6 +244,7 @@ public:
         };
         hub_ = std::make_unique<RouteHub>(deviceManager_);
         hubPanel_ = std::make_unique<HubPanel>(*hub_, *remoteAudio_);
+        startuplog::log(juce::String::fromUTF8("consola: hub listo"));
         tabs_ = std::make_unique<juce::TabbedComponent>(juce::TabbedButtonBar::TabsAtTop);
         tabs_->addTab("EQ", theme::surface, eqCanvas_.get(), false);
         tabs_->addTab(juce::String::fromUTF8("Ecuas dinámicos"), theme::surface, &eqCardsPanel_, false);
@@ -247,15 +254,18 @@ public:
         tabs_->addTab(juce::String::fromUTF8("Análisis"), theme::surface, spectrumView_.get(), false);
         tabs_->addTab("Audio", theme::surface, audioTab_.get(), false);
         addAndMakeVisible(*tabs_);
+        startuplog::log(juce::String::fromUTF8("consola: pestañas listas"));
 
         refreshPresets();
         engine_.onAnalysis = [this](const acoustical::AnalysisResult& r) { storeAnalysis(r); };
         engine_.onSweep = [this](acoustical::SweepProcess p, const acoustical::SweepStep& s) {
             storeSweep(p, s);
         };
+        startuplog::log(juce::String::fromUTF8("consola: presets y callbacks listos"));
 
         startTimerHz(30);
         deviceManager_.addAudioCallback(this);
+        startuplog::log(juce::String::fromUTF8("consola: callback de audio registrado"));
 
         // Motor arrancado por defecto: solo hay que tener el audio seleccionado
         if (engine_.start()) powerButton_.setButtonText("Parar");

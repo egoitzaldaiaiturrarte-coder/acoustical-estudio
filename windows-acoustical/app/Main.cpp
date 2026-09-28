@@ -11,54 +11,11 @@
 #include "ConsoleComponent.h"
 #include "Theme.h"
 #include "StartupLog.h"
+#include "CrashFilter.h"
 
 #if !JUCE_WINDOWS
 #include <unistd.h>   // getpid()
 #endif
-
-#ifdef JUCE_WINDOWS
-// === Filtro de crash (solo Windows/MSVC) =====================================
-// Si la app hace un error fatal (p. ej. 0xC0000005 = acceso a memoria),
-// Windows muestra su diálogo de error y el proceso muere. Para poder ver DÓNDE
-// murió, anotamos el código y la dirección en startup.log con escrituras C
-// puras (a esa altura no se puede fiar de JUCE ni del montón).
-#include <windows.h>
-#include <shlobj.h>
-#include <cwchar>
-
-namespace {
-void crashAppend(const wchar_t* line) {
-    wchar_t base[MAX_PATH] = {};
-    if (SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, base) != S_OK)
-        return;
-    wchar_t full[MAX_PATH] = {};
-    swprintf(full, MAX_PATH, L"%s\\Acoustical\\startup.log", base);
-    HANDLE h = CreateFileW(full, FILE_APPEND_DATA | FILE_READ_DATA,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    SetFilePointer(h, 0, nullptr, FILE_END);
-    DWORD written = 0;
-    WriteFile(h, line, static_cast<DWORD>(wcslen(line) * 2), &written, nullptr);
-    CloseHandle(h);
-}
-
-LONG WINAPI crashFilter(EXCEPTION_POINTERS* ep) {
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    wchar_t line[320] = {};
-    swprintf(line, 256,
-             L"%04d-%02d-%02d %02d:%02d:%02d  CRASH: codigo de Windows 0x%08X en "
-             L"%p - la app se detuvo. Esta linea y las anteriores dicen hasta "
-             L"donde llego el arranque\r\n",
-             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
-             ep->ExceptionRecord->ExceptionCode,
-             ep->ExceptionRecord->ExceptionAddress);
-    crashAppend(line);
-    return EXCEPTION_EXECUTE_HANDLER;   // → diálogo estándar de Windows
-}
-}  // namespace
-#endif  // JUCE_WINDOWS
 
 class MainWindow : public juce::DocumentWindow {
 public:
@@ -126,9 +83,9 @@ public:
 
     void initialise(const juce::String&) override {
 #ifdef JUCE_WINDOWS
-        SetUnhandledExceptionFilter(crashFilter);
+        SetUnhandledExceptionFilter(crashfilter::filter);
 #endif
-        startuplog::log(juce::String::fromUTF8("inicializando (JUCE ")
+        startuplog::log(juce::String::fromUTF8("inicializando (")
             + juce::SystemStats::getJUCEVersion() + juce::String::fromUTF8(")"));
         try {
             // Abrir el audio nada más arrancar: 2 entradas + 2 salidas. Si hay

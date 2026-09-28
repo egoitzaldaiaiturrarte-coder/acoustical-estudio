@@ -62,6 +62,10 @@ $appExe = Get-ChildItem "build" -Recurse -Filter "Acoustical*Estudio*.exe" -Erro
     Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
 if (-not $appExe) { throw "No se encontró el ejecutable de Acoustical Estudio en build\" }
 Copy-Item $appExe.FullName "$dist\app\" -Force
+# PDB de la app: subido como artefacto para poder mapear el offset del crash
+# (startup.log: "CRASH … = Acoustical Estudio.exe +0x…") a función/línea.
+$appPdb = [System.IO.Path]::ChangeExtension($appExe.FullName, ".pdb")
+if (Test-Path $appPdb) { Copy-Item $appPdb "$dist\app\" -Force }
 # adb incluido (si está en tools\adb, se copia con todo)
 if (Test-Path "tools\adb") { Copy-Item "tools\adb" "$dist\app\adb" -Recurse -Force }
 
