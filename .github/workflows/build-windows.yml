@@ -356,6 +356,25 @@ jobs:
           Copy-Item $exe.FullName "dist\asan\AcousticalEstudio-ASan.exe" -Force
           $pdb = [System.IO.Path]::ChangeExtension($exe.FullName, ".pdb")
           if (Test-Path $pdb) { Copy-Item $pdb "dist\asan\AcousticalEstudio-ASan.pdb" -Force }
+          # Runtime dinámico de ASan (MSVC): el exe lo exige junto a el.
+          # Viene incluido en el toolset de Visual Studio del runner
+          # (puede estar en Program Files o en Program Files (x86)).
+          $asanDll = $null
+          foreach ($root in @("C:\Program Files\Microsoft Visual Studio",
+                              "C:\Program Files (x86)\Microsoft Visual Studio")) {
+              if (Test-Path $root) {
+                  $asanDll = Get-ChildItem $root -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" `
+                      -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if ($asanDll) { break }
+              }
+          }
+          if (-not $asanDll) {
+              $out | Set-Content $log -Encoding utf8
+              throw "No se encontro clang_rt.asan_dynamic-x86_64.dll en Visual Studio (detalle en el artefacto asan-build-log)"
+          }
+          Copy-Item $asanDll.FullName "dist\asan\clang_rt.asan_dynamic-x86_64.dll" -Force
+          $out += "ASan runtime DLL: $($asanDll.FullName)"
+          $out | Set-Content $log -Encoding utf8
           Write-Host "ASan exe: $($exe.FullName)"
 
       - name: Subir el log de build ASan (cualquier resultado)
@@ -405,4 +424,5 @@ jobs:
           files: |
             windows-acoustical/dist/asan/AcousticalEstudio-ASan.exe
             windows-acoustical/dist/asan/AcousticalEstudio-ASan.pdb
+            windows-acoustical/dist/asan/clang_rt.asan_dynamic-x86_64.dll
           fail_on_unmatched_files: false
