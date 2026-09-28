@@ -16,7 +16,7 @@ target_compile_definitions(AcousticalEstudio PRIVATE
     JUCE_USE_CURL=0
     NOMINMAX
     JUCE_APPLICATION_NAME_STRING="Acoustical Estudio"
-    JUCE_APPLICATION_VERSION_STRING="1.6.4"
+    JUCE_APPLICATION_VERSION_STRING="1.6.5"
 )
 
 if(MSVC)
@@ -28,21 +28,19 @@ if(MSVC)
 endif()
 
 # Build de diagnóstico con AddressSanitizer (opción global, ver el job "asan"
-# del workflow): instrumenta la app, el motor y los módulos de JUCE para
-# capturar la PRIMERA violación de heap del proceso (nuestra o de una DLL)
-# con la pila exacta del hilo culpable.
+# del workflow): instrumenta la app, el motor y el núcleo DSP para capturar la
+# PRIMERA violación de heap del proceso (nuestra o de una DLL) con la pila
+# exacta del hilo culpable.
+#
+# Nota: en JUCE 7 los targets de módulo son INTERFACE (sus .cpp se compilan
+# como parte del target consumidor), así que el flag sobre AcousticalEstudio
+# cubre la app Y todo el código de JUCE. El /O2 de
+# juce_recommended_config_flags es compatible con ASan (docs MSVC).
 if(ACOUSTICAL_ASAN AND MSVC)
-    target_compile_options(AcousticalEstudio PRIVATE /O1 /fsanitize=address)
+    target_compile_options(AcousticalEstudio PRIVATE /fsanitize=address)
     target_link_options(AcousticalEstudio PRIVATE /fsanitize=address)
-    foreach(_asan_module juce_core juce_data_structures juce_events juce_graphics
-                         juce_gui_basics juce_gui_extra juce_audio_basics
-                         juce_audio_devices juce_audio_formats juce_audio_utils
-                         juce_cryptography juce_dsp juce_midi_basics juce_video)
-        if(TARGET ${_asan_module})
-            target_compile_options(${_asan_module} PRIVATE /O1 /fsanitize=address)
-        endif()
-    endforeach()
-    target_compile_options(acoustical_engine PRIVATE /O1 /fsanitize=address)
+    target_compile_options(acoustical_engine PRIVATE /fsanitize=address)
+    target_compile_options(acoustical_dsp PRIVATE /fsanitize=address)
 endif()
 
 # Protocolo de memoria compartida del puente ASIO (AsioBridgeClient.h)

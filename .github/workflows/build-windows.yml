@@ -310,13 +310,15 @@ jobs:
             windows-acoustical/dist/installer/*.sha256
 
   asan:
-    # Build de DIAGNÓSTICO con AddressSanitizer (MSVC): instrumenta la app,
-    # el motor y los módulos de JUCE para capturar la PRIMERA violación de
-    # heap del proceso (nuestra o de una DLL cargada, p. ej. el driver de
-    # audio) con la pila exacta del hilo culpable. El exe reabre el stderr
-    # como %AppData%\Acoustical\asan.log (Main.cpp → crashfilter).
-    # Necesario mientras se caza la corrupción de heap que mata a la app en
-    # la máquina con salida HDMI LG TV (crash 0xC0000005 desde la v1.6.0).
+    # Build de DIAGNÓSTICO con AddressSanitizer (MSVC): instrumenta la app
+    # (y con ella todo el código de JUCE, que en JUCE 7 se compila como parte
+    # del target de la app), el motor y el núcleo DSP, para capturar la
+    # PRIMERA violación de heap del proceso (nuestra o de una DLL cargada,
+    # p. ej. el driver de audio) con la pila exacta del hilo culpable. El exe
+    # reabre el stderr como %AppData%\Acoustical\asan.log (Main.cpp →
+    # crashfilter). Necesario mientras se caza la corrupción de heap que mata
+    # a la app en la máquina con salida HDMI LG TV (crash 0xC0000005 desde la
+    # v1.6.0).
     runs-on: windows-latest
     needs: build
     defaults:
@@ -329,17 +331,63 @@ jobs:
       - name: Compilar la app con AddressSanitizer
         shell: pwsh
         run: |
-          cmake -S . -B build-asan -A x64 -DACOUSTICAL_ASAN=ON
-          cmake --build build-asan --config Release --target AcousticalEstudio --parallel
-          if ($LASTEXITCODE -ne 0) { throw "Fallo al compilar la app con ASan" }
+          # Todo el output queda en dist\asan-build.log (se sube como
+          # artefacto en cualquier caso): sin acceso a las logs del runner
+          # es la unica forma de leer el error de un fallo.
+          $ErrorActionPreference = 'Continue'
           New-Item -ItemType Directory -Force -Path "dist\asan" | Out-Null
+          $log = "dist\asan-build.log"
+          $out = @()
+          $out += "=== cmake configure ==="
+          $out += (cmake -S . -B build-asan -A x64 -DACOUSTICAL_ASAN=ON 2>&1 | ForEach-Object { "$_" })
+          if ($LASTEXITCODE -ne 0) { $out | Set-Content $log -Encoding utf8; throw "Fallo cmake configure (detalle en el artefacto asan-build-log)" }
+          $out += "=== cmake build ==="
+          $out += (cmake --build build-asan --config Release --target AcousticalEstudio --parallel 2>&1 | ForEach-Object { "$_" })
+          if ($LASTEXITCODE -ne 0) { $out | Set-Content $log -Encoding utf8; throw "Fallo cmake build (detalle en el artefacto asan-build-log)" }
           $exe = Get-ChildItem "build-asan" -Recurse -Filter "Acoustical*Estudio*.exe" |
               Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
-          if (-not $exe) { throw "No se encontro el exe de ASan en build-asan\" }
+          if (-not $exe) {
+              $out += "=== listado de .exe en build-asan ==="
+              $out += (Get-ChildItem "build-asan" -Recurse -Filter "*.exe" | ForEach-Object { $_.FullName })
+              $out | Set-Content $log -Encoding utf8
+              throw "No se encontro el exe de ASan en build-asan\ (detalle en el artefacto asan-build-log)"
+          }
+          $out | Set-Content $log -Encoding utf8
           Copy-Item $exe.FullName "dist\asan\AcousticalEstudio-ASan.exe" -Force
           $pdb = [System.IO.Path]::ChangeExtension($exe.FullName, ".pdb")
           if (Test-Path $pdb) { Copy-Item $pdb "dist\asan\AcousticalEstudio-ASan.pdb" -Force }
           Write-Host "ASan exe: $($exe.FullName)"
+
+      - name: Subir el log de build ASan (cualquier resultado)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-build-log
+          path: windows-acoustical/dist/asan-build.log
+          if-no-files-found: ignore
+
+      # Red de seguridad: si el job falla, publica el log de build en la rama
+      # ci-diagnostics (se puede leer sin permisos via raw.githubusercontent).
+      - name: Publicar diagnosticos en rama ci-diagnostics (si el job fallo)
+        if: failure()
+        shell: pwsh
+        run: |
+          $ws = $env:GITHUB_WORKSPACE
+          $src = "$ws\windows-acoustical\dist\asan-build.log"
+          if (-not (Test-Path $src)) {
+              "fallo antes de escribir el log de build (run $env:GITHUB_RUN_ID)" | Set-Content $src -Encoding utf8
+          }
+          $repo = Join-Path $env:RUNNER_TEMP "diag-push"
+          git clone --quiet --depth 1 "https://x-access-token:${env:GITHUB_TOKEN}@github.com/${env:GITHUB_REPOSITORY}.git" $repo
+          Copy-Item $src (Join-Path $repo "asan-build.log") -Force
+          Set-Location $repo
+          git config user.email "ci-diagnostics@acoustical.local"
+          git config user.name "CI Diagnostics"
+          git checkout -B ci-diagnostics
+          git add -A
+          git commit -m "diagnostico asan run $env:GITHUB_RUN_ID ($(Get-Date -Format 'yyyyMMdd-HHmmss'))"
+          git push --force --quiet origin ci-diagnostics
+          Write-Host "Diagnosticos publicados en la rama ci-diagnostics"
 
       - name: Subir el binario ASan como artefacto
         if: always()
