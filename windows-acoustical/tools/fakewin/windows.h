@@ -42,6 +42,10 @@ typedef const char* LPCSTR;
 #define FILE_ATTRIBUTE_NORMAL 0x00000080
 #define FILE_END           2
 
+// SetStdHandle (redirect ASan de CrashFilter.h)
+#define STD_ERROR_HANDLE (-12)
+BOOL    SetStdHandle(int nStdHandle, HANDLE hHandle);
+
 // SetFilePointer
 typedef struct _SYSTEMTIME {
     unsigned short wYear;

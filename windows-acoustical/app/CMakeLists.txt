@@ -16,11 +16,15 @@ target_compile_definitions(AcousticalEstudio PRIVATE
     JUCE_USE_CURL=0
     NOMINMAX
     JUCE_APPLICATION_NAME_STRING="Acoustical Estudio"
-    JUCE_APPLICATION_VERSION_STRING="1.6.5"
+    JUCE_APPLICATION_VERSION_STRING="1.6.6"
 )
 
 if(MSVC)
-    target_compile_options(AcousticalEstudio PRIVATE /utf-8)
+    target_compile_options(AcousticalEstudio PRIVATE /utf-8 /Zi)
+    # /Zi + /DEBUG: genera el PDB incluso en Release. Lo usa el filtro de
+    # crash (mapear "exe +0x..." a función/línea) y el build ASan (los
+    # informes simbolizan los marcos con el PDB junto al exe).
+    target_link_options(AcousticalEstudio PRIVATE /DEBUG)
     # psapi: el filtro de crash (Main.cpp) usa EnumProcessModules/
     # GetModuleInformation/GetModuleBaseNameW para decir en qué módulo
     # (exe o DLL) ha fallado la dirección del fault.

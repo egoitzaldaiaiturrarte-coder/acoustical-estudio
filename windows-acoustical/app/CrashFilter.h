@@ -61,11 +61,20 @@ inline void redirectStderrToLog() {
         return;
     wchar_t full[MAX_PATH] = {};
     swprintf(full, MAX_PATH, L"%s\\Acoustical\\asan.log", base);
+    // 1) Nivel CRT: reabrir el stderr (cubre el caso de que el runtime de
+    //    ASan escriba a traves del FILE* de stderr).
     char narrow[1024] = {};
     WideCharToMultiByte(CP_UTF8, 0, full, -1, narrow,
                         static_cast<int>(sizeof(narrow)) - 1, nullptr, nullptr);
-    if (freopen(narrow, "ab", stderr) == nullptr) return;
-    setvbuf(stderr, nullptr, _IONBF, 0);
+    if (freopen(narrow, "ab", stderr) != nullptr)
+        setvbuf(stderr, nullptr, _IONBF, 0);
+    // 2) Nivel de proceso: por si el runtime escribe directamente a
+    //    GetStdHandle(STD_ERROR_HANDLE) (el handle que ve el CRT no se
+    //    actualiza con el SetStdHandle, y al reves; cubrimos ambos mundos).
+    HANDLE h = CreateFileW(full, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE)
+        SetStdHandle(STD_ERROR_HANDLE, h);
 }
 #endif  // __SANITIZE_ADDRESS__
 

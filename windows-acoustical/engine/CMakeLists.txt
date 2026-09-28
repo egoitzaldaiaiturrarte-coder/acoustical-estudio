@@ -20,3 +20,9 @@ target_link_libraries(acoustical_engine PUBLIC acoustical_dsp)
 target_include_directories(acoustical_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(acoustical_engine PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 set_target_properties(acoustical_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# PDB en builds MSVC (el build ASan y el filtro de crash simbolizan con él).
+if(MSVC)
+    target_compile_options(acoustical_dsp PRIVATE /Zi)
+    target_compile_options(acoustical_engine PRIVATE /Zi)
+endif()
