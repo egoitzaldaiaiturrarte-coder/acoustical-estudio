@@ -105,6 +105,12 @@ class PhoneSyncManager private constructor(context: Context) {
     /** Arranca el servidor, la baliza y el puente de audio (una sola vez). */
     fun start() {
         if (serverThread?.isAlive == true) return
+        // El código de emparejamiento debe existir desde que el servidor
+        // arranca: si solo se generara a la primera comprobación (codeOk)
+        // y el PC envía sus mensajes sin código, la app nunca lo crea y el
+        // emparejamiento se atasca en "Introduce el código del móvil"
+        // para siempre.
+        pairCode()
         val thread = Thread({ acceptLoop() }, "acoustical-sync-server")
         thread.isDaemon = true
         serverThread = thread
@@ -209,6 +215,11 @@ class PhoneSyncManager private constructor(context: Context) {
     private fun codeOk(sent: String?): Boolean =
         sent != null && sent.isNotEmpty() && sent == pairCode()
 
+    /** Error de emparejamiento. El campo hasCode permite al PC distinguir
+     *  "el móvil aún no tiene código" de "el código no coincide". */
+    private fun pairErrorJson(): String =
+        """{"type":"pair","ok":false,"error":"code","hasCode":${!prefs.getString(KEY_CODE, null).isNullOrEmpty()}}"""
+
     /** IP del móvil en la red Wi-Fi (para mostrarla / IP manual en el PC). */
     fun lanIp(): String {
         val ifaces = runCatching { NetworkInterface.getNetworkInterfaces() }.getOrNull()
@@ -307,7 +318,7 @@ class PhoneSyncManager private constructor(context: Context) {
                 ?.substringAfter(':')?.trim()
             if (!codeOk(sentCode)) {
                 writeHttp(socket, "403 Forbidden", "application/json",
-                    """{"type":"pair","ok":false,"error":"code"}""".toByteArray(Charsets.UTF_8))
+                    pairErrorJson().toByteArray(Charsets.UTF_8))
                 return
             }
         }
@@ -355,7 +366,7 @@ class PhoneSyncManager private constructor(context: Context) {
 
         // Emparejamiento: sin código válido no se mueve ningún ajuste
         if (!codeOk(obj.textContent("code"))) {
-            writeRawJson(socket, """{"type":"pair","ok":false,"error":"code"}""")
+            writeRawJson(socket, pairErrorJson())
             return
         }
 

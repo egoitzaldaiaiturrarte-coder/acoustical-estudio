@@ -14,6 +14,11 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- Android 14+: sin este permiso el sistema bloquea el tráfico Wi-Fi
+         local (baliza 41042, servidor TCP 41041, audio UDP 41043/41044)
+         de apps que apuntan a U+. En versiones anteriores se ignora. -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
     <!-- Permisos legacy (Android < 12): getBondedDevices()/startDiscovery() los
          exigen; sin ellos la app crashea al arrancar en API 24-30. -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />

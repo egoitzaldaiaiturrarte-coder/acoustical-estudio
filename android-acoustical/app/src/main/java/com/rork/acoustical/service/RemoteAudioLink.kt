@@ -376,7 +376,10 @@ class RemoteAudioLink(context: Context, private val codeProvider: () -> String) 
             if (filled + n > cap) {
                 val drop = filled + n - cap
                 val keep = filled - drop
-                System.arraycopy(data, keep * 2, data, 0, keep * 2)
+                // Compactar: mover las `keep` muestras restantes (que empiezan en
+                // `drop`) al inicio. (Copiar desde `keep` se salía del array:
+                // src keep*2 + len keep*2 > data.length → AIOOBE en vivo.)
+                System.arraycopy(data, drop * 2, data, 0, keep * 2)
                 filled = keep
                 readPos = (readPos - drop).coerceAtLeast(0.0)
             }

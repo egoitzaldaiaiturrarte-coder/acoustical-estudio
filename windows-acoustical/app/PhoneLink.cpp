@@ -246,7 +246,14 @@ bool PhoneLink::requestSync(juce::var* replyOut) {
     // vez y el sondeo de 3 s reintenta hasta que el usuario lo introduzca.
     if (auto* o = reply.getDynamicObject();
         o != nullptr && o->getProperty("type").toString() == "pair") {
-        setStatus(juce::String::fromUTF8("Introduce el código del móvil en Ajustes > Móvil"));
+        // hasCode=false: el móvil aún no ha generado código (app abierta pero
+        // sin pasar nunca por Ajustes > PC/Windows) → decirle que lo abra.
+        // hasCode=true o campo ausente (app antigua) → solo no coincide.
+        const auto hasCodeProp = o->getProperty("hasCode");
+        const bool hasCode = hasCodeProp.isVoid() || hasCodeProp.toString() != "false";
+        setStatus(hasCode
+            ? juce::String::fromUTF8("El código no coincide: mira el del móvil (Ajustes > PC/Windows) y pégalo en Ajustes > Móvil")
+            : juce::String::fromUTF8("Abre Ajustes > PC/Windows en el móvil (ahí generará su código) y pégalo en Ajustes > Móvil"));
         return false;
     }
     setStatus(juce::String::fromUTF8("Sincronizado con el móvil"));
