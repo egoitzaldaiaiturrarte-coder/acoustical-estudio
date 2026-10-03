@@ -124,6 +124,10 @@ private:
         rowLabels_.add(lab);
         content().addAndMakeVisible(lab);
         lab->setBounds(16, y_, 300, 22);
+        // El control se añade AL contenido: sin este addAndMakeVisible la caja
+        // de texto / slider / combo queda creada (con sus bounds) pero invisible —
+        // así "Código del móvil" no se veía nunca (bug desde v1.2.0).
+        content().addAndMakeVisible(ctl);
         ctl->setBounds(340, y_ - 2, 546, 26);
     }
 
