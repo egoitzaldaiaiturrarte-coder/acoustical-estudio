@@ -2,11 +2,8 @@
 #include "PluginEditor.h"
 
 using juce::String;
-
-namespace {
-// Etiquetas en español seguras para MSVC (fuente UTF-8 con /utf-8).
-juce::String utf8(const char* s) { return juce::String::fromUTF8(s); }
-} // namespace
+// utf8() viene del anonymous namespace de PluginEditor.h (incluido arriba):
+// etiquetas en español seguras para MSVC. No redefinirla aquí (C2084).
 
 // === Parámetros: inventario completo del móvil (AudioModels.kt +
 // SweeperProcessor.kt) más el generador de referencia ===
