@@ -12,6 +12,7 @@
 #include "NoiseProfiler.h"
 #include "SweeperProcessor.h"
 #include "EqDsp.h"
+#include "Rt60Estimator.h"
 #include "SignalGenerator.h"
 
 #include <atomic>
@@ -32,6 +33,7 @@ struct AnalysisResult {
     float correctionIntensity = 0.0f;
     long long framesAnalyzed = 0;
     std::vector<float> noiseProfile;              // copia (segura de mantener)
+    float rt60Ms = 0.0f;                          // RT60 estimado (reflexiones)
 
     // Curvas combinadas por banda (EQ manual + ecuas dinámicos + bandas de apoyo)
     std::vector<float> combinedGainsL;
@@ -89,6 +91,14 @@ public:
     void cancelNoiseCapture();
     void clearNoiseProfile();
     bool hasNoiseProfile() const;
+    bool isNoiseCapturing() const;
+    float noiseCaptureProgress() const;
+
+    // Referencia desde el espectro ANTES de salir (pre-EQ): la ventana del
+    // plugin pasa el último bloque de la fuente y aquí se convierte a bandas.
+    // Igual que captureReference(), reinicia correcciones y barridos.
+    void captureReferenceFrom(const std::vector<float>& preSamples, int sampleRate);
+    float currentRt60Ms() const { return rt60_.currentRt60Ms(); }
 
     // Calibración del medidor SPL: ajuste (dB) sobre la referencia de +120 dB.
     void setSplCalibrationOffset(float adjustDb);
@@ -179,6 +189,7 @@ private:
     std::atomic<long long> lastAnalysisMs_{0};
 
     EqDsp dspL_, dspR_;
+    Rt60Estimator rt60_;
     SignalGenerator generator_;
 };
 

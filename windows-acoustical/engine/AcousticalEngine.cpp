@@ -53,6 +53,7 @@ void AcousticalEngine::configure(const AudioConfig& config) {
             config.correctionIntervalMs);
         splMeter_ = std::make_unique<SplMeter>(120.0f + splCalibrationDb_);
         noiseProfiler_ = std::make_unique<NoiseProfiler>(fft_->binCount(), 50, 6.0f);
+        rt60_ = Rt60Estimator(8, 64, static_cast<int>(analysisIntervalMs(config.analysisInterval)));
 
         bands_.clear();
         for (int i = 0; i < static_cast<int>(bandFrequencies_.size()); ++i)
@@ -261,6 +262,9 @@ void AcousticalEngine::analyzeFrameLocked(const std::vector<float>& samples, int
                 measured[i] = std::max(measured[i], secondaryLevels_[i]);
     }
 
+    // Indicador de reflexiones: RT60 por integración de Schroeder
+    rt60_.feedFrame(measured);
+
     // Correcciones del EQ principal
     std::vector<EqBand> correctedBands = bands_;
     float correctionIntensity = 0.0f;
@@ -307,6 +311,7 @@ void AcousticalEngine::analyzeFrameLocked(const std::vector<float>& samples, int
     result.correctionIntensity = correctionIntensity;
     result.framesAnalyzed = framesAnalyzed_.load();
     result.noiseProfile = noiseProfiler_->profile();  // copia segura
+    result.rt60Ms = rt60_.currentRt60Ms();
     result.combinedGainsL = std::move(combinedL);
     result.combinedGainsR = std::move(combinedR);
     result.dynamicEqGainsL = std::move(gainsL);
@@ -387,6 +392,33 @@ void AcousticalEngine::clearNoiseProfile() {
 bool AcousticalEngine::hasNoiseProfile() const {
     std::lock_guard<std::mutex> lock(stateMutex_);
     return noiseProfiler_ && noiseProfiler_->hasProfile();
+}
+
+bool AcousticalEngine::isNoiseCapturing() const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return noiseProfiler_ && noiseProfiler_->isCapturing();
+}
+
+float AcousticalEngine::noiseCaptureProgress() const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return noiseProfiler_ ? noiseProfiler_->captureProgress() : 0.0f;
+}
+
+// Referencia desde el espectro ANTES de salir (pre-EQ): la ventana del plugin
+// pasa el último bloque de la fuente y aquí se convierte a bandas. Después se
+// reinician correcciones y barridos, igual que captureReference() del móvil.
+void AcousticalEngine::captureReferenceFrom(const std::vector<float>& preSamples, int sampleRate) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (!fft_ || !corrector_) return;
+    const int fftN = fftSamples(config_.fftSize);
+    if (static_cast<int>(preSamples.size()) < fftN) return;
+    std::vector<float> block(preSamples.end() - fftN, preSamples.end());
+    const auto& mags = fft_->computeMagnitudesDb(block.data(), sampleRate);
+    const auto& binFreqs = fft_->binFrequencies(sampleRate);
+    referenceLevels_ = corrector_->aggregateBands(mags, binFreqs);
+    referenceCaptured_.store(true);
+    corrector_->reset();
+    for (auto& s : sweepers_) if (s) s->reset();
 }
 
 void AcousticalEngine::setSplCalibrationOffset(float adjustDb) {

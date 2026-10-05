@@ -1,0 +1,8 @@
+{
+  "id": "x0d3occc41s4419awevz4",
+  "role": "user",
+  "content": "Por último los retardos para ajustar diferentes equipos tienen que ir en valores de 0.01 milisegundo. Para que me entiendas para poder hacer delays de centímetros y que aparezcan los dos valores distancia y tiempo. Y ten en cuenta que al aumentar la corrección máxima quizás el tiempo de suavizado tenga que ampliarse. Comprueba que todo funciona por lo menos en mi dispositivo que es un red mi note 15 4g. Gracias",
+  "attachments": [],
+  "sourceAttachments": [],
+  "userId": "2909d4d9-bfd4-4c01-a6fb-0dd7db3c3342"
+}

@@ -1,0 +1,24 @@
+{
+  "id": "lzutvy5ktoj3vl1ky16n5",
+  "role": "assistant",
+  "preferredModelName": "auto",
+  "resolvedModelName": "rork-fast-v1",
+  "createdAt": 1787043437752,
+  "responseMessageContents": [
+    {
+      "type": "reasoning",
+      "text": "The user wants a major expansion of the app",
+      "id": "w21xp9eu8lxxcwc6died2",
+      "createdAt": 1787043437462,
+      "gatewayModelId": "zai/glm-5.2",
+      "completedAt": 1787043437709
+    }
+  ],
+  "snapshotId": "lzutvy5ktoj3vl1ky16n5",
+  "finishStats": {
+    "contextTokens": 0,
+    "maxInputTokens": 968000,
+    "maxOutputTokens": 64000
+  },
+  "stopped": true
+}
