@@ -5,7 +5,7 @@ using juce::String;
 
 namespace {
 // Etiquetas en español seguras para MSVC (fuente UTF-8 con /utf-8).
-juce::String utf8(const char* s) { return juce::String::utf8(s); }
+juce::String utf8(const char* s) { return juce::String::fromUTF8(s); }
 } // namespace
 
 // === Parámetros: inventario completo del móvil (AudioModels.kt +
