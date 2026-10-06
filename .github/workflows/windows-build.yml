@@ -66,8 +66,13 @@ jobs:
     #   - test_dsp: test diferencial FFT original C++ vs core C (drop-in).
     #   - test_signalgen: el seno/sweep de SignalGenerator suena a la
     #     frecuencia pedida (fix A1/A2).
-    #   - test_engine_race: estrés del motor real: configure()/setBandGain()/
+        #   - test_engine_race: estrés del motor real: configure()/setBandGain()/
     #     resetBands() con el motor corriendo (bugs C1/C4).
+    #   - test_golden: el vector dorado dsp/golden_bands.json que fija el
+    #     contrato de agregación de bandas compartido entre el core C (este
+    #     test) y el fallback Kotlin de Android (test espejo con su propia
+    #     copia del fixture): si la C cambia, el test falla hasta que el
+    #     JSON y el fixture Kotlin se regeneran con el mismo vector.
     #   - test_winbridge y test_crashfilter (×2, con y sin
     #     __SANITIZE_ADDRESS__): syntax-checks del camino solo-Windows contra
     #     las firmas reales de las API de Win32 (fakewin).
@@ -182,6 +187,14 @@ jobs:
             windows-acoustical/engine/AcousticalEngine.cpp \
             -o /tmp/test_engine_race -lm -pthread
           /tmp/test_engine_race
+
+      # Vector dorado del contrato de agregación de bandas (fija el
+      # comportamiento del core C frente a la copia Kotlin de Android).
+      - name: Compilar y testear el vector dorado de agregación (golden)
+        run: |
+          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp \
+            dsp/test_golden.cpp dsp/acoustical_dsp.c -o /tmp/test_golden -lm
+          /tmp/test_golden
 
       # El camino #ifdef _WIN32 del puente ASIO solo compila en MSVC: se
       # valida aquí contra un windows.h con las firmas reales de las API
