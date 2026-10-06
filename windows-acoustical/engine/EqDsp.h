@@ -41,11 +41,28 @@ public:
 
     // (Writer) Configura el banco. Puede llamarse desde cualquier hilo; el
     // audio no se detiene. Re-crea el snapshot plano y pide reset de estado.
-    void prepare(int bands, const float* bandFrequencies, float sampleRate, float q = 1.41f);
+    //
+    // Valida los parámetros: sampleRate <= 0 / no finito, vector de
+    // frecuencias vacío o con alguna frecuencia no finita / <= 0 → NO se toca
+    // el snapshot actual (se conserva el banco anterior) en vez de publicar
+    // coeficientes corruptos. (Antes, un caller que declaraba más bandas de
+    // las que realmente había en el vector leía memoria fuera de rango.)
+    void prepare(const std::vector<float>& bandFrequencies, float sampleRate,
+                 float q = 1.41f);
 
     // (Writer) Actualiza las ganancias combinadas por banda. Publica un nuevo
     // snapshot inmutable; el audio lo adopta en el siguiente bloque.
-    void setGains(bool /*rightChannel*/, const std::vector<float>& combinedGainsDb);
+    // (El parámetro rightChannel de la API anterior era un no-op: el banco es
+    // simétrico por diseño y cada canal tiene su propio EqDsp.)
+    void setGains(const std::vector<float>& combinedGainsDb);
+
+    // (Writer / hilo de audio) Re-prepara el banco a una nueva tasa de
+    // muestreo CONSERVANDO la última ganancia publicada: lo usa el plugin al
+    // detectar en processBlock que el host cambió la tasa (un re-prepare con
+    // ganancias planas dejaría una ventana de audio sin corregir hasta el
+    // próximo setGains del motor). Re-checa la tasa como prepare(); un
+    // parámetro corrupto conserva el snapshot actual.
+    void reprepare(float sampleRate);
 
     // (Audio) Procesa un bloque de audio in-place (canal único).
     void process(float* samples, int numSamples);

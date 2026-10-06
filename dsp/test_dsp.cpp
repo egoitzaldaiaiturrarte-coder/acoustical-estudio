@@ -84,11 +84,13 @@ static void testFftMagnitude() {
     for (int i = 0; i < size; ++i) in[i] = std::sin(2.0 * 3.141592653589793 * 1000.0 * i / sampleRate);
     std::vector<float> mag(size / 2);
     acoustical_fft_compute_magnitudes_db(c, in.data(), sampleRate, mag.data());
-    // A full-scale sine split across ~2 bins; the peak bin should be near 0 dB
-    // (within a few dB, since the Hamming window spreads energy).
+    // A full-scale sine split across ~2 bins. La normalización 2/(n*0.54)
+    // compensa la ganancia coherente de Hamming: el pico debe leer ~0 dB
+    // (pico medido ~-0.8 dB; con la normalización vieja de ventana rectangular
+    // caía a ~-5.4 dB y un tono a 0 dBFS leía -5.4 dB).
     float peak = -1e9;
     for (float v : mag) peak = std::max(peak, v);
-    CHECK(peak > -12.0f && peak < 3.0f, "full-scale sine peak near 0 dB");
+    CHECK(peak > -3.0f && peak < 0.5f, "full-scale sine peak reads ~0 dB (Hamming coherent-gain normalized)");
     acoustical_fft_free(c);
 }
 

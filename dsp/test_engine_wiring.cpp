@@ -19,6 +19,13 @@ static int g_fail = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { std::printf("FAIL: %s\n", msg); ++g_fail; } } while (0)
 static bool nearF(float a, float b, float eps = 1e-4f) { return std::fabs(a - b) <= eps; }
 
+// RMS de la cola de un buffer (descarta el transiente inicial del biquad).
+static double rmsFrom(const std::vector<float>& v, size_t from) {
+    double s = 0.0;
+    for (size_t i = from; i < v.size(); ++i) s += double(v[i]) * double(v[i]);
+    return std::sqrt(s / double(v.size() - from));
+}
+
 int main() {
     const int sr = 48000;
     const int fftSize = 2048;
@@ -38,8 +45,10 @@ int main() {
     for (int i = 0; i < (int)mags.size(); ++i) if (mags[i] > mags[peakBin]) peakBin = i;
     const float peakFreq = binFreqs[peakBin];
     CHECK(peakFreq > 990.0f && peakFreq < 1010.0f, "FFT peak at ~1 kHz");
-    // Hamming window halves coherent gain, so a unit sine peaks near -5 dB,
-    // far above the -120 dB noise floor.
+    // La normalización 2/(n*0.54) compensa la ganancia coherente de Hamming:
+    // un seno a escala 1.0 lee ~0 dB (antes, con la normalización de ventana
+    // rectangular, caía a ~-5 dB). En cualquier caso, muy por encima del piso
+    // de ruido de -120 dB.
     CHECK(mags[peakBin] > -15.0f, "peak magnitude well above noise floor");
     std::printf("  FFT: peak bin=%d freq=%.1f Hz mag=%.2f dB\n", peakBin, peakFreq, mags[peakBin]);
 
@@ -82,10 +91,10 @@ int main() {
 
     // --- 5) EqDsp (wired makePeaking) processes audio without NaN ---
     EqDsp eq;
-    eq.prepare(bandCount, bandFreqs.data(), sr, 1.41f);
+    eq.prepare(bandFreqs, sr, 1.41f);
     std::vector<float> gains(bandCount, 0.0f);
     for (int i = 0; i < bandCount; ++i) gains[i] = out[i].gainDb;
-    eq.setGains(false, gains);
+    eq.setGains(gains);
     std::vector<float> audio(512);
     for (int i = 0; i < 512; ++i) audio[i] = 0.5f * std::sin(2.0 * 3.14159265358979 * 440.0 * i / sr);
     eq.process(audio.data(), 512);
@@ -97,32 +106,62 @@ int main() {
     //     (antes el banco activo quedaba fijado en L y R nunca sonaba corregido)
     {
         EqDsp eqR2;
-        eqR2.prepare(bandCount, bandFreqs.data(), sr, 1.41f);
+        eqR2.prepare(bandFreqs, sr, 1.41f);
         int band1k = 0;
         for (int i = 1; i < bandCount; ++i)
             if (std::fabs(std::log10(bandFreqs[i] / 1000.0f)) <
                 std::fabs(std::log10(bandFreqs[band1k] / 1000.0f))) band1k = i;
         std::vector<float> zero(bandCount, 0.0f);
-        eqR2.setGains(true, zero);
+        eqR2.setGains(zero);
         std::vector<float> ref(4096), out(4096);
         for (int i = 0; i < 4096; ++i)
             ref[(size_t)i] = 0.5f * std::sin(2.0 * 3.14159265358979 * 1000.0 * i / sr);
         out = ref;
         eqR2.process(out.data(), 4096);
-        auto rmsFrom = [](const std::vector<float>& v, size_t from) {
-            double s = 0.0;
-            for (size_t i = from; i < v.size(); ++i) s += double(v[i]) * double(v[i]);
-            return std::sqrt(s / double(v.size() - from));
-        };
         const double rmsFlat = rmsFrom(out, 1024);
         std::vector<float> cut(bandCount, 0.0f);
         cut[(size_t)band1k] = -12.0f;
-        eqR2.setGains(true, cut);
+        eqR2.setGains(cut);
         out = ref;
         eqR2.process(out.data(), 4096);
         const double rmsCut = rmsFrom(out, 1024);
         CHECK(rmsCut < rmsFlat * 0.6, "R-channel gains are actually applied");
         std::printf("  EqDsp canal R: rms plano=%.4f con corte 1k -12 dB=%.4f\n", rmsFlat, rmsCut);
+    }
+
+    // --- 5c) prepare() validado: parámetros corruptos (vector vacío, rate
+    //     <= 0, frecuencias NaN) NO tocan el snapshot actual — se conserva
+    //     el banco anterior. Regresión: el prepare viejo hacía
+    //     assign(data, data + bands) sin chequear que el vector tuviera
+    //     `bands` entradas (OOB read si el caller pasaba menos).
+    {
+        EqDsp eqG;
+        eqG.prepare(bandFreqs, sr, 1.41f);
+        std::vector<float> cutG(bandCount, 0.0f);
+        cutG[0] = -12.0f;
+        eqG.setGains(cutG);
+        std::vector<float> refG(1024), outG(1024);
+        for (int i = 0; i < 1024; ++i)
+            refG[i] = 0.5f * std::sin(2.0 * 3.14159265358979 * bandFreqs[0] * i / sr);
+        outG = refG;
+        eqG.process(outG.data(), 1024);
+        const double rmsBefore = rmsFrom(outG, 256);
+
+        eqG.prepare({}, sr, 1.41f);                        // vector vacío: sin-op
+        eqG.prepare(bandFreqs, 0.0f, 1.41f);               // rate inválido: sin-op
+        eqG.prepare(bandFreqs, -48000.0f, 1.41f);          // rate negativo: sin-op
+        std::vector<float> nanFreqs = bandFreqs;
+        nanFreqs[2] = std::nanf("");                      // frecuencia NaN: sin-op
+        eqG.prepare(nanFreqs, sr, 1.41f);
+
+        eqG.prepare(bandFreqs, sr, 1.41f);                // re-prepare válido
+        eqG.setGains(cutG);
+        outG = refG;
+        eqG.process(outG.data(), 1024);
+        const double rmsAfter = rmsFrom(outG, 256);
+        // Mismo snapshot + mismo corte + mismo reset de estado: la salida es
+        // bit a bit la que había antes de los prepare inválidos.
+        CHECK(rmsAfter == rmsBefore, "prepare rejects bad params (previous snapshot kept)");
     }
 
     // --- 6) makePeaking(0 dB) is a flat-response biquad (b1==a1, b2==a2) ---

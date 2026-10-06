@@ -2,7 +2,8 @@
  *
  * Es la única implementación de los algoritmos de señal de Acoustical Estudio:
  *   - FFT radix-2 Cooley-Tukey con ventana Hamming y magnitudes en dB
- *     (tabla de twiddles precomputada: sin cos/sin en el camino caliente).
+ *     (tablas de twiddles y bit-reversal, y el scratch real/imaginario,
+ *     preasignados en create(): sin cos/sin ni malloc en el camino caliente).
  *   - Agregación de bins del FFT en bandas logarítmicas (dos punteros,
  *     O(bandas + bins) en vez de O(bandas * bins)).
  *   - Biquad peaking (cookbook RBJ) para el banco de EQ.
@@ -11,6 +12,20 @@
  * así las dos plataformas comparten exactamente el mismo código probado.
  *
  * C linkage para que tanto C++ como el glue JNI lo llamen sin mangling.
+ *
+ * Contrato de threads:
+ *   - Un handle acoustical_fft es INMUTABLE tras create() (ventana,
+ *     bit-reversal, twiddles y scratch fijos): compartir el handle entre
+ *     hilos para leer (bin_count, bin_frequencies) es seguro.
+ *   - compute_magnitudes_db escribe en el scratch INTERNO del handle, así que
+ *     dos llamadas CONCURRENTES sobre el MISMO handle se enredarían; cada
+ *     consumidor concurrente debe tener su propio handle (así se usa en la
+ *     app: un handle por motor). Los punteros de entrada/salida los da el
+ *     caller y no se tocan entre llamadas.
+ *   - acoustical_biquad_process requiere estado EXCLUSIVO por caller: el
+ *     array float state[2] lo provee y lo posee el caller (en el EQ vivo,
+ *     solo el hilo de audio lo toca); compartir un state entre hilos es una
+ *     carrera.
  */
 #ifndef ACOUSTICAL_DSP_H
 #define ACOUSTICAL_DSP_H
@@ -29,9 +44,11 @@ extern "C" {
 typedef struct acoustical_fft acoustical_fft;
 
 /*
- * Create an FFT processor of the given size (must be a power of two, 512-8192).
- * Precomputes the Hamming window, the bit-reversal table and the twiddle
- * table. Returns NULL on invalid size. Free with acoustical_fft_free().
+ * Create an FFT processor of the given size.
+ *
+ * Requirements: power of two and size >= 2 (size 1 would divide by (size-1)
+ * in the window). Returns NULL on invalid size or OOM. Free with
+ * acoustical_fft_free().
  */
 acoustical_fft *acoustical_fft_create(int size);
 
@@ -42,8 +59,16 @@ int acoustical_fft_bin_count(const acoustical_fft *fft);
 /*
  * Run the FFT on `input` (>= size samples, mono, range [-1, 1]) and write the
  * magnitude in dB of each of the size/2 bins into `out_magnitudes_db`.
- * Identical to the original per-frame computation (Hamming window, bit
- * reversal, Cooley-Tukey, 2*|X|/n normalization, -120 dB floor).
+ *
+ * Magnitudes are normalized 2*|X|/(n * 0.54): the 0.54 factor is the Hamming
+ * window's coherent gain (sum of the window ≈ 0.54*n), so a full-scale (0
+ * dBFS) sine reads 0 dB instead of ~-5.4 dB. If any input sample is not
+ * finite (NaN/Inf) it is treated as 0.0 (one poisoned sample would otherwise
+ * corrupt every bin of the frame and, downstream, the corrector and
+ * sweepers). -120 dB floor for bins below 1e-10 linear.
+ *
+ * Thread contract: the handle's scratch is internal and shared, so calls
+ * from different threads must use different handles (see the file header).
  */
 void acoustical_fft_compute_magnitudes_db(acoustical_fft *fft,
                                           const float *input,
@@ -89,7 +114,16 @@ typedef struct {
     float b0, b1, b2, a1, a2;
 } acoustical_biquad_coeffs;
 
-/* Compute the coefficients of a peaking EQ. Writes 5 floats into `out`. */
+/*
+ * Compute the coefficients of a peaking EQ. Writes 5 floats into `out`.
+ *
+ * Validación: si algún parámetro es inválido (sample_rate <= 0,
+ * center_freq_hz <= 0, q <= 0, o cualquier NaN/Inf) se escribe un BYPASS
+ * (b0 = 1, b1 = b2 = a1 = a2 = 0) y la llamada termina: coeficientes
+ * corruptos envenenarían el banco de EQ en vivo. Con parámetros válidos se
+ * clamp center_freq_hz a [10 Hz, 0.99*fs/2] y q a [0.1, 10] antes de
+ * calcular. `out` puede ser NULL (no-op).
+ */
 void acoustical_make_peaking(float center_freq_hz, float sample_rate,
                              float gain_db, float q,
                              acoustical_biquad_coeffs *out);

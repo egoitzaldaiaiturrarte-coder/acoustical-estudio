@@ -49,6 +49,13 @@ struct AnalysisResult {
 class AcousticalEngine {
 public:
     AcousticalEngine();
+    // Red de seguridad: los callers ya llaman stop() antes de destruir el
+    // motor (destructor del plugin, apagado de la app), pero si un host
+    // (Cubase) decide el orden del teardown y el engine muere sin stop(), el
+    // thread joinable sin joinear hace std::terminate() en ~thread(): abort
+    // sin stack (se pierde el crash). stop() es idempotente, así que esto no
+    // cuesta nada cuando no hace falta.
+    ~AcousticalEngine();
 
     std::function<void(const AnalysisResult&)> onAnalysis;            // hilo del motor
     std::function<void(SweepProcess, const SweepStep&)> onSweep;      // decisión de un ecu
@@ -57,7 +64,19 @@ public:
     std::function<void(const std::string&)> onStartFailed;
 
     // === Configuración (port de configure()) ===
+    // Thread-safe: puede llamarse desde el hilo de mensajes (UI) con el
+    // motor en marcha. NO desde el hilo de audio: toma stateMutex_, que el
+    // hilo del motor sostiene durante la FFT. Para el cambio de sample rate
+    // (prepareToPlay del plugin, hilo de audio) existe requestConfigure().
     void configure(const AudioConfig& config);
+    // (Hilo de audio) Encola una config para que el motor la APLIQUE en su
+    // siguiente tick, bajo el lock que el motor ya sostiene: el caller nunca
+    // se bloquea en stateMutex_ (el motor lo sostiene durante la FFT, y un
+    // configure() directo desde el callback de audio se colgaría hasta que
+    // el motor la terminase). El motor decide en el tick si el cambio es
+    // estructural (recrea) o ligero (actualiza en sitio), igual que con
+    // configure().
+    void requestConfigure(const AudioConfig& config);
     // Devuelven COPIAS bajo lock: config_/bandFrequencies_ los reescribe
     // configure() desde otro hilo (una referencia se quedaría colgada).
     AudioConfig config() const {
@@ -80,7 +99,15 @@ public:
     void setSecondaryCaptureLevels(const std::vector<float>& levels);
 
     bool start();
+    // Pide parada y JOINEA el hilo del motor. Idempotente. NO llamar desde
+    // el hilo de audio (el join bloquearía el callback hasta que el motor
+    // termine su tick → xrun): desde el audio se usa requestStop() y el join
+    // lo hace el destructor (que corre en el hilo de mensajes al borrar el
+    // processor).
     void stop();
+    // Pide parada SIN joinear: el motor termina el tick en curso y sale del
+    // bucle. El join lo hace stop() o el destructor (hilo de mensajes).
+    void requestStop();
     bool isRunning() const { return running_.load(); }
 
     // === Referencia y ruido ===
@@ -137,6 +164,10 @@ private:
 
     void engineLoop();
     void analyzeFrameLocked(const std::vector<float>& samples, int sampleRate, TickEvents& ev);
+    // Cuerpo de configure() sin lock: lo llaman configure() (que toma
+    // stateMutex_ por el caller) y el tick del motor (que ya lo sostiene al
+    // aplicar un requestConfigure encolado).
+    void configureLocked(const AudioConfig& config);
     void setDynamicEqConfigLocked(int index, const DynamicEqConfig& cfg);
     float supportGainAt(float freqHz) const;
     float supportTaper(float freqHz, const SupportBand& band) const;
@@ -169,12 +200,18 @@ private:
     // Sincronización:
     //  - stateMutex_ protege todo el estado estructural compartido entre la UI
     //    y el hilo del motor (config, bandas, fft, corrector, sweepers, …).
-    //    El hilo de audio NO lo toca.
-    //  - threadMutex_ protege start()/stop().
+    //    El hilo de audio NO lo toca (por eso existen requestConfigure() y
+    //    requestStop(): la cola de config y la parada se gestionan con
+    //    requestMutex_/threadMutex_, y el motor los consume en su tick).
+    //  - threadMutex_ protege start()/stop()/requestStop().
     //  - ringMutex_ protege el anillo de entrada (hilo de audio <-> motor).
+    //  - requestMutex_ protege la config encolada (requestConfigure -> tick).
     mutable std::mutex stateMutex_;
     std::mutex threadMutex_;
     mutable std::mutex ringMutex_;
+    std::mutex requestMutex_;
+    AudioConfig pendingConfig_{};
+    bool hasPendingConfig_ = false;
     std::deque<float> ring_;
     size_t ringCapacity_ = 8192 * 4;
     std::atomic<int> inputSampleRate_{48000};

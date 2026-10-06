@@ -183,21 +183,50 @@ void AcousticalAudioProcessor::applyParameters() {
 }
 
 void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/) {
-    // prepareToPlay corre en el HILO de audio: está prohibido hacer stop()
-    // (join de un hilo) ni trabajo pesado aquí. configure() es thread-safe y
-    // start() es idempotente, así que basta con reconfigurar y arrancar.
-    auto c = engine_.config();
-    const double sr = sampleRate;
-    c.sampleRate = sr > 87000.0 ? acoustical::SampleRate::Hz96000
-                 : sr > 66000.0 ? acoustical::SampleRate::Hz88200
-                 : sr > 46000.0 ? acoustical::SampleRate::Hz48000
+    // prepareToPlay corre en el HILO de audio: no se puede llamar a
+    // configure() directamente aquí — toma stateMutex_, que el hilo del motor
+    // sostiene DURANTE la FFT, así que un cambio de rate del host podía
+    // bloquear el callback de audio hasta que el motor terminase su tick (ms
+    // de xrun). El applyParameters() anterior hacía lo mismo tres veces
+    // seguidas bajo el lock estructural.
+    //
+    // FIX: solo se ENCUELA la config "pedida" (requestConfigure: un lock
+    // corto y dedicado del motor, requestMutex_, nunca stateMutex_) y el
+    // motor aplica la estructura en su siguiente tick, bajo el lock que ya
+    // sostiene (decide estructural vs ligero como siempre).
+    //
+    // La tasa REAL del dispositivo se re-detecta además en processBlock, que
+    // re-prepara el EQ si el bloque llega a otra rate que el anterior: el
+    // primer bloque tras el cambio no se procesa con coeficientes de la rate
+    // vieja, y el motor re-aplica la curva combinada en su próximo tick.
+    auto l = [this](const String& id) { return apvts.getRawParameterValue(id)->load(); };
+    acoustical::AudioConfig c;
+    c.sampleRate = sampleRate > 87000.0 ? acoustical::SampleRate::Hz96000
+                 : sampleRate > 66000.0 ? acoustical::SampleRate::Hz88200
+                 : sampleRate > 46000.0 ? acoustical::SampleRate::Hz48000
                                 : acoustical::SampleRate::Hz44100;
-    engine_.configure(c);
-    applyParameters();  // reaplica los parámetros tras reconfigurar el motor
-    engine_.start();    // sin-op si ya estaba en marcha
+    c.correctionEnabled = l("correction") > 0.5f;
+    c.maxGainDb = l("maxGain");
+    c.smoothingFactor = l("smoothing");
+    c.noiseSubtractionEnabled = l("noiseSub") > 0.5f;
+    c.targetSpl = l("targetSpl");
+    c.analysisInterval = static_cast<acoustical::AnalysisInterval>(
+        static_cast<int>(l("analysisInterval")));
+    c.bandCount = static_cast<acoustical::BandCount>(static_cast<int>(l("bandCount")));
+    c.fftSize = static_cast<acoustical::FftSize>(static_cast<int>(l("fftSize")));
+    engine_.requestConfigure(c);
+    engine_.start();    // no-op si ya estaba en marcha
 }
 
-void AcousticalAudioProcessor::releaseResources() { engine_.stop(); }
+void AcousticalAudioProcessor::releaseResources() {
+    // releaseResources corre en el HILO de audio: un stop() desde aquí haría
+    // el JOIN del hilo del motor desde el callback (bloquearía hasta que el
+    // motor terminase su tick → xrun). FIX: solo se marca la parada
+    // solicitada (requestStop: un store atómico, sin join); el join lo hace
+    // el destructor del engine (red de seguridad), que corre en el hilo de
+    // mensajes al borrar el processor.
+    engine_.requestStop();
+}
 
 void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                             juce::MidiBuffer&) {
@@ -208,6 +237,20 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const int numIn = getTotalNumInputChannels();
     const float sr = static_cast<float>(getSampleRate());
     auto l = [this](const String& id) { return apvts.getRawParameterValue(id)->load(); };
+
+    // 0. Si el host cambió la sample rate entre bloques (prepareToPlay solo
+    //    ENCOLA la nueva config; el motor la aplica en su próximo tick),
+    //    re-preparamos el EQ AQUÍ, en el hilo de audio (puede: prepare es un
+    //    recomputo de coeficientes que publica un snapshot atómico, no toca
+    //    stateMutex_): el primer bloque tras el cambio no se procesa con
+    //    coeficientes de la rate vieja (bandas en la frecuencia equivocada).
+    //    Se conservan las últimas ganancias (reprepare): el motor re-aplica
+    //    la curva combinada en su próximo tick de análisis.
+    if (static_cast<int>(sr) != eqPreparedRate_) {
+        eqPreparedRate_ = static_cast<int>(sr);
+        engine_.eqDspL().reprepare(sr);
+        engine_.eqDspR().reprepare(sr);
+    }
 
     // 1. Generador de referencia: sustituye el contenido del canal con una
     //    señal conocida (ruido rosa/blanco, barrido o seno por banda).
@@ -247,9 +290,15 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     }
     const int ringSize = static_cast<int>(delayRing_[0].size());
     delaySamples_ = juce::jlimit(0, juce::jmax(0, ringSize - numSamples - 1), wantDelay);
-    if (delaySamples_ != reportedLatency_) {
-        reportedLatency_ = delaySamples_;
-        setLatencySamples(delaySamples_);
+    // PDC = línea de retardo del usuario + cota del retardo de grupo del banco
+    // de biquads (ver kEqGroupDelaySamples en el header: medido sobre el
+    // banco real, con margen; sin ella el host compensaría solo el retardo de
+    // la línea y la corrección de fase del EQ dejaría un error de
+    // alineación).
+    const int pdc = delaySamples_ + kEqGroupDelaySamples;
+    if (pdc != reportedLatency_) {
+        reportedLatency_ = pdc;
+        setLatencySamples(pdc);
     }
     if (delaySamples_ > 0) {
         for (int ch = 0; ch < juce::jmin(2, numOut); ++ch) {
@@ -277,13 +326,10 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             juce::jmin(ch, juce::jmax(numIn, numOut) - 1));
         for (int s = 0; s < numSamples; ++s) mono[s] += src[s];
     }
-    {
-        std::lock_guard<std::mutex> lock(preMutex_);
-        for (int s = 0; s < numSamples; ++s) {
-            preRing_.push_back(mono[s]);
-            if (preRing_.size() > 32768) preRing_.pop_front();
-        }
-    }
+    // El thread de audio es el único escritor del anillo: write() avanza la
+    // cabeza y, si se llena, descarta lo más antiguo (conservando las CAP
+    // últimas) — sin lock ni realloc en el path de audio.
+    preRing_.write(mono, numSamples);
 
     // 4. EQ en tiempo real por canal (corrección principal + los tres ecuas)
     if (leftBuf_.size() < static_cast<size_t>(numSamples)) leftBuf_.resize(numSamples);
@@ -309,11 +355,11 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 }
 
 void AcousticalAudioProcessor::captureReferenceFromInput() {
+    // El reader es la captura del engine (hilo de mensajes): readLatest solo
+    // lee los punteros atómicos (w, r) y copia las últimas muestras — sin
+    // lock, sin realloc; entrega toda la ventana reciente, como el deque.
     std::vector<float> block;
-    {
-        std::lock_guard<std::mutex> lock(preMutex_);
-        block.assign(preRing_.begin(), preRing_.end());
-    }
+    preRing_.readLatest(block);
     engine_.captureReferenceFrom(block, static_cast<int>(getSampleRate()));
 }
 

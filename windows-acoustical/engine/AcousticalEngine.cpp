@@ -23,6 +23,18 @@ AcousticalEngine::AcousticalEngine() {
     configure(AudioConfig{});
 }
 
+AcousticalEngine::~AcousticalEngine() {
+    // Red de seguridad (ver el header): todos los callers ya llaman stop()
+    // antes de destruir el motor (destructor del plugin, apagado de la app).
+    // Pero si el host (Cubase) decide el orden del teardown y el engine se
+    // destruye sin stop(), el thread joinable sin joinear dispara
+    // std::terminate() en ~thread(): un abort sin stack, y se pierde el
+    // crash. stop() es idempotente, así que esto no cuesta nada cuando la
+    // parada ya se hizo. El join corre aquí (hilo de mensajes), nunca en el
+    // callback de audio.
+    stop();
+}
+
 // === Configuración ===
 // Todo el estado estructural se protege con stateMutex_. configure() puede
 // llamarse con el motor en marcha: el hilo del motor solo lo usa por ticks
@@ -34,9 +46,28 @@ AcousticalEngine::AcousticalEngine() {
 //    corrector, profiler y sweepers.
 //  - LIGERO (solo ganancias/suavizado/ruido): actualiza parámetros en sitio,
 //    sin recrear objetos ni perder el estado de corrección.
+//
+// El hilo de audio NO llama a configure(): stateMutex_ se sostiene durante
+// la FFT del tick. Para el cambio de sample rate (prepareToPlay del plugin)
+// existe requestConfigure(): el motor aplica la config encolada en su
+// siguiente tick, bajo el lock que ya sostiene.
 void AcousticalEngine::configure(const AudioConfig& config) {
     std::lock_guard<std::mutex> lock(stateMutex_);
+    configureLocked(config);
+}
 
+void AcousticalEngine::requestConfigure(const AudioConfig& config) {
+    // Lock corto y dedicado (NUNCA stateMutex_): el motor consume la cola en
+    // su tick, donde ya sostiene stateMutex_ (y la FFT). Así un cambio de
+    // sample rate desde el callback de audio no bloquea al audio en el lock
+    // estructural.
+    std::lock_guard<std::mutex> lock(requestMutex_);
+    pendingConfig_ = config;
+    hasPendingConfig_ = true;
+}
+
+// Requiere stateMutex_ tomado.
+void AcousticalEngine::configureLocked(const AudioConfig& config) {
     const bool structural =
         fft_ == nullptr ||
         config.bandCount != config_.bandCount ||
@@ -62,8 +93,8 @@ void AcousticalEngine::configure(const AudioConfig& config) {
         // El EQ se prepara con la tasa configurada; si la tasa real del
         // dispositivo difiere, analyzeFrameLocked() lo re-prepara con la real.
         const float sr = static_cast<float>(sampleRateHz(config.sampleRate));
-        dspL_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
-        dspR_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
+        dspL_.prepare(bandFrequencies_, sr);
+        dspR_.prepare(bandFrequencies_, sr);
         eqSampleRate_ = static_cast<int>(sr);
 
         const int newBandCount = static_cast<int>(bandFrequencies_.size());
@@ -135,12 +166,21 @@ bool AcousticalEngine::start() {
     return true;
 }
 
+// Pide parada: solo un store atómico bajo threadMutex_. NO joinea: el join
+// desde el hilo de audio (releaseResources del plugin) bloquearía el callback
+// hasta que el motor terminara su tick → xrun. El join lo hace stop() o el
+// destructor (hilo de mensajes).
+void AcousticalEngine::requestStop() {
+    std::lock_guard<std::mutex> lock(threadMutex_);
+    running_.store(false);
+}
+
+// Idempotente. El join va fuera del lock de request, para no mantener ningún
+// mutex durante la espera... y sin embargo aquí se re-toma (threadMutex_)
+// para serializar dos stop() concurrentes: el segundo se queda esperando en
+// el lock y luego ve que el thread ya no es joinable.
 void AcousticalEngine::stop() {
-    {
-        std::lock_guard<std::mutex> lock(threadMutex_);
-        running_.store(false);
-    }
-    // join fuera del lock para no mantener ningún mutex durante la espera.
+    requestStop();
     std::lock_guard<std::mutex> joinLock(threadMutex_);
     if (engineThread_.joinable()) engineThread_.join();
 }
@@ -150,8 +190,16 @@ void AcousticalEngine::stop() {
 // callbacks (onSweep/onAnalysis/onNoise*) se despachan FUERA del lock para que
 // no puedan reentrar y deadlocar el motor.
 void AcousticalEngine::engineLoop() {
-    const int fftN = fftSamples(config_.fftSize);
-    std::vector<float> block(fftN);
+    // El buffer de análisis se dimensiona contra la fft ACTIVA cada
+    // iteración (abajo) y solo se re-resizea cuando cambia: sin mallocs en
+    // estado estable. No puede derivarse de la config del arranque: un
+    // requestConfigure() de cambio de fftSize recrea fft_ en caliente, y
+    // quedarse con el tamaño viejo haría que analyzeFrameLocked leyera
+    // fft_->size muestras de un buffer menor (read fuera de heap, bug de la
+    // auditoría).
+
+    std::vector<float> block;
+    int blockN = 0;
 
     while (running_.load()) {
         const auto tickStart = std::chrono::steady_clock::now();
@@ -160,6 +208,18 @@ void AcousticalEngine::engineLoop() {
         TickEvents ev;
         {
             std::lock_guard<std::mutex> lock(stateMutex_);
+
+            // 0. Aplicar la config encolada (requestConfigure desde el hilo
+            //    de audio al cambiar el sample rate): se aplica AQUÍ, en el
+            //    hilo del motor y bajo el lock que ya sostiene, en vez de
+            //    bloquear al callback de audio en stateMutex_.
+            {
+                std::lock_guard<std::mutex> rlock(requestMutex_);
+                if (hasPendingConfig_) {
+                    hasPendingConfig_ = false;
+                    configureLocked(pendingConfig_);
+                }
+            }
 
             // 1. Tick de los tres ecuas dinámicos (cada ~10 ms)
             {
@@ -177,8 +237,17 @@ void AcousticalEngine::engineLoop() {
             const bool doAnalysis =
                 (now - lastAnalysisMs_.load()) >= analysisIntervalMs(config_.analysisInterval);
             if (doAnalysis) {
+                // fftN vigente: se re-deriva de la fft_ ACTUAL. Si fft_ es
+                // nula (estructural a medio re-crear) se salta el análisis
+                // de este tick; si el tamaño cambió, se resizes el buffer
+                // (solo entonces: sin mallocs en estado estable).
+                const int fftN = fft_ ? fft_->binCount() * 2 : 0;
+                if (fftN > 0 && fftN != blockN) {
+                    block.resize(fftN);
+                    blockN = fftN;
+                }
                 bool haveBlock = false;
-                {
+                if (fftN > 0) {
                     std::lock_guard<std::mutex> rlock(ringMutex_);
                     if (static_cast<int>(ring_.size()) >= fftN) {
                         const int start = static_cast<int>(ring_.size()) - fftN;
@@ -219,8 +288,8 @@ void AcousticalEngine::analyzeFrameLocked(const std::vector<float>& samples, int
     if (sampleRate != eqSampleRate_) {
         eqSampleRate_ = sampleRate;
         const float sr = static_cast<float>(sampleRate);
-        dspL_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
-        dspR_.prepare(static_cast<int>(bandFrequencies_.size()), bandFrequencies_.data(), sr);
+        dspL_.prepare(bandFrequencies_, sr);
+        dspR_.prepare(bandFrequencies_, sr);
     }
 
     const float spl = splMeter_->computeSpl(samples.data(), static_cast<int>(samples.size()));
@@ -294,8 +363,8 @@ void AcousticalEngine::analyzeFrameLocked(const std::vector<float>& samples, int
         }
     }
 
-    dspL_.setGains(false, combinedL);
-    dspR_.setGains(true, combinedR);
+    dspL_.setGains(combinedL);
+    dspR_.setGains(combinedR);
 
     // Osciloscopio: bloque temporal reciente
     std::vector<float> timeSamples(samples.begin(),

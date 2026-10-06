@@ -19,7 +19,7 @@ public:
                   float maxGainDb, float smoothingFactor, float noiseFloorDb,
                   int correctionIntervalMs = 500)
         : bandFrequencies_(bandFrequencies), sampleRate_(sampleRate), fftBinCount_(fftBinCount),
-          maxGainDb_(maxGainDb), smoothingFactor_(smoothingFactor), noiseFloorDb_(noiseFloorDb),
+          maxGainDb_(maxGainDb), smoothingFactor_(clampSmoothingFactor(smoothingFactor)), noiseFloorDb_(noiseFloorDb),
           correctionIntervalMs_(correctionIntervalMs > 0 ? correctionIntervalMs : 500),
           bandCount_(static_cast<int>(bandFrequencies.size())) {
         targetGains_.assign(bandCount_, 0.0f);
@@ -139,7 +139,12 @@ public:
     void updateParams(float maxGainDb, float smoothingFactor, float noiseFloorDb,
                       int correctionIntervalMs) {
         maxGainDb_ = maxGainDb;
-        smoothingFactor_ = smoothingFactor;
+        // Un factor > 1 haría divergir el IIR (ver clampSmoothingFactor):
+        // si el nuevo valor es finito se acepta clampado al rango estable;
+        // si viene corrupto (NaN/Inf) se conserva el factor previo y el loop
+        // de ganancia no se toca.
+        if (std::isfinite(smoothingFactor))
+            smoothingFactor_ = clampSmoothingFactor(smoothingFactor);
         noiseFloorDb_ = noiseFloorDb;
         correctionIntervalMs_ = correctionIntervalMs > 0 ? correctionIntervalMs : 500;
     }
@@ -160,6 +165,18 @@ private:
 
     static constexpr long long kTwoBandPeriodMs = 500;
     static constexpr float kActiveMarginDb = 3.0f;
+
+    // El factor de suavizado entra en el IIR de ganancia
+    //   gain += (target - gain) * f
+    // cuyo polo es 1-(1+f) = -f: para f > 1 el polo sale de la unidad y el
+    // feedback DIVERGE (el error se amplifica frame a frame, oscilación
+    // creciente hacia los límites de clamp). El piso 0.01 evita que f=0
+    // congele la corrección para siempre. (El 0.05 de
+    // AudioConfig::effectiveSmoothingFactor es un ajuste de config; aquí
+    // es el tope estructural del loop.)
+    static float clampSmoothingFactor(float f) {
+        return (std::isfinite(f) ? std::clamp(f, 0.01f, 1.0f) : 0.3f);
+    }
 
     std::vector<float> bandFrequencies_;  // copia propia (ver constructor)
     int sampleRate_;

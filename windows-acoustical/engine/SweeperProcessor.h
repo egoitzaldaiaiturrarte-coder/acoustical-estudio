@@ -1,9 +1,16 @@
 // SweeperProcessor.h — port de SweeperProcessor.kt: el corrector automático
 // que se repite tres veces (los tres ecuas dinámicos) con distintos ajustes.
+//
+// CONTRATO DE THREADS: todo el estado mutable de esta clase (autoGains/
+// autoTargets, cursor_, lastDecisionMs_, nextChannelIsR_) SOLO se toca bajo
+// el stateMutex_ del engine (step()/reset()/applyConfig() los llama desde el
+// hilo del motor; la UI escribe los atomics de parámetros). Los accessors
+// públicos de ganancias (gainsL()/gainsR()) leen autoGains* SIN lock: son
+// la puerta del race — el caller (analyzeFrameLocked, bajo stateMutex_) debe
+// ser el único lector; no exponerlos a hilos ajenos.
 #pragma once
 
 #include "AcousticalParameters.h"
-#include <atomic>
 #include <atomic>
 #include <memory>
 
@@ -20,6 +27,10 @@ struct SweepStep {
 
 class SweeperProcessor {
 public:
+    // Si bandFrequencies contiene valores no finitos o <= 0 (config corrupto),
+    // el sweeper queda INACTIVO (flag interno, step() siempre devuelve nullptr
+    // y las curvas siguen devolviendo ceros del tamaño correcto): no se
+    // rompe la API ni el resto del motor.
     SweeperProcessor(const std::vector<float>& bandFrequencies, DynamicEqConfig config);
 
     // Cambia parámetros en vivo sin perder el progreso
@@ -58,6 +69,7 @@ private:
 
     std::vector<float> bandFrequencies_;
     int bandCount_;
+    bool valid_ = true;  // false si el constructor rechazó frecuencias corruptas
     std::vector<float> autoGainsL_, autoTargetsL_, autoGainsR_, autoTargetsR_;
     int cursor_ = 0;
     long long lastDecisionMs_ = 0;

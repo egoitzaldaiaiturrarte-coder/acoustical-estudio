@@ -43,7 +43,25 @@ target_compile_definitions(AcousticalDynamicEq PUBLIC
 )
 
 if(MSVC)
-    target_compile_options(AcousticalDynamicEq PRIVATE /utf-8)
+    # /utf-8: los fuentes del plugin llevan acentos/UTF-8.
+    # /guard:cf (Control Flow Guard): el plugin corre DENTRO del DAW; un
+    # puntero a función corrupto produce una excepción controlada
+    # (0x40000005) en vez de un salto al azar que tumbaría el host.
+    target_compile_options(AcousticalDynamicEq PRIVATE /utf-8 /guard:cf)
+    # El target "shared code" es una lib estática: sus opciones de enlace no
+    # se usan; los flags de enlace van en los wrappers (abajo), que son los
+    # que producen los dll finales.
+    target_link_options(AcousticalDynamicEq PRIVATE /guard:cf)
+    # Wrappers VST3/VST2: los dll que enlaza el DAW también se compilan y
+    # enlazan con CFG (solo se generan los targets que hay, según FORMATS).
+    if(TARGET AcousticalDynamicEq_VST3)
+        target_compile_options(AcousticalDynamicEq_VST3 PRIVATE /guard:cf)
+        target_link_options(AcousticalDynamicEq_VST3 PRIVATE /guard:cf)
+    endif()
+    if(TARGET AcousticalDynamicEq_VST)
+        target_compile_options(AcousticalDynamicEq_VST PRIVATE /guard:cf)
+        target_link_options(AcousticalDynamicEq_VST PRIVATE /guard:cf)
+    endif()
 endif()
 
 # Reutiliza el canvas de EQ y las tarjetas de los ecuas dinámicos de la app
@@ -55,5 +73,30 @@ target_link_libraries(AcousticalDynamicEq PRIVATE
     acoustical_engine
     PUBLIC
     juce::juce_recommended_config_flags
-    juce::juce_recommended_lto_flags
 )
+
+# LTO: solo en builds normales; con ASan puede degradar los informes
+# (marcos optimizados de forma agresiva en los límites de módulo). Misma
+# política que la app (app/CMakeLists.txt).
+if(NOT ACOUSTICAL_ASAN)
+    target_link_libraries(AcousticalDynamicEq PUBLIC juce::juce_recommended_lto_flags)
+endif()
+
+# Build de diagnóstico con AddressSanitizer (opción global, ver el job "asan"
+# del workflow): el plugin se instrumenta igual que la app. En JUCE 7 los
+# targets de módulo son INTERFACE (sus .cpp se compilan como parte del target
+# consumidor), así que instrumentar el target de código compartido cubre la
+# app del plugin Y los módulos de JUCE que usa; los wrappers VST3/VST2 (los
+# dll que enlaza el DAW) se instrumentan y enlazan con el runtime ASan ellos
+# mismos, para que también su glue de host esté cubierto.
+if(ACOUSTICAL_ASAN AND MSVC)
+    target_compile_options(AcousticalDynamicEq PRIVATE /fsanitize=address)
+    if(TARGET AcousticalDynamicEq_VST3)
+        target_compile_options(AcousticalDynamicEq_VST3 PRIVATE /fsanitize=address)
+        target_link_options(AcousticalDynamicEq_VST3 PRIVATE /fsanitize=address)
+    endif()
+    if(TARGET AcousticalDynamicEq_VST)
+        target_compile_options(AcousticalDynamicEq_VST PRIVATE /fsanitize=address)
+        target_link_options(AcousticalDynamicEq_VST PRIVATE /fsanitize=address)
+    endif()
+endif()

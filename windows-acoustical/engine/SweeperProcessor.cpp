@@ -8,6 +8,7 @@ namespace acoustical {
 SweeperProcessor::SweeperProcessor(const std::vector<float>& bandFrequencies, DynamicEqConfig config)
     : bandFrequencies_(bandFrequencies),
       bandCount_(static_cast<int>(bandFrequencies.size())),
+      valid_(true),
       decisionIntervalMs(config.decisionIntervalMs),
       maxGainDb(config.maxGainDb),
       mixerLevel(config.mixerLevel),
@@ -15,6 +16,14 @@ SweeperProcessor::SweeperProcessor(const std::vector<float>& bandFrequencies, Dy
       extraSweeps(config.extraSweeps),
       direction(config.startFrom),
       channelLinked(true) {
+    // Frecuencias corruptas (NaN/Inf/<= 0 — config roto, desbordamiento de un
+    // parámetro upstream) harían que el sweeper elija bandas sin sentido y
+    // empuje el corrector hacia polos fuera de la unidad. Lo más defensivo sin
+    // romper la API: el sweeper queda INACTIVO (step() devuelve nullptr, las
+    // curvas siguen devolviendo ceros del tamaño correcto).
+    for (float f : bandFrequencies_)
+        if (!std::isfinite(f) || f <= 0.0f) { valid_ = false; break; }
+
     config.clamp();
     decisionIntervalMs.store(config.decisionIntervalMs, std::memory_order_relaxed);
     maxGainDb.store(config.maxGainDb, std::memory_order_relaxed);
@@ -51,7 +60,10 @@ float SweeperProcessor::smoothingMs(float freqHz) const {
 
 std::unique_ptr<SweepStep> SweeperProcessor::step(const std::vector<float>& measuredLevels,
                                                   long long nowMs, float dtMs) {
-    if (bandCount_ == 0) return nullptr;
+    // El constructor invalida el sweeper si las frecuencias de banda llegan
+    // corruptas: sin bandCount_==0, gainsL()/gainsR() devolvían vectores del
+    // tamaño "correcto" pero con contenido basura.
+    if (bandCount_ == 0 || !valid_) return nullptr;
 
     const float maxGain = maxGainDb.load(std::memory_order_relaxed);
     const float mixer = mixerLevel.load(std::memory_order_relaxed);
@@ -98,9 +110,12 @@ std::unique_ptr<SweepStep> SweeperProcessor::step(const std::vector<float>& meas
     if (linked) {
         channel = "L+R";
         for (int k = 0; k <= extra; ++k) {
-            const int rank = ((cursor_ + k) % n + n) % n;
+            // cursor_ y k >= 0: (cursor_+k) % n ya cae en [0, n); la doble
+            // reducción anterior ((...)%n+n)%n era redundante. rank < n,
+            // así (n-1-rank) % n también es identidad.
+            const int rank = (cursor_ + k) % n;
             const int cutIdx = active[rank];
-            const int boostIdx = active[(((n - 1 - rank) % n) + n) % n];
+            const int boostIdx = active[(n - 1 - rank) % n];
             applyDecision(measuredLevels, cutIdx, boostIdx, mean, true, true);
             if (firstCutIdx < 0) firstCutIdx = cutIdx;
         }
@@ -109,9 +124,9 @@ std::unique_ptr<SweepStep> SweeperProcessor::step(const std::vector<float>& meas
         nextChannelIsR_ = !nextChannelIsR_;
         channel = toR ? "R" : "L";
         for (int k = 0; k <= extra; ++k) {
-            const int rank = ((cursor_ + k) % n + n) % n;
+            const int rank = (cursor_ + k) % n;
             const int cutIdx = active[rank];
-            const int boostIdx = active[(((n - 1 - rank) % n) + n) % n];
+            const int boostIdx = active[(n - 1 - rank) % n];
             applyDecision(measuredLevels, cutIdx, boostIdx, mean, !toR, toR);
             if (firstCutIdx < 0) firstCutIdx = cutIdx;
         }
@@ -136,6 +151,11 @@ void SweeperProcessor::applyDecision(const std::vector<float>& measuredLevels, i
     const float maxGain = maxGainDb.load(std::memory_order_relaxed);
     const float cutDev = std::max(measuredLevels[cutIdx] - mean, 0.0f);
     const float boostDev = std::max(mean - measuredLevels[boostIdx], 0.0f);
+    // std::clamp(NaN, ...) es UB por estándar (el orden lo<hi es indefinido
+    // y el resultado queda a merced de la implementación); un nivel medido
+    // no finito (dato upstream corrupto) no debe mover objetivos: se salta
+    // la decisión entera.
+    if (!std::isfinite(cutDev) || !std::isfinite(boostDev)) return;
     if (toL) {
         if (cutDev > 0.0f)
             autoTargetsL_[cutIdx] = std::clamp(autoTargetsL_[cutIdx] - cutDev, -maxGain, maxGain);

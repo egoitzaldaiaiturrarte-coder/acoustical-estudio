@@ -20,8 +20,10 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <AcousticalEngine.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
-#include <deque>
+#include <cstdint>
 #include <mutex>
 #include <vector>
 
@@ -94,10 +96,58 @@ private:
     mutable std::vector<float> monoBuf_, leftBuf_, rightBuf_, genBuf_;
 
     // Anillo pre-EQ (lo que la fuente envía, antes de salir): de aquí sale la
-    // referencia al pulsar "Capturar referencia". Mismo patrón de mutex que el
-    // anillo del motor (hilo de audio <-> hilo de mensajes).
-    mutable std::mutex preMutex_;
-    std::deque<float> preRing_;
+    // referencia al pulsar "Capturar referencia".
+    //
+    // Anillo FIJO preasignado (array de capacidad máxima + head/tail
+    // atómicos), mismo patrón que RouteHub::Ring / RemoteAudioLink::Ring en
+    // app/: el std::deque + std::mutex anterior hacía reallocs en cada push
+    // (malloc en el path RT) y un lock por bloque.
+    //
+    // Propiedad del anillo (SPSC, sin lock en el path de audio):
+    //  - el thread de audio es el ÚNICO escritor: avanza la cabeza de
+    //    escritura w y, si el anillo se llena, descarta lo más antiguo
+    //    (avanzando r) — la misma "conservar las CAP últimas" que el deque
+    //    viejo. El reader nunca escribe r, así que no puede chocar con ese
+    //    descarte.
+    //  - el reader es la captura del engine (captureReferenceFromInput, hilo
+    //    de mensajes): solo LEe los punteros (w, r) y copia las últimas
+    //    muestras. El "pop" de datos lo hace quien consume (el engine),
+    //    manteniendo la semántica anterior: la captura recibe toda la
+    //    ventana reciente.
+    struct PreRing {
+        static constexpr int CAP = 32768;  // potencia de 2, como el deque viejo
+        std::array<float, CAP> data{};
+        std::atomic<std::int64_t> w{0}, r{0};
+
+        // (Hilo de audio). El descarte usa max(rv, wv + n - CAP) en vez de
+        // un if de desbordamiento: con n <= CAP es idéntico (solo avanza si el
+        // anillo se llena), y si un bloque llegara a superar CAP (n > CAP,
+        // imposible en la práctica pero JUCE no garantiza un máximo) r se
+        // queda a CAP de la nueva cabeza y no la sobrepasa: la ventana de
+        // lectura [r, w) nunca queda vacía/negativa para el reader.
+        void write(const float* s, int n) {
+            const std::int64_t wv = w.load(std::memory_order_relaxed);
+            const std::int64_t rv = r.load(std::memory_order_relaxed);
+            r.store(std::max(rv, wv + n - CAP), std::memory_order_relaxed);
+            for (int i = 0; i < n; ++i)
+                data[static_cast<int>((wv + i) & (CAP - 1))] = s[i];
+            w.store(wv + n, std::memory_order_release);
+        }
+        // (Hilo de mensajes: la captura del engine) — solo lectura de
+        // punteros: copia las `take` últimas muestras en `out`.
+        // (No const: en C++17 std::atomic::load() no es miembro const.)
+        void readLatest(std::vector<float>& out) {
+            const std::int64_t wv = w.load(std::memory_order_acquire);
+            const std::int64_t rv = r.load(std::memory_order_acquire);
+            const int take = static_cast<int>(std::min<std::int64_t>(CAP, wv - rv));
+            out.resize(take);
+            for (int i = 0; i < take; ++i) {
+                const std::int64_t src = wv - take + i;
+                out[i] = data[static_cast<int>(src & (CAP - 1))];
+            }
+        }
+    };
+    PreRing preRing_;
 
     // Línea de retardo global (0–100 ms, pasos de 0,01 ms), solo hilo de
     // audio; la latencia se reporta al host para que Cubase compense (PDC).
@@ -105,6 +155,34 @@ private:
     int delayWritePos_ = 0;
     int delaySamples_ = 0;
     int reportedLatency_ = 0;
+
+    // Cota conservadora del retardo de grupo del banco de biquads del EQ
+    // (peaking RBJ, uno por banda), que se suma a la línea de retardo en el
+    // PDC (setLatencySamples).
+    //
+    // Razonamiento: el PDC solo modela un retardo CONSTANTE, pero el banco
+    // tiene un retardo de grupo (dependiente de la frecuencia): cada biquad
+    // rota fase rápidamente cerca de su frecuencia central y el retardo de
+    // grupo de un par de polos 2nd-order pegado a la unidad es inversamente
+    // proporcional a la distancia al DC (≈ Q·fs/(2π·f0) cerca de la
+    // resonancia). Se midió el retardo de grupo TOTAL del banco real del
+    // plugin (barrido de 20 Hz–20 kHz por 1/6…1/12 de octava, Q=1.41,
+    // ganancias peorcaso ±6 dB, las 5 tasas soportadas) buscando el máximo
+    // sobre la frecuencia: el pico siempre cae en la banda más grave (20
+    // Hz, su polo es el más cercano al DC) y valía ~47 muestras a 44.1/48
+    // kHz, ~65 a 88.2 kHz y ~108 a 96 kHz (el caso 10 bandas: bandas más
+    // anchas → resonancia más profunda → fase más lenta). 128 muestras cubre
+    // todos esos máximos (y cualquier configuración de bandas del plugin)
+    // con margen: son ~2.6 ms a 48 kHz y ~1.3 ms a 96 kHz, despreciables
+    // frente a la línea de retardo de 0–100 ms del usuario. (Una cota "1-2
+    // muestras por biquad" no cerraba el caso de 10 bandas, y "2 por banda
+    // activa" sobreestimaría el de 124 bandas: 248 vs ~70 medidas.)
+    static constexpr int kEqGroupDelaySamples = 128;
+
+    // Rate del bloque con la que se preparó el EQ (solo hilo de audio):
+    // processBlock re-prepara los biquads si el host cambió la sample rate
+    // entre bloques (ver el comentario de processBlock).
+    int eqPreparedRate_ = 0;
 
     // Generador de referencia (estado solo-hilo-de-audio; los parámetros se
     // leen de los atómicos del APVTS en cada bloque).
