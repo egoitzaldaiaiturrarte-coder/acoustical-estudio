@@ -9,6 +9,7 @@
 #pragma once
 
 #include <juce_core/juce_core.h>
+#include <atomic>
 
 class SyncClient {
 public:
@@ -21,13 +22,21 @@ public:
                          const juce::var& send, juce::var& reply,
                          const juce::String& code, int timeoutMs = 1500);
 
-    /** GET HTTP simple; devuelve las cabeceras ("" si falla) y el cuerpo en body. */
+    /** GET HTTP simple; devuelve las cabeceras ("" si no llega una respuesta)
+     *  y el cuerpo en body (vacío si el estado no es 200).
+     *  `statusCode` (opcional) recibe el código HTTP de la respuesta (p. ej.
+     *  401 = código de emparejamiento ausente/no válido), aunque no sea 200. */
     static juce::String httpGet(const juce::String& host, int port, const juce::String& path,
                                 juce::MemoryBlock& body, const juce::String& code,
-                                int timeoutMs = 3000);
+                                int timeoutMs = 3000, int* statusCode = nullptr);
 
-    /** GET HTTP en streaming a un archivo (ideal para el instalador, decenas de MB). */
+    /** GET HTTP en streaming a un archivo (ideal para el instalador, decenas de MB).
+     *  `statusCode` (opcional) recibe el código HTTP aunque no sea 200.
+     *  `stopFlag` (opcional): si pasa a true mientras se lee, la descarga se
+     *  aborta y se devuelve false (el llamador puede distinguir una
+     *  cancelación de un fallo de red releyendo el flag). */
     static bool httpDownloadToFile(const juce::String& host, int port, const juce::String& path,
                                    const juce::File& dest, const juce::String& code,
-                                   juce::int64 maxBytes);
+                                   juce::int64 maxBytes, int* statusCode = nullptr,
+                                   const std::atomic<bool>* stopFlag = nullptr);
 };

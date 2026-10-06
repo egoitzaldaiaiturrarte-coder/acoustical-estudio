@@ -402,7 +402,12 @@ private:
         // Contador para el log de diagnóstico (una sola vez; aquí NO se
         // escribe en disco: esto corre en el hilo de audio).
         audioBursts_.fetch_add(1, std::memory_order_relaxed);
-        std::vector<float> mono(static_cast<size_t>(numSamples), 0.0f);
+        // Buffer preasignado: se redimensiona solo si crece y se pone a cero
+        // (aquí se va sumando) cada bloque. Evita un malloc en cada llamada.
+        if (monoBuf_.size() < static_cast<size_t>(numSamples))
+            monoBuf_.resize(static_cast<size_t>(numSamples));
+        std::fill_n(monoBuf_.data(), numSamples, 0.0f);
+        auto& mono = monoBuf_;
         // Niveles de entrada (Ruteos > Entradas): ganancia por canal,
         // atómica (escrita por la UI, leída aquí) y aplicada antes del motor.
         const float inL = routingMatrix_->inputGainL();
@@ -460,8 +465,13 @@ private:
         engine_.pushSamples(mono.data(), numSamples, lastSampleRate_);
 
         // Salida: EQ en tiempo real por canal (correcciones de los 3 ecuas)
-        std::vector<float> left(static_cast<size_t>(numSamples));
-        std::vector<float> right(static_cast<size_t>(numSamples));
+        // Buffers preasignados (se redimensionan solo si crecen).
+        if (leftBuf_.size() < static_cast<size_t>(numSamples))
+            leftBuf_.resize(static_cast<size_t>(numSamples));
+        if (rightBuf_.size() < static_cast<size_t>(numSamples))
+            rightBuf_.resize(static_cast<size_t>(numSamples));
+        auto& left = leftBuf_;
+        auto& right = rightBuf_;
         {
             std::lock_guard<std::mutex> lock(dspMutex_);
             std::copy(mono.begin(), mono.end(), left.begin());
@@ -850,4 +860,9 @@ private:
     std::vector<float> genBuf_;          // señal del generador (una generación por bloque)
     std::vector<float> bridgeBufL_, bridgeBufR_;  // audio entrante de Cubase (puente ASIO)
     std::vector<float> remoteMicBuf_;    // micrófono remoto en curso (M2, una entrada por móvil)
+    // Buffers preasignados del callback de audio: se redimensionan solo si
+    // crecen, para no hacer malloc en el hilo de audio cada bloque (causaba
+    // jitter; el mismo problema que ya se resolvió con genBuf_/bridgeBuf_).
+    std::vector<float> monoBuf_;           // mezcla de entradas (tarjeta+móviles+gen+puente)
+    std::vector<float> leftBuf_, rightBuf_; // salida post-EQ por canal
 };

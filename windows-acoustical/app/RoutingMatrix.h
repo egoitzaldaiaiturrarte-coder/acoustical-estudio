@@ -162,9 +162,12 @@ private:
         }
 
         void refresh() {
-            const auto* d = link_.deviceByIp(ip_);
-            const auto name = d != nullptr ? RemoteAudioLink::displayName(*d)
-                                           : juce::String::fromUTF8("Móvil ") + ip_;
+            // Copia (no puntero): el mapa de móviles se poda, así que deviceByIp
+            // devuelve una copia de Device en lugar de un puntero que quedaría
+            // colgando.
+            const auto d = link_.deviceByIp(ip_);
+            const auto name = d.has_value() ? RemoteAudioLink::displayName(*d)
+                                             : juce::String::fromUTF8("Móvil ") + ip_;
             label_.setText(name, juce::dontSendNotification);
             const bool on = link_.micOn(ip_);
             micButton_.setToggleState(on, juce::dontSendNotification);

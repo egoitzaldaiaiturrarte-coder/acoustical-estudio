@@ -81,6 +81,10 @@ private:
     // true si el transporte destino cambió (y por tanto hay que (re)conectarse)
     bool endpointChanged(const juce::String& host, Transport t);
     bool exchange(const juce::var& send, juce::var& reply);
+    // Pide parar la descarga del instalador si va en marcha (el móvil se fue
+    // o se está cerrando la app): el hilo de descarga lo comprueba en cada
+    // lectura (downloadStopRequested_).
+    void requestDownloadStop();
 
     juce::File configPath() const;
     void loadConfig();
@@ -88,10 +92,14 @@ private:
 
     // Actualización desde el móvil
     void runUpdateCheck();
-    juce::String httpGet(const juce::String& path, juce::MemoryBlock& body, int timeoutMs = 3000);
-    bool httpDownloadToFile(const juce::String& path, const juce::File& dest, juce::int64 maxBytes);
+    juce::String httpGet(const juce::String& path, juce::MemoryBlock& body, int timeoutMs = 3000,
+                        int* statusOut = nullptr);
+    bool httpDownloadToFile(const juce::String& path, const juce::File& dest, juce::int64 maxBytes,
+                            std::atomic<bool>* stopFlag = nullptr);
     juce::String installedVersion() const;
     static int compareVersions(const juce::String& a, const juce::String& b);
+    // Pide al usuario, en el hilo de UI, si lanza el instalador (ver .cpp).
+    bool confirmInstallOnUiThread(const juce::String& version);
     bool launchInstaller(const juce::File& installer) const;
 
     juce::File adb_;
@@ -115,6 +123,28 @@ private:
     std::atomic<bool> updateRunning_{false};
     mutable std::mutex updateMutex_;
     WindowsUpdateInfo updateInfo_;
+    // Frenado de la auto-actualización: si el móvil responde 401 (código de
+    // emparejamiento ausente/no válido) a /manifest N veces seguidas, la app deja
+    // de intentar (no tiene sentido repetir el mismo código malo, y parecería un
+    // martilleo al móvil). Un 200 la reinicia; cambiar el código también.
+    std::atomic<int> update401Count_{0};
+    std::atomic<bool> update401Stopped_{false};
+    static constexpr int kMaxUpdate401 = 5;
+    // Si el móvil se va (o se cierra la app) en plena descarga del instalador,
+    // se pide al hilo de descarga que pare: el join del destructor no debe
+    // esperar a que termine de leer cientos de MB que ya no van a llegar.
+    // La descarga (SyncClient::httpDownloadToFile) lo comprueba en cada
+    // lectura; runUpdateCheck lo despeja antes de cada intento nuevo.
+    std::atomic<bool> downloadStopRequested_{false};
+    // Respaldo USB (adb): mientras no hay baliza ni IP manual, el sondeo
+    // "adb devices -l" (arranca un proceso hijo) no corre cada tick del
+    // watchdog sino cada adbProbeEvery_ ticks, que se duplica tras cada
+    // sondeo hasta un tope de 60 ticks (~60 s): 1, 2, 4, 8, 16, 32, 60, 60…
+    // Las vías rápidas (baliza/IP manual, comprobaciones de memoria) lo
+    // devuelven a 1, de modo que al caer al USB el primer sondeo es inmediato.
+    // Solo los toca el hilo de mensaje (timerCallback → pollDevices).
+    int adbProbeEvery_ = 1;
+    int adbProbeSkip_ = 0;
 
     static constexpr int SYNC_PORT = 41041;    // mismo puerto que la app Android
     static constexpr int BEACON_PORT = 41042;  // baliza UDP del móvil por Wi-Fi

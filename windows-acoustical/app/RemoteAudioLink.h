@@ -33,7 +33,10 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -69,7 +72,10 @@ public:
     std::vector<Device> devices() const;
     /** Móviles con baliza o audio recientes (para la UI). */
     std::vector<Device> liveDevices(int maxAgeMs = 5000) const;
-    const Device* deviceByIp(const juce::String& ip) const;
+    /** Copia del Device de ese IP (std::nullopt si no existe). Se devuelve una
+     *  copia, no un puntero, porque el mapa se poda (ver pruneStaleLocked): un
+     *  puntero en el mapa quedaría colgando tras el podado. */
+    std::optional<Device> deviceByIp(const juce::String& ip) const;
     /** ¿Tiene baliza o audio reciente? (para cerrar rutas cuando el móvil se va). */
     bool isLive(const juce::String& ip, int maxAgeMs = 5000) const;
     /** "Móvil: Nombre" (texto de la UI) → IP. Vacío si no existe. */
@@ -134,9 +140,11 @@ private:
         }
     };
 
-    // Estado por dispositivo. Los punteros a State son ESTABLES (el mapa no
-    // borra entradas: los IPs no se multiplican y así el hilo de audio nunca
-    // usa un State que la UI esté destruyendo).
+    // Estado por dispositivo. Vive en el heap dentro de un shared_ptr en el
+    // mapa (ver pruneStaleLocked): el mapa SÍ puede borrar una entrada, pero
+    // las copias de shared_ptr que retienen el hilo de red y el de audio
+    // mantienen el objeto (y su anillo) con vida hasta que lo sueltan. Así se
+    // pueden podar las entradas caducadas sin dejar punteros colgantes.
     struct State {
         Device dev;
         Ring ring;
@@ -147,8 +155,11 @@ private:
         std::atomic<bool> firstFrameLogged_{false};   // diagnóstico
     };
 
-    State* findState(const juce::String& ip) const;
-    State* getOrCreate(const juce::String& ip);
+    std::shared_ptr<State> findState(const juce::String& ip) const;
+    std::shared_ptr<State> getOrCreate(const juce::String& ip);
+    // Borra de states_/verifiedIps_ los móviles sin baliza ni audio desde
+    // kStaleMs (1 h). Llamarlo SIEMPRE con mtx_ tomado.
+    void pruneStaleLocked();
     void runReceive();
     void sendControl(const juce::String& ip, const juce::String& json);
     void sendMicStart(const juce::String& ip);
@@ -156,10 +167,21 @@ private:
     void saveMicState();
     static juce::File stateFile();
 
-    // mutable: findState() es const (lo llaman los getters) pero devuelve un
-    // puntero no const; todos los cambios de State pasan por mutex o atomics.
-    mutable std::map<juce::String, State> states_;
+    // mutable: findState()/deviceByIp() son const (las llaman los getters) pero
+    // devuelven shared_ptr/copias; los cambios de State pasan por mtx_ o por los
+    // atomics del propio State.
+    // states_ mapea IP → shared_ptr<State>. El shared_ptr permite PODAR (borrar)
+    // entradas sin peligro: el hilo de red/audio retiene su propia copia de
+    // shared_ptr, así que el State (y su anillo) sigue vivo hasta que lo sueltan.
+    // verifiedIps_ = IPs que han presentado el código de emparejamiento (baliza
+    // validada): solo de estas se acepta audio en el puerto de micro (41044).
+    mutable std::map<juce::String, std::shared_ptr<State>> states_;
+    mutable std::set<juce::String> verifiedIps_;
+    mutable juce::int64 lastPruneMs_ = 0;   // último podado (lo marca el hilo de red)
     mutable std::mutex mtx_;
+
+    static constexpr juce::int64 kStaleMs = 60 * 60 * 1000;   // 1 h sin baliza ni audio → se poda
+    static constexpr int kPruneIntervalMs = 60 * 1000;        // se revisa el podado cada minuto
 
     std::thread thread_;
     std::atomic<bool> running_{false};

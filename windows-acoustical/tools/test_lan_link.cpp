@@ -453,7 +453,7 @@ int main() {
         link.setCodeProvider([&] { return kCode; });
         link.start();
         link.noteBeacon("127.0.0.1", "test-id", "MóvilTest");
-        check(link.deviceByIp("127.0.0.1") != nullptr, "baliza → móvil en el registro");
+        check(link.deviceByIp("127.0.0.1").has_value(), "baliza → móvil en el registro");
         check(link.liveDevices().size() == 1, "liveDevices → 1 móvil en vivo");
 
         // "Móvil" que recibe control y audio (puerto 41043)

@@ -78,7 +78,7 @@ bool SyncClient::exchange(const juce::String& host, int port, const juce::var& s
 
 juce::String SyncClient::httpGet(const juce::String& host, int port, const juce::String& path,
                                  juce::MemoryBlock& body, const juce::String& code,
-                                 int timeoutMs) {
+                                 int timeoutMs, int* statusCode) {
     body.setSize(0);
     juce::StreamingSocket socket;
     if (!socket.connect(host, port, timeoutMs)) return {};
@@ -97,14 +97,17 @@ juce::String SyncClient::httpGet(const juce::String& host, int port, const juce:
     if (headerEnd < 0) return {};
 
     const auto headers = juce::String::fromUTF8(p, headerEnd);
-    if (parseStatus(headers) != 200) return {};
+    const int status = parseStatus(headers);
+    if (statusCode != nullptr) *statusCode = status;
+    if (status != 200) return {};
     body.append(p + headerEnd + 4, static_cast<size_t>(size - headerEnd - 4));
     return headers;
 }
 
 bool SyncClient::httpDownloadToFile(const juce::String& host, int port, const juce::String& path,
                                     const juce::File& dest, const juce::String& code,
-                                    juce::int64 maxBytes) {
+                                    juce::int64 maxBytes, int* statusCode,
+                                    const std::atomic<bool>* stopFlag) {
     juce::StreamingSocket socket;
     if (!socket.connect(host, port, 3000)) return false;
     const auto utf8 = httpRequest(path, code).toUTF8();
@@ -119,6 +122,9 @@ bool SyncClient::httpDownloadToFile(const juce::String& host, int port, const ju
     char buffer[65536];
     int headerEnd = -1;
     while (headerEnd < 0) {
+        // Cancelación pedida por el llamador (p. ej. el móvil se fue o se
+        // está cerrando la app): no seguir leyendo cabeceras.
+        if (stopFlag != nullptr && stopFlag->load(std::memory_order_relaxed)) { socket.close(); return false; }
         if (socket.waitUntilReady(true, kReadTimeoutMs) <= 0) break;
         const int n = socket.read(buffer, sizeof(buffer), false);
         if (n <= 0) break;
@@ -132,18 +138,24 @@ bool SyncClient::httpDownloadToFile(const juce::String& host, int port, const ju
 
     const char* p = static_cast<const char*>(pending.getData());
     const auto headers = juce::String::fromUTF8(p, headerEnd);
-    if (parseStatus(headers) != 200) { socket.close(); return false; }
+    const int status = parseStatus(headers);
+    if (statusCode != nullptr) *statusCode = status;
+    if (status != 200) { socket.close(); return false; }
 
     juce::FileOutputStream out(dest);
     if (!out.openedOk()) { socket.close(); return false; }
 
     const int preBody = static_cast<int>(pending.getSize()) - (headerEnd + 4);
     juce::int64 total = 0;
-    if (preBody > 0) {
+    bool stopped = stopFlag != nullptr && stopFlag->load(std::memory_order_relaxed);
+    if (preBody > 0 && !stopped) {
         out.write(p + headerEnd + 4, static_cast<size_t>(preBody));
         total += preBody;
     }
-    while (total < maxBytes) {
+    while (!stopped && total < maxBytes) {
+        // El flag puede levantarse en plena lectura (el móvil se fue, o se
+        // cierra la app): se para en la siguiente iteración.
+        if (stopFlag != nullptr && stopFlag->load(std::memory_order_relaxed)) { stopped = true; break; }
         if (socket.waitUntilReady(true, kReadTimeoutMs) <= 0) break;
         const int n = socket.read(buffer, sizeof(buffer), false);
         if (n <= 0) break;
@@ -152,5 +164,9 @@ bool SyncClient::httpDownloadToFile(const juce::String& host, int port, const ju
     }
     out.flush();
     socket.close();
+    // Si se canceló a propósito no se deja un archivo parcial que el llamador
+    // pudiera verificar y aceptar: se trata como fallo (el llamador distingue
+    // la cancelación releendo su flag).
+    if (stopped) return false;
     return total > 0;
 }

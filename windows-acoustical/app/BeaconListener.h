@@ -27,6 +27,20 @@ public:
     bool isFresh(int maxAgeMs) const;
     juce::String lastIp() const;
 
+    /** Puerta de emparejamiento: solo se acepta una baliza cuyo campo "code"
+     *  pase este validador. El oyente es agnóstico (no sabe nada de
+     *  emparejamiento): lo pone PhoneLink, que compara el código de la baliza
+     *  con el que el usuario pegó en Ajustes > Móvil.
+     *  Por qué importa: antes la baliza solo comprobaba app=="acoustical" y el
+     *  PC usaba la IP del emisor para la comprobación de actualización —cualquier
+     *  dispositivo de la LAN podía emitir una baliza y el PC le apuntaba la
+     *  descarga del /manifest//payload (RCE: ejecutaría el instalador que ese
+     *  emisor sirviera). Con la puerta, una baliza sin el código emparejado no
+     *  mueve el endpoint ni dispara nada.
+     *  Si no se pone validador se acepta cualquier baliza (comportamiento
+     *  antiguo); PhoneLink siempre pone uno. */
+    void setCodeValidator(std::function<bool(const juce::String&)> validator);
+
 private:
     void run();
 
@@ -37,4 +51,9 @@ private:
     mutable std::mutex mtx_;
     juce::String ip_;
     std::atomic<juce::int64> lastMs_{0};
+    // El validador se pone desde el hilo de UI y se lee desde el hilo oyente:
+    // el mutex protege el intercambio (el lector copia el std::function local
+    // bajo el mismo lock, así que no se pisa ni se lee a medio escribir).
+    mutable std::mutex validatorLock_;
+    std::function<bool(const juce::String&)> codeValidator_;
 };

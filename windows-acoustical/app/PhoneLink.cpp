@@ -4,6 +4,11 @@
 #include "SyncClient.h"
 
 #include <juce_cryptography/juce_cryptography.h>
+#include <juce_gui_basics/juce_gui_basics.h>
+
+#include <chrono>
+#include <future>
+#include <memory>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -33,10 +38,30 @@ PhoneLink::PhoneLink(juce::File adbExecutable) : adb_(std::move(adbExecutable)) 
     startuplog::log(juce::String::fromUTF8("phonelink: oyente de baliza creado"));
     loadConfig();
     startuplog::log(juce::String::fromUTF8("phonelink: config cargada"));
+    // Puerta de emparejamiento de la baliza: solo se fía de una baliza cuyo
+    // campo "code" coincide con el código que el usuario pegó en Ajustes > Móvil.
+    // Antes, el oyente aceptaba cualquier baliza con app=="acoustical" y el PC
+    // usaba la IP del emisor para la comprobación de actualización: cualquier
+    // dispositivo de la LAN podía apuntar la descarga del instalador a su propio
+    // servidor (RCE). El validador lee pairCode_ en vivo, así que se actualiza
+    // solo cuando el usuario cambia el código (setPairCode).
+    beacon_->setCodeValidator([this](const juce::String& beaconCode) {
+        juce::String mine;
+        {
+            const juce::ScopedLock lock(configLock_);
+            mine = pairCode_;
+        }
+        // Sin código emparejado no se fía de ninguna baliza (default seguro).
+        return !mine.isEmpty() && beaconCode == mine;
+    });
 }
 
 PhoneLink::~PhoneLink() {
     stopWatchdog();
+    // Si el hilo de actualización va en plena descarga del instalador, pedirle
+    // que pare: sin esto, el join de abajo se quedaría esperando a que el
+    // descargador termine (cientos de MB) justo al cerrar la app.
+    if (updateRunning_.load()) downloadStopRequested_.store(true);
     if (updateThread_.joinable()) updateThread_.join();
 }
 
@@ -74,6 +99,26 @@ bool isPlainIp(const juce::String& s) {
     }
     return true;
 }
+
+// Un serial de `adb devices` es dato externo y termina interpolado en la
+// línea de comandos de la siguiente llamada adb (runAdb). Si no se restringe
+// el alfabeto, un adb alterado o con un bug que imprimiera un "serial" con
+// espacios, comillas o punto y coma podría inyectar argumentos en esa llamada.
+// Los serials USB reales solo usan alfanuméricos (con '-' o '_' de
+// separador). Los serials "ip:port" de un adb de red NO se aceptan: esta
+// vía es el respaldo USB; el Wi-Fi ya tiene sus propios caminos (baliza/IP).
+bool isAdbSerial(const juce::String& s) {
+    if (s.isEmpty()) return false;
+    auto isAlnum = [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    };
+    if (!isAlnum(s[0])) return false;
+    for (int i = 1; i < s.length(); ++i) {
+        const char c = s[i];
+        if (!isAlnum(c) && c != '-' && c != '_') return false;
+    }
+    return true;
+}
 }  // namespace
 
 // ============================================================
@@ -104,6 +149,10 @@ void PhoneLink::decideEndpoint() {
     if (beacon_ && beacon_->isFresh(BEACON_TTL_MS)) {
         const auto ip = beacon_->lastIp();
         if (ip.isNotEmpty()) {
+            // Vía rápida: reinicia el refresco del sondeo adb (ver los
+            // miembros adbProbeEvery_/adbProbeSkip_).
+            adbProbeEvery_ = 1;
+            adbProbeSkip_ = 0;
             if (endpointChanged(ip, Transport::WiFi)) {
                 setStatus(juce::String::fromUTF8("Móvil conectado (Wi-Fi): ") + ip);
                 requestSync();
@@ -116,6 +165,9 @@ void PhoneLink::decideEndpoint() {
     // 2) IP del móvil puesta a mano (routers que bloquean la baliza)
     const juce::String manualIp = manualPhoneIp();  // copia thread-safe
     if (isPlainIp(manualIp)) {
+        // Vía rápida: reinicia el refresco del sondeo adb.
+        adbProbeEvery_ = 1;
+        adbProbeSkip_ = 0;
         if (endpointChanged(manualIp, Transport::ManualIp)) {
             setStatus(juce::String::fromUTF8("Móvil por IP manual: ") + manualIp);
             requestSync();
@@ -129,9 +181,23 @@ void PhoneLink::decideEndpoint() {
         if (endpointChanged({}, Transport::None)) {
             state_.store(State::NoAdb);
             setStatus(juce::String::fromUTF8("Esperando el móvil (Wi-Fi)… (adb no disponible)"));
+            requestDownloadStop();
         }
         return;
     }
+
+    // El sondeo "adb devices -l" arranca un proceso hijo: para no repetirlo
+    // a cada tick para siempre (sin móvil se martiljeaba disco y CPU), el
+    // intervalo se refrena en refuerzo exponencial mientras no hay baliza ni
+    // IP manual: cada 2, 4, 8, 16, 32 ticks, con tope de 60 (~60 s). Las vías
+    // rápidas de arriba lo reinician a 1, de modo que al caer al USB el
+    // primer sondeo es inmediato.
+    if (adbProbeSkip_ > 0) {
+        --adbProbeSkip_;
+        return;
+    }
+    adbProbeSkip_ = adbProbeEvery_;
+    adbProbeEvery_ = std::min(60, adbProbeEvery_ * 2);
 
     const auto out = runAdb("devices -l");
     // Salida esperada: "List of devices attached\nSERIAL\tdevice usb:1-1 ..."
@@ -139,22 +205,35 @@ void PhoneLink::decideEndpoint() {
     // transport_id:N), así que endsWith("device") nunca coincidía y el
     // móvil no se detectaba jamás. Se analiza el campo de estado.
     juce::String serial;
+    juce::String rejected;
     for (const auto& line : juce::StringArray::fromLines(out)) {
         const auto t = line.trim();
         if (t.isEmpty() || !t.containsChar('\t')) continue;
         const auto s = t.upToFirstOccurrenceOf("\t", false, false).trim();
         const auto st = t.fromFirstOccurrenceOf("\t", false, false).trim();
         // Estados de adb: device, offline, unauthorized, nopermissions…
-        if (s.isNotEmpty() && st.startsWith("device")) {
-            serial = s;
-            break;
+        if (s.isEmpty() || !st.startsWith("device")) continue;
+        // Un "device" cuyo serial no entra en el alfabeto real no se toca
+        // (isAdbSerial): se anota y se prueba la siguiente línea, en vez de
+        // inyectarlo en la llamada de forward de abajo.
+        if (!isAdbSerial(s)) {
+            if (rejected.isEmpty()) rejected = s;
+            continue;
         }
+        serial = s;
+        break;
     }
+    if (serial.isEmpty() && !rejected.isEmpty())
+        startuplog::log(juce::String::fromUTF8("phonelink: serial adb rechazado (alfabeto): ") + rejected);
 
     if (serial.isEmpty()) {
         deviceSerial_ = {};
-        if (endpointChanged({}, Transport::None))
+        if (endpointChanged({}, Transport::None)) {
+            // El móvil se fue: si la descarga del instalador sigue en marcha,
+            // pedirle que pare (no tiene destino al que seguir leyendo).
+            requestDownloadStop();
             setStatus(juce::String::fromUTF8("Esperando el móvil (Wi-Fi o USB)…"));
+        }
         return;
     }
 
@@ -303,6 +382,11 @@ void PhoneLink::setPairCode(const juce::String& code) {
         const juce::ScopedLock lock(configLock_);
         pairCode_ = code.trim();
     }
+    // Código nuevo: la puerta de la baliza y la auto-actualización empiezan de
+    // cero (un par de 401 acumulados con el código viejo no debe frenar el
+    // nuevo, y viceversa).
+    update401Count_ = 0;
+    update401Stopped_ = false;
     saveConfig();
 }
 
@@ -334,6 +418,9 @@ PhoneLink::WindowsUpdateInfo PhoneLink::lastUpdateInfo() const {
 }
 
 void PhoneLink::checkForUpdate() {
+    // Frenada por 401 (código del móvil no válido N veces seguidas): dejar de
+    // intentar hasta que el usuario cambie el código (setPairCode la levanta).
+    if (update401Stopped_) return;
     bool expected = false;
     if (!updateRunning_.compare_exchange_strong(expected, true)) return;
     if (updateThread_.joinable()) updateThread_.join();
@@ -343,24 +430,33 @@ void PhoneLink::checkForUpdate() {
     });
 }
 
-juce::String PhoneLink::httpGet(const juce::String& path, juce::MemoryBlock& body, int timeoutMs) {
+juce::String PhoneLink::httpGet(const juce::String& path, juce::MemoryBlock& body, int timeoutMs,
+                                int* statusOut) {
     juce::String host;
     {
         const juce::ScopedLock lock(endpointLock_);
         host = endpointHost_;
     }
     if (host.isEmpty()) return {};
-    return SyncClient::httpGet(host, SYNC_PORT, path, body, pairCode(), timeoutMs);
+    return SyncClient::httpGet(host, SYNC_PORT, path, body, pairCode(), timeoutMs, statusOut);
 }
 
-bool PhoneLink::httpDownloadToFile(const juce::String& path, const juce::File& dest, juce::int64 maxBytes) {
+bool PhoneLink::httpDownloadToFile(const juce::String& path, const juce::File& dest, juce::int64 maxBytes,
+                                   std::atomic<bool>* stopFlag) {
     juce::String host;
     {
         const juce::ScopedLock lock(endpointLock_);
         host = endpointHost_;
     }
     if (host.isEmpty()) return false;
-    return SyncClient::httpDownloadToFile(host, SYNC_PORT, path, dest, pairCode(), maxBytes);
+    return SyncClient::httpDownloadToFile(host, SYNC_PORT, path, dest, pairCode(),
+                                          maxBytes, nullptr, stopFlag);
+}
+
+void PhoneLink::requestDownloadStop() {
+    // Solo si hay un intento de actualización en curso: el flag cancela la
+    // descarga del instalador si sigue en marcha (downloadStopRequested_).
+    if (updateRunning_.load()) downloadStopRequested_.store(true);
 }
 
 juce::String PhoneLink::installedVersion() const {
@@ -409,8 +505,27 @@ bool PhoneLink::launchInstaller(const juce::File& installer) const {
 
 void PhoneLink::runUpdateCheck() {
     setStatus(juce::String::fromUTF8("Comprobando versión con el móvil…"));
+    int manifestStatus = 0;
     juce::MemoryBlock body;
-    if (httpGet("/manifest", body).isEmpty()) return; // el móvil aún no sirve HTTP: silencio
+    if (httpGet("/manifest", body, 3000, &manifestStatus).isEmpty()) {
+        // 401 = el móvil rechazó la petición (código de emparejamiento ausente o
+        // no válido). Contamos los 401 consecutivos y, tras kMaxUpdate401,
+        // frenamos la auto-actualización: repetir el mismo código malo no lleva
+        // a nada y parecería un martilleo al móvil. Un 200 lo reinicia (abajo)
+        // y cambiar el código (setPairCode) también.
+        // El resto de fallos (aún no sirve HTTP, timeout) siguen en silencio.
+        if (manifestStatus == 401) {
+            const int count = update401Count_.fetch_add(1) + 1;
+            if (count >= kMaxUpdate401) {
+                update401Stopped_ = true;
+                setStatus(juce::String::fromUTF8("Auto-actualización detenida: el código del móvil no coincide (Ajustes > Móvil)"));
+            } else {
+                setStatus(juce::String::fromUTF8("El código del móvil no coincide (Ajustes > Móvil): actualización en espera"));
+            }
+        }
+        return;
+    }
+    update401Count_ = 0;   // 200: el código es válido; reinicia el contador
 
     const auto manifest = juce::JSON::parse(
         juce::String::fromUTF8(static_cast<const char*>(body.getData()), static_cast<int>(body.getSize())));
@@ -454,8 +569,15 @@ void PhoneLink::runUpdateCheck() {
         return;
     }
     const auto installer = tempDir.getChildFile("AcousticalEstudioSetup.exe");
-    if (!httpDownloadToFile("/payload", installer, MAX_PAYLOAD_BYTES)) {
-        setStatus(juce::String::fromUTF8("Descarga fallida: vuelve a conectar el móvil"));
+    // Descarga con posibilidad de cancelación: si el móvil se va por el
+    // camino o se cierra la app, runUpdateCheck/destructor levantan el flag y
+    // el bucle de descarga (SyncClient::httpDownloadToFile) se detiene en la
+    // siguiente lectura.
+    downloadStopRequested_.store(false);
+    if (!httpDownloadToFile("/payload", installer, MAX_PAYLOAD_BYTES, &downloadStopRequested_)) {
+        setStatus(downloadStopRequested_.load()
+            ? juce::String::fromUTF8("Actualización cancelada: la descarga se detuvo (el móvil se fue o se está cerrando la app)")
+            : juce::String::fromUTF8("Descarga fallida: vuelve a conectar el móvil"));
         tempDir.deleteRecursively();
         return;
     }
@@ -473,9 +595,56 @@ void PhoneLink::runUpdateCheck() {
         return;
     }
 
+    // El SHA se ha verificado; el paso que queda (lanzar el instalador) es una
+    // acción de sistema irreversible (pide UAC). Se le pregunta SIEMPRE al
+    // usuario antes. El diálogo corre en el hilo de UI y el hilo de
+    // actualización se queda a la espera hasta que el usuario responde (ver
+    // confirmInstallOnUiThread).
+    if (!confirmInstallOnUiThread(info.version)) {
+        setStatus(juce::String::fromUTF8("Instalación cancelada por el usuario"));
+        tempDir.deleteRecursively();
+        return;
+    }
+
     setStatus("Instalando " + info.version + juce::String::fromUTF8("… (Windows pedirá permiso)"));
     if (launchInstaller(installer))
         setStatus(juce::String::fromUTF8("Versión ") + info.version + juce::String::fromUTF8(" instalándose: Acoustical se reiniciará"));
     else
         setStatus("No se pudo iniciar el instalador (falta el permiso de administrador)");
+}
+
+// Pide al usuario, en el hilo de UI, si debe lanzarse el instalador.
+//
+// runUpdateCheck() corre en un hilo de red (updateThread_), NO en el de
+// mensajes: un diálogo modal de JUCE solo puede mostrarse en el hilo de
+// mensajes. Se encola el AlertWindow con callAsync (se ejecuta en el bucle de
+// mensajes) y este hilo se queda a la espera de que el usuario pulse un botón.
+// Es seguro: el destructor de PhoneLink hace join de updateThread_, así que
+// este objeto no se destruye con el diálogo abierto; el promise vive en un
+// shared_ptr que la lambda encolada captura por copia, de modo que no se
+// destruye antes de tiempo ni al salir de este método. La espera acota el
+// tiempo: si el diálogo no puede resolverse por alguna razón (p. ej. se está
+// cerrando la app y el bucle de mensajes ya no corre) se trata como
+// cancelación en lugar de bloquearse para siempre.
+bool PhoneLink::confirmInstallOnUiThread(const juce::String& version) {
+    auto result = std::make_shared<std::promise<int>>();
+    auto future = result->get_future();
+    MessageManager::callAsync([result, version] {
+        auto* aw = new juce::AlertWindow(
+            juce::String::fromUTF8("Actualizar Acoustical"),
+            juce::String::fromUTF8("¿Instalar Acoustical ") + version
+                + juce::String::fromUTF8(" descargada del móvil?\n\n"
+                                         "Windows pedirá permiso de administrador (UAC)."),
+            juce::MessageBoxIconType::QuestionIcon);
+        aw->addButton(juce::String::fromUTF8("Instalar"), juce::Button::IDYes);
+        aw->addButton(juce::String::fromUTF8("Cancelar"), juce::Button::IDNo);
+        result->set_value(aw->runModal());
+    });
+    if (future.wait_for(std::chrono::minutes(2)) != std::future_status::ready)
+        return false;   // sin respuesta a tiempo (p. ej. cierre de la app): no se instala
+    try {
+        return future.get() == juce::Button::IDYes;
+    } catch (const std::future_error&) {
+        return false;
+    }
 }

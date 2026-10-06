@@ -95,7 +95,11 @@ public:
         // manda las muestras por UDP a los altavoces del móvil, M3)
         for (int i = 1; i < NUM_ROUTES; ++i) {
             auto& rt = routes_[i];
-            if ((rt.manager != nullptr || rt.netSink != nullptr)
+            // Solo el flag atómico: leer `rt.manager`/`rt.netSink` aquí entraba
+            // en carrera con closeRoute() (hilo de UI), que resetea esos
+            // unique_ptrs; una ruta cerrada a media llamada era un
+            // use-after-free del puntero (bug histórico de rutas auxiliares).
+            if (rt.active.load(std::memory_order_acquire)
                 && params_[i]->enabled.load())
                 rt.ring.write(left, right, n);
         }
@@ -147,6 +151,9 @@ public:
             rt.openRate = setup.sampleRate;
         }
         params_[index]->enabled.store(true);
+        // Solo con el dispositivo ya montado (y su callback añadido): desde
+        // aquí el hilo de audio puede escribir en el anillo de esta ruta.
+        rt.active.store(true, std::memory_order_release);
         return true;
     }
 
@@ -168,12 +175,18 @@ public:
         params_[index]->enabled.store(true);
         rt.netRunning.store(true);
         rt.netThread = std::thread([this, index] { pumpNetworkRoute(index); });
+        // Solo con el hilo de bombeo ya arrancado (ver Route::active).
+        rt.active.store(true, std::memory_order_release);
         return true;
     }
 
     void closeRoute(int index) {
         if (index <= 0 || index >= NUM_ROUTES) return;
         auto& rt = routes_[index];
+        // Primero detiene al hilo de audio (que solo lee este atómico): si no,
+        // mientras reseteamos `manager`/`netSink` abajo, el hilo de audio
+        // podría estar leyendo esos punteros (carrera de datos).
+        rt.active.store(false, std::memory_order_release);
         if (rt.netRunning.load()) {
             rt.netRunning.store(false);
             if (rt.netThread.joinable()) rt.netThread.join();
@@ -468,8 +481,15 @@ private:
                 return;
             }
 
-            inL_.assign(static_cast<size_t>(std::max(needed, 64)), 0.0f);
-            inR_.assign(static_cast<size_t>(std::max(needed, 64)), 0.0f);
+            // Buffers preasignados: solo crecen si quedan pequeños. El hilo de
+            // audio no debe (re)asignar en cada callback (una reasignación aquí,
+            // en dispositivos USB/Bluetooth con el bus ocupado, se traduce en
+            // un glitche audible). El assign() antiguo además ponia a cero el
+            // buffer: era innecesario, porque readLatest() rellena todo
+            // [0, needed) (datos del anillo o ceros).
+            const size_t nBuf = static_cast<size_t>(std::max(needed, 64));
+            if (inL_.size() < nBuf) inL_.resize(nBuf);
+            if (inR_.size() < nBuf) inR_.resize(nBuf);
             ring.readLatest(inL_.data(), inR_.data(), needed);
 
             // Control de deriva entre relojes de dispositivos distintos
@@ -657,6 +677,11 @@ private:
         juce::String netName;
         std::thread netThread;
         std::atomic<bool> netRunning{false};
+        // Abierta y lista (dispositivo montado o sink de red arrancado).
+        // El hilo de audio solo lee ESTO: no debe desreferenciar
+        // `manager`/`netSink` porque closeRoute() (hilo de UI) puede estar
+        // reseteándolos en el mismo instante.
+        std::atomic<bool> active{false};
     };
 
     juce::AudioDeviceManager& mainManager_;

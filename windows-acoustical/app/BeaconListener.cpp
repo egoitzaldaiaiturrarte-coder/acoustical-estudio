@@ -23,6 +23,11 @@ void BeaconListener::stop() {
     if (thread_.joinable()) thread_.join();
 }
 
+void BeaconListener::setCodeValidator(std::function<bool(const juce::String&)> validator) {
+    const std::lock_guard<std::mutex> lock(validatorLock_);
+    codeValidator_ = std::move(validator);
+}
+
 void BeaconListener::run() {
     juce::DatagramSocket socket(/*enableBroadcasting=*/true);
     if (!socket.bindToPort(port_)) {
@@ -39,6 +44,20 @@ void BeaconListener::run() {
         const auto v = juce::JSON::parse(juce::String::fromUTF8(buffer, n));
         auto* o = v.getDynamicObject();
         if (o == nullptr || o->getProperty("app").toString() != "acoustical") continue;
+        // Puerta de emparejamiento: la baliza debe llevar el código que el
+        // usuario pegó en el PC (lo valida PhoneLink vía setCodeValidator). Si
+        // el validador la rechaza, NO se actualiza ip_/lastMs_: una baliza que
+        // no está emparejada no debe dejar rastro que otro código pueda leer
+        // (ni el endpoint de Wi-Fi ni onBeacon/noteBeacon se activan).
+        const auto code = o->getProperty("code").toString();
+        {
+            std::function<bool(const juce::String&)> validator;
+            {
+                const std::lock_guard<std::mutex> lock(validatorLock_);
+                validator = codeValidator_;
+            }
+            if (validator && !validator(code)) continue;
+        }
         {
             const std::lock_guard<std::mutex> lock(mtx_);
             ip_ = senderIp;

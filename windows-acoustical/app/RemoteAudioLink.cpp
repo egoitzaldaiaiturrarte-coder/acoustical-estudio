@@ -51,7 +51,10 @@ void RemoteAudioLink::noteBeacon(const juce::String& ip, const juce::String& id,
     juce::String devName;
     {
         const std::lock_guard<std::mutex> lock(mtx_);
-        auto& st = states_[ip];
+        auto it = states_.find(ip);
+        if (it == states_.end())
+            it = states_.emplace(ip, std::make_shared<State>()).first;
+        State& st = *it->second;
         firstSight = (st.dev.lastBeaconMs == 0);
         if (firstSight) st.dev.ip = ip;
         if (!id.isEmpty()) st.dev.id = id;
@@ -64,6 +67,11 @@ void RemoteAudioLink::noteBeacon(const juce::String& ip, const juce::String& id,
             && std::find(micOnPersisted_.begin(), micOnPersisted_.end(), ip)
                    != micOnPersisted_.end();
         if (reSendMic) st.dev.micOn = true;
+        // La baliza que llega aquí ya la validó PhoneLink (su code coincide con
+        // el código emparejado), así que esta IP queda "verificada": su audio de
+        // micrófono (41044) se acepta a partir de ahora (ver la puerta de
+        // runReceive). Sin esto, cualquier IP de la LAN podría inyectar audio.
+        verifiedIps_.insert(ip);
         devName = st.dev.name;
     }
     if (firstSight)
@@ -76,7 +84,7 @@ std::vector<RemoteAudioLink::Device> RemoteAudioLink::devices() const {
     const std::lock_guard<std::mutex> lock(mtx_);
     std::vector<Device> out;
     out.reserve(states_.size());
-    for (const auto& [ip, st] : states_) out.push_back(st.dev);
+    for (const auto& [ip, sp] : states_) out.push_back(sp->dev);
     return out;
 }
 
@@ -90,14 +98,15 @@ std::vector<RemoteAudioLink::Device> RemoteAudioLink::liveDevices(int maxAgeMs) 
     return out;
 }
 
-const RemoteAudioLink::Device* RemoteAudioLink::deviceByIp(const juce::String& ip) const {
+std::optional<RemoteAudioLink::Device> RemoteAudioLink::deviceByIp(const juce::String& ip) const {
     const std::lock_guard<std::mutex> lock(mtx_);
     auto it = states_.find(ip);
-    return it == states_.end() ? nullptr : &it->second.dev;
+    if (it == states_.end()) return std::nullopt;
+    return it->second->dev;
 }
 
 bool RemoteAudioLink::isLive(const juce::String& ip, int maxAgeMs) const {
-    if (auto* d = deviceByIp(ip))
+    if (auto d = deviceByIp(ip))
         return nowMs() - std::max(d->lastBeaconMs, d->lastAudioMs) < maxAgeMs;
     return false;
 }
@@ -119,21 +128,48 @@ juce::String RemoteAudioLink::displayName(const Device& d) {
 // Estado por dispositivo
 // ============================================================
 
-RemoteAudioLink::State* RemoteAudioLink::findState(const juce::String& ip) const {
+std::shared_ptr<RemoteAudioLink::State> RemoteAudioLink::findState(const juce::String& ip) const {
     const std::lock_guard<std::mutex> lock(mtx_);
     auto it = states_.find(ip);
-    return it == states_.end() ? nullptr : &it->second;
+    return (it == states_.end()) ? nullptr : it->second;
 }
 
-RemoteAudioLink::State* RemoteAudioLink::getOrCreate(const juce::String& ip) {
+std::shared_ptr<RemoteAudioLink::State> RemoteAudioLink::getOrCreate(const juce::String& ip) {
     const std::lock_guard<std::mutex> lock(mtx_);
-    auto& st = states_[ip];
+    auto it = states_.find(ip);
+    if (it == states_.end())
+        it = states_.emplace(ip, std::make_shared<State>()).first;
+    State& st = *it->second;
     if (st.dev.lastBeaconMs == 0) {
         st.dev.ip = ip;
         if (st.dev.name.isEmpty())
             st.dev.name = juce::String::fromUTF8("Móvil ") + ip;
     }
-    return &st;
+    return it->second;
+}
+
+// Podado de móviles caducados: se llama desde el hilo de red (runReceive), a
+// lo sumo una vez por kPruneIntervalMs, SIEMPRE con mtx_ tomado. Borra de
+// states_ (y de verifiedIps_) los móviles que llevan >kStaleMs (1 h) sin
+// baliza ni audio. Es seguro porque el State se almacena por shared_ptr: un
+// hilo de red/audio que estuviera usando uno de esos States retiene su propia
+// copia de shared_ptr y el objeto (y su anillo) no se destruye hasta que lo
+// suelta, aunque ya no esté en el mapa. Sin el podado, states_ crecería sin
+// límite (cada IP único visto creaba una entrada de ~64 KB que nunca se
+// quitaba: un emisor de la LAN saltando de IPs podría hinchar la memoria).
+void RemoteAudioLink::pruneStaleLocked() {
+    const auto now = nowMs();
+    for (auto it = states_.begin(); it != states_.end(); ) {
+        const auto& d = it->second->dev;
+        const auto last = std::max(d.lastBeaconMs, d.lastAudioMs);
+        if (last > 0 && now - last > kStaleMs) {
+            const auto ip = it->first;
+            it = states_.erase(it);
+            verifiedIps_.erase(ip);
+        } else {
+            ++it;
+        }
+    }
 }
 
 // ============================================================
@@ -157,10 +193,35 @@ void RemoteAudioLink::runReceive() {
     while (running_.load()) {
         juce::String senderIp;
         int senderPort = 0;
-        if (socket.waitUntilReady(true, 500) != 1) continue;   // 0 = timeout
+        if (socket.waitUntilReady(true, 500) != 1) {
+            // Aprovecha el tiempo en espera para podar los móviles caducados
+            // (kStaleMs = 1 h sin baliza ni audio), a lo sumo una vez por
+            // minuto. Solo el hilo de red toca lastPruneMs_, por lo que la
+            // comprobación de intervalo puede hacerse sin el mutex.
+            const auto now = nowMs();
+            if (now - lastPruneMs_ >= kPruneIntervalMs) {
+                const std::lock_guard<std::mutex> lock(mtx_);
+                if (now - lastPruneMs_ >= kPruneIntervalMs) {
+                    lastPruneMs_ = now;
+                    pruneStaleLocked();
+                }
+            }
+            continue;
+        }
         const int n = socket.read(buffer.data(), static_cast<int>(buffer.size()),
                                   false, senderIp, senderPort);
         if (n < 10) continue;
+        // Puerta de seguridad: solo se acepta el audio de micrófono de los
+        // móviles VERIFICADOS (los que presentaron su código de emparejamiento
+        // en la baliza, ver noteBeacon). Antes, cualquier IP de la LAN podía
+        // mandar tramas aquí y su audio se mezclaba en las salidas del PC
+        // (inyección de audio). Las de IPs no verificadas se descartan sin
+        // llegar a decodificar.
+        {
+            const std::lock_guard<std::mutex> lock(mtx_);
+            if (verifiedIps_.find(senderIp) == verifiedIps_.end())
+                continue;
+        }
         const auto* d = buffer.data();
         if (d[0] == '{') continue;   // JSON (control móvil→PC; hoy no se usa)
 
@@ -186,7 +247,9 @@ void RemoteAudioLink::runReceive() {
             peak = std::max(peak, std::fabs(v));
         }
 
-        auto* ds = getOrCreate(senderIp);
+        // shared_ptr: si este State se poda del mapa mientras la usamos, el
+        // objeto (y su anillo) sigue vivo hasta que salimos de aquí.
+        auto ds = getOrCreate(senderIp);
         ds->ring.write(mono.data(), samples);
         ds->dev.lastAudioMs = nowMs();
         ds->levelDb.store(peak > 1e-5f ? 20.0f * std::log10(peak) : -120.0f);
@@ -203,12 +266,12 @@ void RemoteAudioLink::runReceive() {
 // ============================================================
 
 bool RemoteAudioLink::setMicOn(const juce::String& ip, bool on) {
-    State* ds = nullptr;
+    std::shared_ptr<State> ds;
     {
         const std::lock_guard<std::mutex> lock(mtx_);
         auto it = states_.find(ip);
         if (it == states_.end()) return false;
-        ds = &it->second;
+        ds = it->second;
         if (ds->dev.micOn == on) return true;
         ds->dev.micOn = on;
     }
@@ -219,37 +282,39 @@ bool RemoteAudioLink::setMicOn(const juce::String& ip, bool on) {
 }
 
 bool RemoteAudioLink::micOn(const juce::String& ip) const {
-    if (auto* d = deviceByIp(ip)) return d->micOn;
+    if (auto d = deviceByIp(ip)) return d->micOn;
     return false;
 }
 
 void RemoteAudioLink::setMicGain(const juce::String& ip, float g) {
-    if (auto* ds = findState(ip))
+    if (auto ds = findState(ip))
         ds->gain.store(std::max(0.0f, std::min(2.0f, g)), std::memory_order_relaxed);
 }
 
 float RemoteAudioLink::micGain(const juce::String& ip) const {
-    if (auto* ds = findState(ip)) return ds->gain.load(std::memory_order_relaxed);
+    if (auto ds = findState(ip)) return ds->gain.load(std::memory_order_relaxed);
     return 0.0f;
 }
 
 float RemoteAudioLink::micLevelDb(const juce::String& ip) const {
-    if (auto* ds = findState(ip)) return ds->levelDb.load(std::memory_order_relaxed);
+    if (auto ds = findState(ip)) return ds->levelDb.load(std::memory_order_relaxed);
     return -120.0f;
 }
 
 std::vector<juce::String> RemoteAudioLink::activeMicIps() const {
     const std::lock_guard<std::mutex> lock(mtx_);
     std::vector<juce::String> out;
-    for (const auto& [ip, st] : states_)
-        if (st.dev.micOn) out.push_back(ip);
+    for (const auto& [ip, sp] : states_)
+        if (sp->dev.micOn) out.push_back(ip);
     return out;
 }
 
 void RemoteAudioLink::pullMic(const juce::String& ip, float* dest, int n, double outRate) {
     if (dest == nullptr || n <= 0) return;
     std::fill_n(dest, n, 0.0f);
-    auto* ds = findState(ip);
+    // shared_ptr: si el Estado se poda del mapa mientras leemos el anillo, el
+    // objeto sigue vivo hasta el final de esta llamada (el callback de audio).
+    auto ds = findState(ip);
     if (ds == nullptr) return;
     auto& ring = ds->ring;
     const int avail = ring.buffered();
@@ -304,7 +369,7 @@ void RemoteAudioLink::sendControl(const juce::String& ip, const juce::String& js
 void RemoteAudioLink::sendToPhone(const juce::String& ip, const float* L,
                                   const float* R, int n, double rate) {
     if (L == nullptr || n <= 0) return;
-    auto* ds = findState(ip);
+    auto ds = findState(ip);
     if (ds == nullptr) return;
     const int ch = (R != nullptr) ? 2 : 1;
     std::vector<juce::uint8> bytes(8 + static_cast<size_t>(n) * ch * 2);
@@ -365,8 +430,8 @@ void RemoteAudioLink::saveMicState() {
     std::vector<juce::String> ips;
     {
         const std::lock_guard<std::mutex> lock(mtx_);
-        for (const auto& [ip, st] : states_)
-            if (st.dev.micOn) ips.push_back(ip);
+        for (const auto& [ip, sp] : states_)
+            if (sp->dev.micOn) ips.push_back(ip);
     }
     auto* o = new juce::DynamicObject();
     juce::Array<juce::var> arr;

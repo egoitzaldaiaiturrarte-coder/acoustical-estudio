@@ -121,6 +121,26 @@ int     WideCharToMultiByte(unsigned int CodePage, DWORD dwFlags,
                             LPCWSTR lpWideCharStr, int cchWideChar,
                             LPSTR lpMultiByteStr, int cbMultiByte,
                             LPCSTR lpDefaultChar, BOOL* lpUsedDefaultChar);
+// --- Registro (AsioBridgeClient.h reimplementa la lectura del MachineGuid
+// --- del lado app: la MISMA receta que el driver, para el mismo sufijo) ---
+typedef void* HKEY;
+typedef long LSTATUS;
+typedef unsigned char BYTE;
+typedef BYTE* LPBYTE;
+#define HKEY_LOCAL_MACHINE ((HKEY)(intptr_t)0x80000002)
+#define KEY_READ 0x20019
+#define ERROR_SUCCESS 0L
+#define REG_SZ 1
+LSTATUS RegOpenKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD dwOptions,
+                      DWORD samDesired, HKEY* phkResult);
+LSTATUS RegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved,
+                         DWORD* lpType, LPBYTE lpData, LPDWORD lpcbData);
+LSTATUS RegCloseKey(HKEY hKey);
+// --- Tiempo / PID (identidad de la sección: GetTickCount64*1e5 + pid) ---
+// (el SDK real usa `unsigned long long` fuera de MSVC; __int64 es solo MSVC)
+typedef unsigned long long ULONGLONG;
+ULONGLONG GetTickCount64(void);
+unsigned int GetCurrentProcessId(void);
 // --- Tiempo ---
 void    GetLocalTime(LPSYSTEMTIME lpSystemTime);
 // --- Filtro de excepciones (Main.cpp) ---
