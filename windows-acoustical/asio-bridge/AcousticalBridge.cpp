@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <new>
 #include <atomic>
+#include <mutex>
 
 namespace {
 
@@ -26,7 +27,20 @@ std::atomic<long> g_refCount{0};
 class AcousticalBridge final : public IASIO {
 public:
     AcousticalBridge() { g_refCount.fetch_add(1); }
-    ~AcousticalBridge() { g_refCount.fetch_sub(1); }
+    ~AcousticalBridge() {
+        // Teardown completo e idempotente. Antes solo se bajaba el refcount:
+        // un host (p. ej. Cubase) que cierra el proyecto con el audio sonando
+        // llamaba a Release() con el worker vivo y dejaba al hilo dereferneciando
+        // `this` ya liberada → UAF dentro del DAW. Parar el worker (unido con
+        // WaitForSingleObject en StopWorker) y soltar la memoria compartida antes
+        // de borrar nos da un final limpio. StopWorker es seguro si el worker
+        // nunca partió (guarda sobre worker_) y balancea el timer (ver helper).
+        running_ = false;
+        StopWorker();
+        if (shared_) { ::UnmapViewOfFile(shared_); shared_ = nullptr; }
+        if (hMap_)   { ::CloseHandle(hMap_);       hMap_   = nullptr; }
+        g_refCount.fetch_sub(1);
+    }
 
     // === IUnknown ===
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
@@ -48,8 +62,13 @@ public:
 
     // === IASIO ===
     ASIOBool STDMETHODCALLTYPE init(void* /*sysHandle*/) override {
-        strncpy_s(errorMessage_, "OK", _TRUNCATE);
-        mapSharedMemory();
+        // init() devuelve ASIOBool (no un ASIOError): el fallo se indica con
+        // ASIOFalse y el mensaje descriptivo se expone por getErrorMessage().
+        // Antes se llamaba a mapSharedMemory() sin comprobar y se devolvía
+        // ASIOTrue con "OK" aunque la memoria no se hubiera mapeado: el driver
+        // "aparecía" en Cubase sin audio.
+        setErrorMessage("OK");
+        if (!mapSharedMemory()) return ASIOFalse;
         return ASIOTrue;
     }
 
@@ -60,6 +79,10 @@ public:
     long STDMETHODCALLTYPE getDriverVersion() override { return 100; }
 
     void STDMETHODCALLTYPE getErrorMessage(char* error) override {
+        // errorMessage_ puede escribirse desde el hilo de audio (worker) al
+        // detectar eventos (p. ej. app muerta) y se lee aquí desde el hilo de
+        // control: se protege con mutex para no copiar el buffer a medio escribir.
+        std::lock_guard<std::mutex> lk(errMutex_);
         strncpy_s(error, 128, errorMessage_, _TRUNCATE);
     }
 
@@ -115,7 +138,9 @@ public:
     ASIOError STDMETHODCALLTYPE setSampleRate(ASIOSamples rate) override {
         if (canSampleRate(rate) != ASE_OK) return ASE_NoClock;
         sampleRate_ = rate;
-        if (shared_) shared_->sampleRate = static_cast<uint32_t>(rate);
+        // sampleRate es std::atomic en el header compartido: se escribe con
+        // .store() (relaxed). El lado de la app lo leerá con .load().
+        if (shared_) shared_->sampleRate.store(static_cast<uint32_t>(rate), std::memory_order_relaxed);
         return ASE_OK;
     }
 
@@ -156,19 +181,49 @@ public:
                                               ASIOCallbacks* callbacks) override {
         if (!infos || !callbacks || numChannels <= 0) return ASE_InvalidParameter;
         if (!IsPowerOfTwo(bufferSize)) return ASE_InvalidMode;
-        mapSharedMemory();
-        bufferSize_ = bufferSize;
-        callbacks_ = *callbacks;
+
+        // createBuffers de nuevo sobre buffers ya creados: disponer primero, no
+        // pisar las allocaciones previas y fugarlas (bufferInfos_ se sobreescribía).
+        if (buffersCreated_) disposeBuffers();
+
+        // 1) Validar TODOS los canales ANTES de allocar nada. El bucle antiguo
+        //    validaba dentro: si el canal 0 era válido y el 1 no, el buffer del
+        //    0 (ya allocado) se fugaba al salir con error.
         for (long i = 0; i < numChannels; ++i) {
             const long ch = infos[i].channelNum;
             if (ch < 0 || ch >= bridge::kChannels) return ASE_InvalidParameter;
-            float* buf = new float[bufferSize * 2];   // doble buffer intercalado
+        }
+
+        mapSharedMemory();   // asegura shared_; si falla, init ya avisó (el worker degrada a silencio)
+
+        // 2) Allocar con nothrow: un bad_alloc no debe cruzar la frontera COM
+        //    como excepción C++; el target no la maneja → terminate del DAW.
+        bufferSize_ = bufferSize;
+        for (long i = 0; i < numChannels; ++i) {
+            float* buf = new (std::nothrow) float[bufferSize * 2];   // doble buffer
+            if (!buf) {
+                for (long j = 0; j < i; ++j)   // liberar lo ya allocado en este intento
+                    delete[] static_cast<float*>(infos[j].buffers[0]);
+                setErrorMessage("Fallo al allocar buffers ASIO (sin memoria)");
+                return ASE_NoMemory;
+            }
             infos[i].buffers[0] = buf;
             infos[i].buffers[1] = buf + bufferSize;
         }
-        channels_ = numChannels;
-        bufferInfos_ = new ASIOBufferInfo[numChannels];
-        std::memcpy(bufferInfos_, infos, sizeof(ASIOBufferInfo) * numChannels);
+        ASIOBufferInfo* infosCopy = new (std::nothrow) ASIOBufferInfo[numChannels];
+        if (!infosCopy) {
+            for (long i = 0; i < numChannels; ++i)
+                delete[] static_cast<float*>(infos[i].buffers[0]);
+            setErrorMessage("Fallo al allocar bufferInfos_ (sin memoria)");
+            return ASE_NoMemory;
+        }
+        std::memcpy(infosCopy, infos, sizeof(ASIOBufferInfo) * numChannels);
+
+        // Estado coherente: todo se fija al final, así un fallo intermedio deja
+        // intacto el estado previo (que ya se dispuso al inicio).
+        bufferInfos_    = infosCopy;
+        callbacks_      = *callbacks;
+        channels_       = numChannels;
         buffersCreated_ = true;
         return ASE_OK;
     }
@@ -203,9 +258,14 @@ public:
     static HRESULT Register() {
         char path[MAX_PATH];
         GetModuleFileNameA(g_hModule, path, MAX_PATH);
+        // Antes se descartaban los resultados de los RegCreateKeyExA y se devolvía
+        // S_OK siempre: un regsvr32 sin elevación "funcionaba" en silencio. Ahora
+        // se recoge el PRIMERO no-S_OK y se devuelve (sin permisos → fallo claro).
+        HRESULT hr = S_OK;
         HKEY hAsio = nullptr, hClsid = nullptr, hInproc = nullptr;
-        RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\ASIO\\Acoustical Bridge",
+        const HRESULT r1 = RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\ASIO\\Acoustical Bridge",
                         0, nullptr, 0, KEY_WRITE, nullptr, &hAsio, nullptr);
+        if (r1 != S_OK) hr = r1;
         if (hAsio) {
             RegSetValueExA(hAsio, "CLSID", 0, REG_SZ,
                 reinterpret_cast<const BYTE*>(kBridgeClsid),
@@ -214,16 +274,18 @@ public:
         }
         char clsidKey[128];
         sprintf_s(clsidKey, "CLSID\\%s", kBridgeClsid);
-        RegCreateKeyExA(HKEY_CLASSES_ROOT, clsidKey, 0, nullptr, 0, KEY_WRITE,
+        const HRESULT r2 = RegCreateKeyExA(HKEY_CLASSES_ROOT, clsidKey, 0, nullptr, 0, KEY_WRITE,
                         nullptr, &hClsid, nullptr);
+        if (r2 != S_OK && hr == S_OK) hr = r2;
         if (hClsid) {
             RegSetValueExA(hClsid, nullptr, 0, REG_SZ,
                 reinterpret_cast<const BYTE*>(kBridgeDriverName),
                 static_cast<DWORD>(strlen(kBridgeDriverName) + 1));
             char inproc[192];
             sprintf_s(inproc, "%s\\InprocServer32", clsidKey);
-            RegCreateKeyExA(HKEY_CLASSES_ROOT, inproc, 0, nullptr, 0, KEY_WRITE,
+            const HRESULT r3 = RegCreateKeyExA(HKEY_CLASSES_ROOT, inproc, 0, nullptr, 0, KEY_WRITE,
                             nullptr, &hInproc, nullptr);
+            if (r3 != S_OK && hr == S_OK) hr = r3;
             if (hInproc) {
                 RegSetValueExA(hInproc, nullptr, 0, REG_SZ,
                     reinterpret_cast<const BYTE*>(path),
@@ -236,13 +298,21 @@ public:
             }
             RegCloseKey(hClsid);
         }
-        return S_OK;
+        return hr;
     }
 
     static HRESULT Unregister() {
-        RegDeleteTreeA(HKEY_CLASSES_ROOT, (std::string("CLSID\\") + kBridgeClsid).c_str());
-        RegDeleteKeyA(HKEY_LOCAL_MACHINE, "SOFTWARE\\ASIO\\Acoustical Bridge");
-        return S_OK;
+        // RegDeleteTreeA borra la rama y todos sus subnodos (RegDeleteKeyA fallaría
+        // si hubiera subclaves) y su resultado YA NO se descarta: se devuelve el
+        // primero no-S_OK en vez de S_OK siempre.
+        HRESULT hr = S_OK;
+        const HRESULT h1 = RegDeleteTreeA(HKEY_CLASSES_ROOT,
+            (std::string("CLSID\\") + kBridgeClsid).c_str());
+        if (h1 != S_OK) hr = h1;
+        const HRESULT h2 = RegDeleteTreeA(HKEY_LOCAL_MACHINE,
+            "SOFTWARE\\ASIO\\Acoustical Bridge");
+        if (h2 != S_OK && hr == S_OK) hr = h2;
+        return hr;
     }
 
     static void SetModuleHandle(HMODULE h) { g_hModule = h; }
@@ -250,23 +320,38 @@ public:
 private:
     static bool IsPowerOfTwo(long v) { return v > 0 && (v & (v - 1)) == 0; }
 
-    void mapSharedMemory() {
-        if (shared_) return;
+    bool mapSharedMemory() {
+        if (shared_) return true;   // ya mapeada
+        // Nombre GLOBAL (ver BridgeShared.h): la MISMA sección para todas las
+        // sesiones de Windows. Sufijo por máquina (8 hex del MachineGuid) como
+        // disyuntivo extra; si no se puede leer, se usa la base sin sufijo.
+        const std::wstring name = bridge::makeSharedName(readMachineGuid());
         hMap_ = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                    static_cast<DWORD>(bridge::kSharedBlockSize),
-                                   bridge::kSharedMemoryName);
-        if (!hMap_) return;
+                                   name.c_str());
+        if (!hMap_) {
+            setErrorMessage("No se pudo crear/abrir la sección de memoria compartida (CreateFileMappingW)");
+            return false;
+        }
         shared_ = static_cast<bridge::BridgeHeader*>(
             MapViewOfFile(hMap_, FILE_MAP_ALL_ACCESS, 0, 0, bridge::kSharedBlockSize));
-        if (shared_) {
-            if (shared_->magic != bridge::kMagic) {
-                *shared_ = bridge::BridgeHeader{};
-                shared_->sampleRate = sampleRate_;
-                shared_->bufferSize = bufferSize_;
-            }
-            shared_->bufferSize = bufferSize_;
-            shared_->sampleRate = sampleRate_;
+        if (!shared_) {
+            ::CloseHandle(hMap_); hMap_ = nullptr;
+            setErrorMessage("No se pudo mapear la vista de la memoria compartida (MapViewOfFile)");
+            return false;
         }
+        if (shared_->magic.load(std::memory_order_acquire) != bridge::kMagic) {
+            // Sección recién creada (memoria zero / magia inválida): la inicializamos
+            // campo a campo y publicamos nuestra identidad. NO `*shared_ = {}` porque
+            // el header ya no es copiable (contiene std::atomic).
+            myInstanceId_ = makeInstanceId();
+            bridge::initializeHeader(shared_, myInstanceId_);
+        }
+        // Sincronizamos con el header los parámetros que la app lee. Son
+        // std::atomic, así que se escriben con .store() (relaxed).
+        shared_->sampleRate.store(static_cast<uint32_t>(sampleRate_), std::memory_order_relaxed);
+        shared_->bufferSize.store(static_cast<uint32_t>(bufferSize_), std::memory_order_relaxed);
+        return true;
     }
 
     static DWORD WINAPI WorkerThunk(LPVOID self) {
@@ -276,7 +361,7 @@ private:
 
     void StartWorker() {
         if (worker_) return;
-        timeBeginPeriod(1);
+        enterTimerPeriod();   // timeBeginPeriod(1); balanceado (ver el helper)
         worker_ = CreateThread(nullptr, 0, WorkerThunk, this, 0, nullptr);
     }
 
@@ -285,21 +370,57 @@ private:
         WaitForSingleObject(worker_, 2000);
         CloseHandle(worker_);
         worker_ = nullptr;
-        timeEndPeriod(1);
+        leaveTimerPeriod();   // timeEndPeriod(1); balanceado (ver el helper)
     }
 
     void Worker() {
-        const double periodMs = bufferSize_ * 1000.0 / static_cast<double>(sampleRate_);
-        const double kHz = periodMs;
-        ULONGLONG next = GetTickCount64();
+        // Pacing con QueryPerformanceCounter (QPC). El pacing anterior dormía a
+        // ciegas sobre GetTickCount64 (resolución 1ms) con `next += period;
+        // Sleep(next-now)`: arrastraba ~1ms de error por periodo (≈48 muestras a
+        // 48k), que Cubase oye como clics intermitentes. Ahora espero al BORDE del
+        // periodo: duermo la mayor parte (Sleep, con el timer a 1ms gracias a
+        // timeBeginPeriod(1) vía el helper balanceado) y hago spin fino del último
+        // ~1ms. Como siempre apunto a un borde ABSOLUTO (qpcNext += period), el
+        // error no se acumula: queda acotado a la cuantización de 1ms. Fallback a
+        // GetTickCount64 si QPC no estuviera disponible (no suele pasar).
+        LARGE_INTEGER qpcFreq{};
+        const bool useQpc = QueryPerformanceFrequency(&qpcFreq) && qpcFreq.QuadPart > 0;
+        LARGE_INTEGER qpcPeriod{}, qpcNext{};
+        if (useQpc) {
+            qpcPeriod.QuadPart = static_cast<LONGLONG>(periodMs() * qpcFreq.QuadPart / 1000.0);
+            if (qpcPeriod.QuadPart <= 0) qpcPeriod.QuadPart = 1;
+            QueryPerformanceCounter(&qpcNext);
+            qpcNext.QuadPart += qpcPeriod.QuadPart;
+        }
+        ULONGLONG nextTick = 0;
+        if (!useQpc) nextTick = GetTickCount64();
         long activeBuffer = 0;
+
         while (running_) {
+            // --- Heartbeat del driver (la app lo lee para saber que sigo vivo) ---
+            if (shared_) shared_->tick++;
+
+            // --- Vivacidad de la app ---
+            // La app incrementa shared_->appTick en cada pullCapture/pushPlayback
+            // (frente 4B). La sigo aquí: si deja de avanzar por más de ~5 periodos,
+            // declaro la app muerta → congelo el playback (silencio) y lo dejo
+            // visible en el header (kStatusAppDead) y en getErrorMessage().
+            if (shared_) {
+                const long long cur = shared_->appTick;
+                if (cur != lastAppTick_) {
+                    lastAppTick_ = cur;
+                    lastAppTickAtMs_ = GetTickCount64();
+                }
+                const bool alive = appAlive();
+                if (alive && appDead_) { appDead_ = false; clearAppDead(); }
+                if (!alive && !appDead_) { appDead_ = true; setAppDead(); }
+            }
+            const bool serve = (shared_ && appAlive());   // ¿seguir sirviendo playback o congelar?
+
             // Contrato ASIO en buffers[activeBuffer]:
             //  - Salidas (isInput=false, "Bridge Out"): ahí renderiza CUBASE;
             //    el dispositivo las LEE. Se envían al capture ring (Cubase →
-            //    app). Antes estaban invertidas: se sobre-escribía el render
-            //    de Cubase con el anillo de la app y se leía de vuelta datos
-            //    propios obsoletos.
+            //    app). (Contrato no tocado: quedó corregido en una auditoría previa.)
             for (long i = 0; i < channels_; ++i) {
                 if (bufferInfos_[i].isInput) continue;
                 auto* out = static_cast<float*>(bufferInfos_[i].buffers[activeBuffer]);
@@ -307,21 +428,42 @@ private:
             }
             //  - Entradas (isInput=true, "Bridge In"): el dispositivo las
             //    ESCRIBE y Cubase las lee. Se rellenan desde el playback ring
-            //    (app → Cubase: señal de prueba; silencio si la app no manda).
+            //    (app → Cubase: señal de prueba). Si la app está muerta, el anillo
+            //    está podrido: se congela (silencio) en vez de sonar datos obsoletos.
             for (long i = 0; i < channels_; ++i) {
                 if (!bufferInfos_[i].isInput) continue;
                 auto* in = static_cast<float*>(bufferInfos_[i].buffers[activeBuffer]);
-                FillFromPlaybackRing(i, in, bufferSize_);
+                if (serve) FillFromPlaybackRing(i, in, bufferSize_);
+                else          std::fill_n(in, bufferSize_, 0.0f);
             }
             samplesPlayed_ += bufferSize_;
             // Aviso al host (Cubase)
             ASIOTimeStamp ts{timeGetTime(), 0};
             callbacks_.bufferSwitch(activeBuffer, ASIOTrue);
             activeBuffer ^= 1;
-            next += static_cast<ULONGLONG>(kHz);
-            const ULONGLONG now = GetTickCount64();
-            if (next > now) Sleep(static_cast<DWORD>(next - now));
-            else next = now;
+
+            // --- Pacing: esperar al borde del siguiente periodo ---
+            if (useQpc) {
+                LARGE_INTEGER now{};
+                const LONGLONG spinTicks = qpcFreq.QuadPart / 1000;   // ~1ms en ticks
+                for (;;) {
+                    QueryPerformanceCounter(&now);
+                    const LONGLONG remain = qpcNext.QuadPart - now.QuadPart;
+                    if (remain <= spinTicks) break;   // ya en la ventana final (~1ms)
+                    const LONGLONG ms = remain / (qpcFreq.QuadPart / 1000);
+                    Sleep(ms > 1 ? static_cast<DWORD>(ms) : 1);
+                }
+                for (;;) {   // spin fino hasta el borde (el 1ms del timer ya va activo)
+                    QueryPerformanceCounter(&now);
+                    if (now.QuadPart >= qpcNext.QuadPart) break;
+                }
+                qpcNext.QuadPart += qpcPeriod.QuadPart;
+            } else {
+                nextTick += static_cast<ULONGLONG>(periodMs());
+                const ULONGLONG now = GetTickCount64();
+                if (nextTick > now) Sleep(static_cast<DWORD>(nextTick - now));
+                else nextTick = now;
+            }
         }
     }
 
@@ -355,6 +497,100 @@ private:
         shared_->captureWriteIndex = w;
     }
 
+    // === Helpers de nombre / identidad / vivacidad / timer (front 4A) ===
+
+    // Periodo de trabajo en ms: un bloque de bufferSize_ muestras a sampleRate_.
+    // Lo usa el pacing QPC del worker y el umbral de "app muerta" (≈5× periodo).
+    double periodMs() const {
+        const double sr = (sampleRate_ > 0) ? static_cast<double>(sampleRate_) : 48000.0;
+        return static_cast<double>(bufferSize_) * 1000.0 / sr;
+    }
+
+    // ¿La app sigue viva? VIVA si su último heartbeat (shared_->appTick, que la app
+    // incrementa en cada pullCapture/pushPlayback — frente 4B) llegó hace menos de
+    // ≈5 periodos. Si nunca ha llegado ninguno (appTick==0) se asume viva: la app
+    // todavía no empezó a hacer pull/push.
+    bool appAlive() const {
+        if (!shared_ || shared_->appTick == 0) return true;
+        if (lastAppTickAtMs_ == 0) return true;
+        return (GetTickCount64() - lastAppTickAtMs_) <= appDeadThresholdMs();
+    }
+    // Milisegundos transcurridos desde la última actividad registrada de la app.
+    long long lastAppActivityMs() const {
+        if (!shared_ || shared_->appTick == 0 || lastAppTickAtMs_ == 0) return 0;
+        return static_cast<long long>(GetTickCount64() - lastAppTickAtMs_);
+    }
+    ULONGLONG appDeadThresholdMs() const {
+        // ≈5× periodo (task); suelo de 20ms para no declarar muerta con jitter fino.
+        ULONGLONG t = static_cast<ULONGLONG>(5.0 * periodMs() + 0.5);
+        if (t < 20) t = 20;
+        return t;
+    }
+
+    // El worker (hilo de audio) escribe el mensaje al detectar eventos y
+    // getErrorMessage (hilo de control) lo lee; errMutex_ evita copiar un buffer
+    // a medio escribir. (4 args: dest, size, src, count — firma estándar de strncpy_s.)
+    void setErrorMessage(const char* msg) {
+        std::lock_guard<std::mutex> lk(errMutex_);
+        strncpy_s(errorMessage_, 128, msg, _TRUNCATE);
+    }
+
+    // El driver detectó que la app dejó de avisar: congela el playback (lo hace el
+    // worker) y deja visible el estado en el header (kStatusAppDead, lo lee el
+    // cliente) y en getErrorMessage() (lo lee el DAW). Solo se llama en el FLANCO
+    // (transición vivo↔muerto), no cada periodo.
+    void setAppDead() {
+        std::lock_guard<std::mutex> lk(errMutex_);
+        if (shared_) shared_->statusFlags |= bridge::kStatusAppDead;
+        strncpy_s(errorMessage_, 128,
+            "Acoustical Estudio no avisa (app muerta): playback congelado", _TRUNCATE);
+    }
+    void clearAppDead() {
+        std::lock_guard<std::mutex> lk(errMutex_);
+        if (shared_) shared_->statusFlags &= ~bridge::kStatusAppDead;
+        strncpy_s(errorMessage_, 128, "OK", _TRUNCATE);
+    }
+
+    // Identidad del extremo que CREA la sección: se publica en shared_->instanceId
+    // (mapSharedMemory). El otro extremo la lee; si tras unos segundos de magia
+    // válida ve un instanceId ajeno que no reconoce, puede avisar en UI "el driver
+    // parece estar en otra sesión" (lo pinta la app, frente 4B). Distinto en cada
+    // lado: GetTickCount64() * 100000 + GetProcessId().
+    static uint64_t makeInstanceId() {
+        return (GetTickCount64() * 100000ull) + static_cast<uint64_t>(GetProcessId());
+    }
+
+    // MachineGuid (HKLM\SOFTWARE\Microsoft\Cryptography): base del sufijo ESTABLE
+    // del nombre de la sección (ver BridgeShared.h / makeSharedName). Devuelve "" si
+    // no se puede leer: entonces el nombre cae a la base (sin sufijo) y la validación
+    // cruzada de instanceId pilla la divergencia. La app debe hacer lo MISMO para
+    // que ambos caigan en el mismo objeto.
+    std::wstring readMachineGuid() {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Cryptography",
+                          0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+            return L"";
+        }
+        wchar_t buf[128] = {0};
+        DWORD size = sizeof(buf), type = 0;
+        const LSTATUS st = RegQueryValueExW(hKey, L"MachineGuid", nullptr, &type,
+                                             reinterpret_cast<BYTE*>(buf), &size);
+        RegCloseKey(hKey);
+        if (st != ERROR_SUCCESS || type != REG_SZ) return L"";
+        return std::wstring(buf);   // null-terminado; el constructor copia hasta el \0
+    }
+
+    // Pareja timeBeginPeriod(1)/timeEndPeriod(1) balanceada en TODAS las salidas
+    // (start/stop/dispose/destructor). El refcount garantiza que el timer del
+    // sistema no quede desbalanceado aunque alguna ruta pare el worker "por otro
+    // camino": solo se entra/sale del timer en la transición 0↔1.
+    void enterTimerPeriod() {
+        if (timerPeriods_.fetch_add(1, std::memory_order_relaxed) == 0) timeBeginPeriod(1);
+    }
+    void leaveTimerPeriod() {
+        if (timerPeriods_.fetch_sub(1, std::memory_order_relaxed) == 1) timeEndPeriod(1);
+    }
+
     ULONG refCount_ = 1;
     char errorMessage_[128] = "OK";
     ASIOSamples sampleRate_ = 48000;
@@ -368,6 +604,14 @@ private:
     HANDLE worker_ = nullptr;
     HANDLE hMap_ = nullptr;
     bridge::BridgeHeader* shared_ = nullptr;
+
+    // --- Estado de vivacidad / nombre / timer (front 4A) ---
+    std::mutex errMutex_;               // protege errorMessage_ y el RMW de statusFlags
+    std::atomic<int> timerPeriods_{0};  // balancea timeBeginPeriod/timeEndPeriod(1)
+    uint64_t myInstanceId_ = 0;         // mi identidad, si SOY yo quien creó la sección
+    long long lastAppTick_ = 0;        // último appTick visto por el worker
+    ULONGLONG lastAppTickAtMs_ = 0;    // GetTickCount64 del último cambio de appTick
+    volatile bool appDead_ = false;    // ¿la app dejó de avisar? (edge, no cada periodo)
 
     static HMODULE g_hModule;
 };
@@ -420,7 +664,11 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
     return g_factory.QueryInterface(riid, ppv);
 }
 
-STDAPI DllCanUnloadNow() { return S_FALSE; }
+STDAPI DllCanUnloadNow() {
+    // S_OK solo si nadie tiene referencias al driver (g_refCount==0). Antes
+    // devolvía S_FALSE siempre: la DLL no se soltaba aunque no la usara nadie.
+    return (g_refCount.load() == 0) ? S_OK : S_FALSE;
+}
 
 STDAPI DllRegisterServer() { return AcousticalBridge::Register(); }
 STDAPI DllUnregisterServer() { return AcousticalBridge::Unregister(); }
