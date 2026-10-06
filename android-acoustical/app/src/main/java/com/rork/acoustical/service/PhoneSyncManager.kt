@@ -40,10 +40,19 @@ import java.security.SecureRandom
  * se conecta directo por Wi-Fi —lo descubre con la baliza UDP del puerto
  * 41042— o por el túnel adb de USB, como antes.
  *
- * Seguridad: los ajustes (JSON push/pull y HTTP /sync) exigen el código de
- * emparejamiento de 6 dígitos (se genera una vez y se muestra en
- * Ajustes > PC/Windows). /manifest y /payload son solo lectura de datos
- * públicos de la release de GitHub, así que quedan abiertos.
+ * Seguridad: los TRES endpoints HTTP (/sync, /manifest y /payload) exigen el
+ * código de emparejamiento de 6 dígitos (se genera una vez y se muestra en
+ * Ajustes > PC/Windows) en la cabecera X-Acoustical-Code: /sync responde 403
+ * si falta y /manifest y /payload 401. Antes solo /sync se protegía:
+ * cualquiera de la LAN podía leer la versión o bajarse el instalador. La
+ * baliza UDP también lleva el código en su campo "code" para que el PC la
+ * valide al descubrirla.
+ *
+ * Ciclo de vida: el servidor, la baliza y el puente de audio NO corren toda
+ * la vida del proceso: se arrancan bajo demanda (al entrar en
+ * Ajustes > PC/Windows o al enviar un comando del Hub) y se detienen en
+ * MainActivity.onDestroy / onCleared del ViewModel. start() y stop() son
+ * idempotentes y thread-safe.
  *
  * El PC lo usa para tres cosas:
  *  1. Sincronizar ajustes: JSON simple {"type":"push"/"pull","payload":...}
@@ -88,6 +97,15 @@ class PhoneSyncManager private constructor(context: Context) {
 
     @Volatile private var serverThread: Thread? = null
     @Volatile private var beaconThread: Thread? = null
+    /** Socket de escucha como campo: stop() lo cierra para desbloquear el
+     *  accept() del hilo servidor y terminar el bucle. */
+    @Volatile private var serverSocket: ServerSocket? = null
+    /** Start/stop idempotentes y mutuamente seguros: la pantalla y los
+     *  comandos del Hub pueden llamarlos a la vez desde el hilo de UI. */
+    private val startStopLock = Any()
+    @Volatile private var running = false
+    /** Reserva atómica del slot "descargando" (ver beginDownload). */
+    private val downloadLock = Any()
 
     /** Puente de audio Wi-Fi (M2/M3): el micrófono de este móvil es una
      *  entrada del PC y las rutas del Hub pueden mandar audio a su altavoz. */
@@ -102,9 +120,19 @@ class PhoneSyncManager private constructor(context: Context) {
         remoteAudio = RemoteAudioLink(context, ::pairCode)
     }
 
-    /** Arranca el servidor, la baliza y el puente de audio (una sola vez). */
+    /**
+     * Arranca el servidor, la baliza y el puente de audio — bajo demanda
+     * (al entrar en Ajustes > PC/Windows o al enviar un comando del Hub),
+     * no al arrancar la app. Idempotente y thread-safe: si ya corre, o el
+     * hilo está en camino de morir, decide una sola vez bajo lock — la
+     * pantalla y los comandos del Hub pueden llamarlo juntos sin abrir dos
+     * servidores sobre el mismo puerto.
+     */
     fun start() {
-        if (serverThread?.isAlive == true) return
+        synchronized(startStopLock) {
+            if (running && serverThread?.isAlive == true) return
+            running = true
+        }
         // El código de emparejamiento debe existir desde que el servidor
         // arranca: si solo se generara a la primera comprobación (codeOk)
         // y el PC envía sus mensajes sin código, la app nunca lo crea y el
@@ -120,32 +148,75 @@ class PhoneSyncManager private constructor(context: Context) {
         maybeAutoCheck()
     }
 
+    /**
+     * Detiene el servidor, la baliza y el puente de audio. Idempotente: se
+     * invoca desde MainActivity.onDestroy y desde el onCleared del ViewModel
+     * (y un eventual re-arranque vuelve a arrancar desde cero); si no está
+     * corriendo, no hace nada. Cerrar el socket de escucha desbloquea el
+     * accept() del hilo servidor, que termina solo; la baliza se interrumpe
+     * (duerme entre balizos) y ambos hilos se join con tope: si el join
+     * expira, el socket ya está cerrado, así que el hilo zombie no puede
+     * aceptar conexiones nuevas.
+     */
+    fun stop() {
+        val thread: Thread?
+        synchronized(startStopLock) {
+            if (!running) return
+            running = false
+            thread = serverThread
+            serverThread = null
+        }
+        runCatching { serverSocket?.close() }
+        serverSocket = null
+        runCatching { beaconThread?.interrupt() }
+        beaconThread = null
+        // El puente de audio tiene su propio stop idempotente (tanda A).
+        runCatching { remoteAudio.stop() }
+        try {
+            thread?.join(STOP_JOIN_MS)
+        } catch (e: InterruptedException) {
+            // el proceso se está limpiando; el socket ya está cerrado
+        }
+        _serverRunning.value = false
+        _status.value = "Servidor de sync detenido (se arranca al entrar en Ajustes > PC/Windows)"
+    }
+
     // === Servidor ===
 
     private fun acceptLoop() {
+        // Todas las interfaces: el PC llega por Wi-Fi directo o por el
+        // túnel adb (USB). El código de emparejamiento protege los ajustes.
+        val server = try {
+            ServerSocket(PORT, 4)
+        } catch (e: Exception) {
+            // Puerto ocupado (p. ej. una app anterior a medias): se anota y
+            // el hilo termina; el siguiente start() reintenta el bind.
+            _status.value = "Servidor de sincronización no disponible: ${e.message ?: "error"}"
+            _serverRunning.value = false
+            return
+        }
+        serverSocket = server
         try {
-            // Todas las interfaces: el PC llega por Wi-Fi directo o por el
-            // túnel adb (USB). El código de emparejamiento protege los ajustes.
-            ServerSocket(PORT, 4).use { server ->
-                _serverRunning.value = true
-                while (!Thread.currentThread().isInterrupted) {
-                    val client = try {
-                        server.accept()
-                    } catch (e: Exception) {
-                        break
-                    }
-                    try {
-                        handle(client)
-                    } catch (e: Exception) {
-                        // una conexión fallida nunca debe tumbar el servidor
-                    } finally {
-                        runCatching { client.close() }
-                    }
+            _serverRunning.value = true
+            while (!Thread.currentThread().isInterrupted) {
+                val client = try {
+                    server.accept()
+                } catch (e: Exception) {
+                    // accept() lanzó: stop() cerró el socket de escucha —
+                    // terminar el bucle (el finally lo cierra por si acaso).
+                    break
+                }
+                try {
+                    handle(client)
+                } catch (e: Exception) {
+                    // una conexión fallida nunca debe tumbar el servidor
+                } finally {
+                    runCatching { client.close() }
                 }
             }
-        } catch (e: Exception) {
-            _status.value = "Servidor de sincronización no disponible: ${e.message ?: "error"}"
         } finally {
+            if (serverSocket === server) serverSocket = null
+            runCatching { server.close() }
             _serverRunning.value = false
         }
     }
@@ -153,7 +224,11 @@ class PhoneSyncManager private constructor(context: Context) {
     // === Baliza Wi-Fi: el PC la oye por UDP y se conecta sin cable ===
 
     private fun startBeacon() {
-        if (beaconThread?.isAlive == true) return
+        // Si el hilo baliza ya está vivo (y no es el cadáver de un stop()),
+        // no se arranca otro: tras un stop() la referencia se limpia y aquí
+        // se crea uno nuevo.
+        val existing = beaconThread
+        if (existing != null && existing.isAlive) return
         beaconThread = Thread({
             val sock = runCatching { DatagramSocket().also { it.setBroadcast(true) } }
                 .getOrNull() ?: return@Thread
@@ -180,6 +255,10 @@ class PhoneSyncManager private constructor(context: Context) {
         put("ver", BuildConfig.VERSION_NAME)
         put("dev", Build.MODEL)
         put("id", deviceId())
+        // Código de la sesión: antes la baliza no llevaba autenticación y el
+        // PC no podía distinguir una baliza legítima de un emisor de la LAN;
+        // el cliente Windows lo valida antes de fiarse (el otro frente).
+        put("code", pairCode())
     }.toString()
 
     /** Identificador estable de este móvil (terreno para varios móviles, M4). */
@@ -212,8 +291,16 @@ class PhoneSyncManager private constructor(context: Context) {
 
     private fun newCode(): String = (100000 + SecureRandom().nextInt(900000)).toString()
 
-    private fun codeOk(sent: String?): Boolean =
-        sent != null && sent.isNotEmpty() && sent == pairCode()
+    /** Compara en tiempo constante (MessageDigest.isEqual): la igualdad de
+     *  cadenas simple dejaba adivinar el código de 6 dígitos por timing a
+     *  cualquier cliente de la LAN. */
+    private fun codeOk(sent: String?): Boolean {
+        if (sent == null || sent.isEmpty()) return false
+        return MessageDigest.isEqual(
+            sent.toByteArray(Charsets.UTF_8),
+            pairCode().toByteArray(Charsets.UTF_8)
+        )
+    }
 
     /** Error de emparejamiento. El campo hasCode permite al PC distinguir
      *  "el móvil aún no tiene código" de "el código no coincide". */
@@ -299,6 +386,15 @@ class PhoneSyncManager private constructor(context: Context) {
         if (method == "POST") {
             val contentLength = lines.firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
                 ?.substringAfter(':')?.trim()?.toIntOrNull() ?: body.size
+            // Tope de 1 MB al body: el Content-Length venía del emisor sin
+            // validar y el bucle de lectura no tenía límite — un cliente
+            // malicioso de la LAN podía hinchar el buffer hasta OOM de la app.
+            if (contentLength > MAX_SYNC_BODY_BYTES) {
+                writeHttp(socket, "400 Bad Request", "application/json",
+                    """{"ok":false,"error":"body too large (max 1 MB)"}"""
+                        .toByteArray(Charsets.UTF_8))
+                return
+            }
             while (body.size < contentLength) {
                 val chunk = ByteArray(minOf(65536, contentLength - body.size))
                 val n = try {
@@ -311,14 +407,22 @@ class PhoneSyncManager private constructor(context: Context) {
             }
         }
 
-        // /sync mueve ajustes: exige el código de emparejamiento.
-        // /manifest y /payload son solo lectura de datos públicos.
-        if (path == "/sync") {
+        // Los tres endpoints exigen el código de emparejamiento en la
+        // cabecera X-Acoustical-Code (el cliente Windows la manda en los
+        // tres; el otro frente): /sync mueve ajustes y 403 si falta;
+        // /manifest y /payload exponen la versión de la app y el instalador
+        // empaquetado en el móvil y antes estaban abiertos a cualquiera de
+        // la LAN — 401 si falta o no coincide.
+        if (path == "/sync" || path == "/manifest" || path == "/payload") {
             val sentCode = lines.firstOrNull { it.startsWith("X-Acoustical-Code:", ignoreCase = true) }
                 ?.substringAfter(':')?.trim()
             if (!codeOk(sentCode)) {
-                writeHttp(socket, "403 Forbidden", "application/json",
-                    pairErrorJson().toByteArray(Charsets.UTF_8))
+                writeHttp(
+                    socket,
+                    if (path == "/sync") "403 Forbidden" else "401 Unauthorized",
+                    "application/json",
+                    pairErrorJson().toByteArray(Charsets.UTF_8)
+                )
                 return
             }
         }
@@ -429,8 +533,11 @@ class PhoneSyncManager private constructor(context: Context) {
 
     // === Hub del PC: comandos que viajan con la próxima sincronización ===
 
-    /** Encola un comando para el Hub de Windows (ruta 0 = principal, 1..4 auxiliares). */
+    /** Encola un comando para el Hub de Windows (ruta 0 = principal, 1..4 auxiliares).
+     *  El primer envío arranca el servidor bajo demanda (idempotente): el
+     *  comando viaja en el próximo sondeo del PC y sin servidor no llegaría. */
     fun sendHubCommand(route: Int, cmd: String, value: Double) {
+        start()
         val json = buildJsonObject {
             put("route", route)
             put("cmd", cmd)
@@ -454,6 +561,9 @@ class PhoneSyncManager private constructor(context: Context) {
      *  el estado pendiente. El PC, en su próximo sondeo (cada pocos segundos),
      *  los aplica y lo confirma con un push "acked", con lo que se borra. */
     fun pushMyConfigToPc() {
+        // Mismo motivo que en sendHubCommand: sin servidor corriendo el push
+        // no lo vería el PC en su próximo sondeo.
+        start()
         val cfgText = localConfigJson
         if (cfgText.isBlank()) {
             _status.value = "Aún no hay ajustes que enviar al PC"
@@ -483,10 +593,13 @@ class PhoneSyncManager private constructor(context: Context) {
     }
 
     private fun storeSyncPayload(text: String, fromPc: Boolean) {
-        val valid = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
+        // La clasificación del payload es pura (SyncPayloadDecision.evaluate,
+        // testeable en JVM): aquí solo va el IO sobre prefs y el StateFlow.
+        val decision = SyncPayloadDecision.evaluate(text) ?: return
+        val valid = decision.json
         // Confirmación del PC de que aplicó los ajustes encolados: se borra el
         // estado pendiente y ya no vuelve a enviarse.
-        if (valid.containsKey("acked") && !valid.containsKey("sendToPc")) {
+        if (decision.isAck) {
             prefs.edit().remove(KEY_SYNC_STATE).apply()
             _status.value = "El PC ha aplicado tus ajustes"
             return
@@ -494,7 +607,7 @@ class PhoneSyncManager private constructor(context: Context) {
         prefs.edit().putString(KEY_SYNC_STATE, valid.toString()).apply()
         // Config enviada por el PC (su botón "Sincronizar"): el ViewModel la
         // aplica al motor local.
-        (valid["config"] as? JsonObject)?.let { cfg ->
+        decision.pendingConfig?.let { cfg ->
             _remoteConfig.value = System.currentTimeMillis() to cfg
         }
         _status.value = if (fromPc) "Ajustes recibidos del PC" else "Ajustes enviados al PC"
@@ -532,6 +645,21 @@ class PhoneSyncManager private constructor(context: Context) {
 
     fun installedPayloadVersion(): String? = prefs.getString(KEY_VERSION, null)
 
+    /** Reserva el slot "descargando" de forma atómica: la descarga manual del
+     *  usuario y la comprobación automática (usuario + auto-check) hacen
+     *  check-then-act separado y antes podían entrar juntos escribiendo el
+     *  mismo setup.tmp a la vez. */
+    private fun beginDownload(): Boolean =
+        synchronized(downloadLock) {
+            if (_downloading.value) return false
+            _downloading.value = true
+            true
+        }
+
+    private fun endDownload() {
+        synchronized(downloadLock) { _downloading.value = false }
+    }
+
     /**
      * Descarga el instalador de Windows y lo deja verificado (SHA-256) en el
      * almacenamiento del móvil para servirlo al PC por USB.
@@ -548,8 +676,7 @@ class PhoneSyncManager private constructor(context: Context) {
             _status.value = "Pega tu repositorio de GitHub o el enlace del instalador"
             return
         }
-        if (_downloading.value) return
-        _downloading.value = true
+        if (!beginDownload()) return
         _status.value = "Buscando el instalador…"
         Thread({
             try {
@@ -566,7 +693,7 @@ class PhoneSyncManager private constructor(context: Context) {
             } catch (e: Exception) {
                 _status.value = "Descarga fallida: ${e.message ?: "error"}"
             } finally {
-                _downloading.value = false
+                endDownload()
             }
         }, "acoustical-payload-download").start()
     }
@@ -585,8 +712,7 @@ class PhoneSyncManager private constructor(context: Context) {
     }
 
     private fun checkForWindowsUpdate(repo: String) {
-        if (_downloading.value) return
-        _downloading.value = true
+        if (!beginDownload()) return
         _status.value = "Comprobando versiones en GitHub…"
         Thread({
             try {
@@ -600,7 +726,7 @@ class PhoneSyncManager private constructor(context: Context) {
             } catch (e: Exception) {
                 _status.value = "No se pudo consultar GitHub: ${e.message ?: "error"}"
             } finally {
-                _downloading.value = false
+                endDownload()
             }
         }, "acoustical-update-check").start()
     }
@@ -640,33 +766,6 @@ class PhoneSyncManager private constructor(context: Context) {
             ?: tag.removePrefix("v").takeIf { VERSION_REGEX.matches(it) }
             ?: throw IllegalStateException("No se pudo leer la versión del release")
         return url to version
-    }
-
-    /** Devuelve "usuario/repo" si la entrada apunta a GitHub; null si es un enlace directo. */
-    private fun githubRepoOf(input: String): String? {
-        GITHUB_REPO_REGEX.find(input)?.let {
-            return "${it.groupValues[1]}/${it.groupValues[2].removeSuffix(".git")}"
-        }
-        if (!input.contains("://") && !input.endsWith(".exe", ignoreCase = true)) {
-            GITHUB_SHORT_REGEX.matchEntire(input)?.let {
-                return "${it.groupValues[1]}/${it.groupValues[2]}"
-            }
-        }
-        return null
-    }
-
-    /** Compara versiones numéricas: 1.10 > 1.9 > 1.2.3. */
-    private fun isNewerVersion(candidate: String, current: String?): Boolean {
-        if (current.isNullOrEmpty()) return true
-        fun parts(v: String) = v.split('.').map { it.takeWhile { c -> c.isDigit() }.toIntOrNull() ?: 0 }
-        val a = parts(candidate)
-        val b = parts(current)
-        for (i in 0 until maxOf(a.size, b.size)) {
-            val x = a.getOrElse(i) { 0 }
-            val y = b.getOrElse(i) { 0 }
-            if (x != y) return x > y
-        }
-        return false
     }
 
     /** Descarga y verifica el instalador; lo guarda listo para servirlo por USB. */
@@ -741,11 +840,14 @@ class PhoneSyncManager private constructor(context: Context) {
         private const val BEACON_INTERVAL_MS = 2000L
         private const val MAX_HEADER_BYTES = 64 * 1024
         private const val MAX_MESSAGE_BYTES = 1024 * 1024
+        /** Tope del body de un POST /sync: un Content-Length inflado por un
+         *  cliente de la LAN no debe poder OOM a la app (antes no había tope). */
+        private const val MAX_SYNC_BODY_BYTES = 1024 * 1024
+        /** Tope del join de los hilos servidor/baliza en stop(): si expira,
+         *  el socket ya está cerrado y el zombie no puede aceptar nada. */
+        private const val STOP_JOIN_MS = 3000L
         private const val MAX_PAYLOAD_BYTES = 512L * 1024 * 1024
         private const val AUTO_CHECK_INTERVAL_MS = 30L * 60 * 1000
-        private val VERSION_REGEX = Regex("""(\d+\.\d+(?:\.\d+)*)""")
-        private val GITHUB_REPO_REGEX = Regex("""github\.com/+([A-Za-z0-9_.-]+)/+([A-Za-z0-9_.-]+)""")
-        private val GITHUB_SHORT_REGEX = Regex("""^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$""")
 
         @Volatile private var instance: PhoneSyncManager? = null
 
@@ -755,3 +857,70 @@ class PhoneSyncManager private constructor(context: Context) {
             }
     }
 }
+
+// =====================================================================
+// Funciones puras extraídas a top-level (internal) para que src/test
+// pueda probarlas en JVM sin instanciar PhoneSyncManager (el cual
+// requiere un Context de Android). Antes vivían como private members;
+// sus llamadas desde la clase resuelven a estas mismas funciones.
+// =====================================================================
+
+/** Compara versiones numéricas: 1.10 > 1.9 > 1.2.3 (los componentes
+ *  ausentes se rellenan con 0: "1.2" == "1.2.0"). */
+internal fun isNewerVersion(candidate: String, current: String?): Boolean {
+    if (current.isNullOrEmpty()) return true
+    fun parts(v: String) = v.split('.').map { it.takeWhile { c -> c.isDigit() }.toIntOrNull() ?: 0 }
+    val a = parts(candidate)
+    val b = parts(current)
+    for (i in 0 until maxOf(a.size, b.size)) {
+        val x = a.getOrElse(i) { 0 }
+        val y = b.getOrElse(i) { 0 }
+        if (x != y) return x > y
+    }
+    return false
+}
+
+/** Devuelve "usuario/repo" si la entrada apunta a GitHub; null si es un
+ *  enlace directo al instalador. */
+internal fun githubRepoOf(input: String): String? {
+    GITHUB_REPO_REGEX.find(input)?.let {
+        return "${it.groupValues[1]}/${it.groupValues[2].removeSuffix(".git")}"
+    }
+    if (!input.contains("://") && !input.endsWith(".exe", ignoreCase = true)) {
+        GITHUB_SHORT_REGEX.matchEntire(input)?.let {
+            return "${it.groupValues[1]}/${it.groupValues[2]}"
+        }
+    }
+    return null
+}
+
+/**
+ * Clasificación del payload JSON de sync — la parte pura de
+ * storeSyncPayload, extraída para test en JVM:
+ *  - [json] es el objeto parseado (null si el texto no es un JSON objeto
+ *    válido; un array o un primitivo no es payload de sync);
+ *  - [isAck]: el PC confirmó que aplicó los ajustes encolados ("acked" sin
+ *    "sendToPc" — esta última marca la dirección teléfono→PC);
+ *  - [pendingConfig]: config nueva a aplicar al motor local, si la hay.
+ */
+internal data class SyncPayloadDecision(
+    val json: JsonObject,
+    val isAck: Boolean,
+    val pendingConfig: JsonObject?
+) {
+    companion object {
+        internal fun evaluate(text: String): SyncPayloadDecision? =
+            runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()?.let { obj ->
+                val ack = obj.containsKey("acked") && !obj.containsKey("sendToPc")
+                SyncPayloadDecision(
+                    json = obj,
+                    isAck = ack,
+                    pendingConfig = if (ack) null else obj["config"] as? JsonObject
+                )
+            }
+    }
+}
+
+private val VERSION_REGEX = Regex("""(\d+\.\d+(?:\.\d+)*)""")
+private val GITHUB_REPO_REGEX = Regex("""github\.com/+([A-Za-z0-9_.-]+)/+([A-Za-z0-9_.-]+)""")
+private val GITHUB_SHORT_REGEX = Regex("""^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$""")

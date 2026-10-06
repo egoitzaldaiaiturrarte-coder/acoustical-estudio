@@ -47,6 +47,7 @@ class UsbAudioSource(private val context: Context) {
     private var usbConnection: UsbDeviceConnection? = null
     private var audioInterface: UsbInterface? = null
     private var permissionReceiver: BroadcastReceiver? = null
+    private var lifecycleReceiver: BroadcastReceiver? = null
 
     @Volatile
     var isDeviceAttached: Boolean = false
@@ -117,6 +118,11 @@ class UsbAudioSource(private val context: Context) {
      */
     private fun connectToDevice(device: UsbDevice) {
         try {
+            // Cerrar cualquier conexión previa antes de abrir la nueva:
+            // re-abrir sin cerrar fugaba una UsbDeviceConnection (y la
+            // interfaz claimada) por cada reconexión.
+            closeConnection()
+
             // Find the audio streaming interface
             val audioIf = findAudioInterface(device)
             if (audioIf == null) {
@@ -141,6 +147,10 @@ class UsbAudioSource(private val context: Context) {
             isDeviceAttached = true
             Log.i(TAG, "USB audio device connected: $productName ($vendorName)")
 
+            // El receiver de detach/unplug vive la vida del device: se
+            // registra aquí y se des-registra en disconnect().
+            registerLifecycleReceiver()
+
             // Try to detect capabilities
             detectCapabilities(device, connection, audioIf)
 
@@ -162,6 +172,22 @@ class UsbAudioSource(private val context: Context) {
      * Disconnect from the USB device.
      */
     fun disconnect() {
+        closeConnection()
+        usbDevice = null
+        isDeviceAttached = false
+        deviceName = ""
+        vendorName = ""
+        productName = ""
+        unregisterPermissionReceiver()
+        unregisterLifecycleReceiver()
+        onDeviceDetached?.invoke()
+    }
+
+    /**
+     * Suelta la interfaz y cierra la conexión actual (la comparten
+     * disconnect() y la re-apertura de connectToDevice).
+     */
+    private fun closeConnection() {
         try {
             audioInterface?.let { usbConnection?.releaseInterface(it) }
             usbConnection?.close()
@@ -170,13 +196,6 @@ class UsbAudioSource(private val context: Context) {
         }
         usbConnection = null
         audioInterface = null
-        usbDevice = null
-        isDeviceAttached = false
-        deviceName = ""
-        vendorName = ""
-        productName = ""
-        unregisterPermissionReceiver()
-        onDeviceDetached?.invoke()
     }
 
     /**
@@ -191,6 +210,14 @@ class UsbAudioSource(private val context: Context) {
      * On Android 21+, AudioRecord can use USB audio devices directly via
      * the system's automatic USB audio routing when the device is connected.
      * The source should be MediaRecorder.AudioSource.MIC or UNPROCESSED.
+     *
+     * LIMITACIÓN (<API 33): la entrada USB NO se puede forzar — el
+     * constructor de AudioRecord queda ligado a la entrada por defecto
+     * del sistema, y el "input USB" solo rinde si el routing automático
+     * del sistema elige el device USB como entrada. Si el sistema se queda
+     * en el micro integrado, este AudioRecord captura el micro, no el USB
+     * (no existe API previa a 33 para bindar el AudioRecord a un
+     * UsbDeviceConnection concreto).
      */
     fun createAudioRecord(sampleRate: Int, channelConfig: Int, format: Int, bufferSize: Int): AudioRecord? {
         if (!isDeviceAttached) return null
@@ -381,5 +408,79 @@ class UsbAudioSource(private val context: Context) {
             }
         }
         permissionReceiver = null
+    }
+
+    /**
+     * Receiver de los broadcast del sistema ACTION_USB_DEVICE_ATTACHED /
+     * ACTION_USB_DEVICE_DETACHED.
+     *
+     * Al desconectar (pup unplug) el device se quedaba con
+     * isDeviceAttached = true huérfano hasta el próximo disconnect manual:
+     * el motor seguía "creyendo" que la interfaz USB estaba ahí. Con este
+     * receiver el estado se actualiza solo y se cierra la conexión.
+     *
+     * Se registra/des-registra junto a la vida del device
+     * (connectToDevice / disconnect). Nota de versiones: en API 33+
+     * registerReceiver exige el flag de exportación (los broadcast del
+     * sistema son "exported"); en <API 33 ese flag no existe y la misma
+     * llamada funciona sin él — los eventos ATTACHED/DETACHED llevan
+     * disponibles desde API 12, así que con minSdk 24 cubre todas las
+     * versiones sin limitación.
+     */
+    private fun registerLifecycleReceiver() {
+        if (lifecycleReceiver != null) return
+        lifecycleReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                }
+                if (device == null) return
+                when (intent.action) {
+                    UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                        // Solo actuar si se soltó EL device que tenemos
+                        // abierto (puede haberse desconectado otro USB).
+                        val open = usbDevice
+                        if (open != null && device.deviceName == open.deviceName) {
+                            Log.i(TAG, "USB device unplugged: ${open.deviceName}")
+                            disconnect()
+                        }
+                    }
+                    UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                        // No auto-reconexión: el permiso puede haber caducado
+                        // y la re-abertura la decide el usuario (el scan de
+                        // la UI volverá a listar el device).
+                        Log.i(TAG, "USB device attached: ${device.deviceName}")
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(lifecycleReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                context.registerReceiver(lifecycleReceiver, filter)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register USB lifecycle receiver", e)
+            lifecycleReceiver = null
+        }
+    }
+
+    private fun unregisterLifecycleReceiver() {
+        lifecycleReceiver?.let {
+            try {
+                context.unregisterReceiver(it)
+            } catch (e: Exception) {
+                // Already unregistered
+            }
+        }
+        lifecycleReceiver = null
     }
 }

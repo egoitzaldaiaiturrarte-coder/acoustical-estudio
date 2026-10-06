@@ -1,12 +1,15 @@
 package com.rork.acoustical.service
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,6 +20,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.SocketTimeoutException
+import java.util.concurrent.AtomicBoolean
 import kotlin.math.floor
 
 /**
@@ -50,6 +54,10 @@ import kotlin.math.floor
  */
 class RemoteAudioLink(context: Context, private val codeProvider: () -> String) {
 
+    // applicationContext: esta clase vive por más tiempo que cualquier
+    // Activity, así que nunca debe retener la referencia de esta.
+    private val appContext: Context = context.applicationContext
+
     // === Estado para la UI (Ajustes > PC/Windows) ===
 
     private val _micStreaming = MutableStateFlow(false)
@@ -68,6 +76,12 @@ class RemoteAudioLink(context: Context, private val codeProvider: () -> String) 
     @Volatile private var listenerSock: DatagramSocket? = null
     private var listenerThread: Thread? = null
     private var playbackThread: Thread? = null
+    // Si el hilo del listener / playback de una parada previa sigue vivo
+    // (el join con tope de stop() expiró), start() NO crea otro: dos
+    // listeners pelearían por el puerto 41043 y dos players por el mismo
+    // AudioTrack (doble volumen, lecturas duplicadas).
+    private val listenerAlive = AtomicBoolean(false)
+    private val playbackAlive = AtomicBoolean(false)
 
     // === Reproducción (PC → altavoz del móvil, M3) ===
 
@@ -80,15 +94,39 @@ class RemoteAudioLink(context: Context, private val codeProvider: () -> String) 
     @Volatile private var micTarget: Pair<String, Int>? = null
     @Volatile private var micRunning = false
     private var micThread: Thread? = null
+    // Un solo micLoop vivo a la vez: si el de una parada previa aún no ha
+    // terminado, descartar el nuevo en vez de abrir un segundo AudioRecord
+    // que pelearía con él por el micro.
+    private val micAlive = AtomicBoolean(false)
+    @Volatile private var micRecord: AudioRecord? = null
 
     fun start() {
         if (running) return
+        if (listenerAlive.get() || playbackAlive.get()) {
+            // Un stop() anterior dejó un hilo en curso (su join con tope
+            // expiró): no arrancar un segundo juego de hilos.
+            return
+        }
         running = true
-        listenerThread = Thread({ listenLoop() }, "acoustical-remote-audio").apply {
+        listenerThread = Thread({
+            listenerAlive.set(true)
+            try {
+                listenLoop()
+            } finally {
+                listenerAlive.set(false)
+            }
+        }, "acoustical-remote-audio").apply {
             isDaemon = true
             start()
         }
-        playbackThread = Thread({ playbackLoop() }, "acoustical-remote-playback").apply {
+        playbackThread = Thread({
+            playbackAlive.set(true)
+            try {
+                playbackLoop()
+            } finally {
+                playbackAlive.set(false)
+            }
+        }, "acoustical-remote-playback").apply {
             isDaemon = true
             start()
         }
@@ -99,8 +137,8 @@ class RemoteAudioLink(context: Context, private val codeProvider: () -> String) 
         running = false
         runCatching { listenerSock?.close() }   // desbloquea el receive
         stopMic()
-        runCatching { listenerThread?.join(400) }
-        runCatching { playbackThread?.join(400) }
+        runCatching { listenerThread?.join(500) }
+        runCatching { playbackThread?.join(500) }
         listenerThread = null
         playbackThread = null
     }
@@ -199,7 +237,10 @@ class RemoteAudioLink(context: Context, private val codeProvider: () -> String) 
                     }
                 }
             } else {
-                runCatching { Thread.sleep(5) }
+                // Sin datos en el buffer, dormir 5 ms haría girar el bucle
+                // ~200 veces por segundo sin producir nada (CPU/batería).
+                // 100 ms mantiene la latencia baja sin quemar ciclos.
+                runCatching { Thread.sleep(100) }
             }
             val playing = recentAudio()
             if (playing != _pcPlaying.value) _pcPlaying.value = playing
@@ -241,9 +282,34 @@ class RemoteAudioLink(context: Context, private val codeProvider: () -> String) 
     private fun startMic(pcIp: String, port: Int) {
         micTarget = pcIp to port
         if (micRunning) return   // ya captura: solo se actualiza el destino
+        if (micAlive.get()) {
+            // Un bucle anterior sigue vivo (el join de stopMic expiró):
+            // descartar el nuevo en vez de abrir un segundo micrófono.
+            return
+        }
+        // Comprobación explícita del permiso: sin RECORD_AUDIO el
+        // AudioRecord se abre pero read() devuelve 0/-1 en bucle, y el
+        // mensaje genérico anterior («deja la app abierta») no apuntaba a
+        // la causa real.
+        if (ContextCompat.checkSelfPermission(
+                appContext, Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            _micError.value = "Este móvil no tiene concedido el permiso de " +
+                "micrófono: concedelo en la app o en Ajustes del sistema y el " +
+                "PC podrá usar este micro"
+            return
+        }
         micRunning = true
         _micError.value = null
-        micThread = Thread({ micLoop() }, "acoustical-remote-mic").apply {
+        micThread = Thread({
+            micAlive.set(true)
+            try {
+                micLoop()
+            } finally {
+                micAlive.set(false)
+            }
+        }, "acoustical-remote-mic").apply {
             isDaemon = true
             start()
         }
@@ -252,6 +318,16 @@ class RemoteAudioLink(context: Context, private val codeProvider: () -> String) 
     private fun stopMic() {
         micRunning = false
         runCatching { micThread?.join(400) }
+        if (micAlive.get()) {
+            // El join expiró y el hilo sigue vivo: lo más probable es que
+            // esté bloqueado en rec.read() (entrada de audio suspendida en
+            // segundo plano). Forzar el release lo desbloquea; el read lanza
+            // y el catch del bucle convierte la salida en una parada limpia
+            // (sin el catch, la IllegalStateException crashearía el proceso).
+            Log.w(TAG, "hilo del micro aún vivo tras el join; forzando release")
+            runCatching { micRecord?.release() }
+        }
+        micRecord = null
         micThread = null
         _micStreaming.value = false
     }
@@ -272,16 +348,18 @@ class RemoteAudioLink(context: Context, private val codeProvider: () -> String) 
             null
         }
         if (rec == null || rec.state != AudioRecord.STATE_INITIALIZED) {
-            rec?.release()
+            runCatching { rec?.release() }
             micRunning = false
             error = "No se pudo abrir el micrófono: deja la app abierta (o el análisis en " +
                 "segundo plano) para que el PC lo use"
             _micError.value = error
             return
         }
+        micRecord = rec
         val sock = runCatching { DatagramSocket() }.getOrNull()
             ?: run {
-                rec.release()
+                runCatching { rec.release() }
+                micRecord = null
                 micRunning = false
                 error = "Sin socket UDP para enviar el micrófono"
                 _micError.value = error
@@ -343,9 +421,14 @@ class RemoteAudioLink(context: Context, private val codeProvider: () -> String) 
                 }
             }
         }
+        // stop() SIEMPRE antes que release(): el stop desbloquea un read en
+        // curso, mientras que un release en pleno read lo despierta con una
+        // IllegalStateException que, sin el catch del read, crashearía el
+        // proceso. (El read ya va protegido; esto protege la limpieza.)
         runCatching { rec.stop() }
-        rec.release()
+        runCatching { rec.release() }
         runCatching { sock.close() }
+        micRecord = null
         micRunning = false
         _micStreaming.value = false
         if (error != null) _micError.value = error

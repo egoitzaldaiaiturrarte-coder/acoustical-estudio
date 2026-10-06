@@ -101,7 +101,15 @@ class WalkieTalkieManager(private val context: Context) {
         captureJob = scope?.launch {
             val buffer = ShortArray(CHUNK_SAMPLES)
             while (isActive && kotlinx.coroutines.currentCoroutineContext().isActive) {
-                val read = audioRecord?.read(buffer, 0, CHUNK_SAMPLES) ?: -1
+                // read() bloquea en JNI: si stop() hace release() desde otro hilo
+                // mientras el read está en vuelo, lanza IllegalStateException. Sin
+                // este catch la excepción es uncaught en el hilo de la coroutine
+                // y tumba todo el proceso.
+                val read = try {
+                    audioRecord?.read(buffer, 0, CHUNK_SAMPLES) ?: -1
+                } catch (e: Exception) {
+                    break
+                }
                 if (read > 0) {
                     onAudioChunk?.invoke(buffer.copyOf(read))
                 }

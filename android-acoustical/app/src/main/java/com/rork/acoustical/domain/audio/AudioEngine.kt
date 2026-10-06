@@ -10,6 +10,7 @@ import com.rork.acoustical.domain.model.EqBand
 import com.rork.acoustical.domain.model.SpectrumFrame
 import com.rork.acoustical.domain.model.StandardFrequencies
 import com.rork.acoustical.domain.model.SupportBand
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -70,6 +71,16 @@ class AudioEngine {
     private var bandFrequencies: FloatArray = StandardFrequencies.tenBand
     private var bands: MutableList<EqBand> = mutableListOf()
 
+    /**
+     * SPL calibration offset (dB): what the meter adds to the (A-weighted)
+     * dBFS level to report real SPL. Defaults to the typical 120 dB (full
+     * scale); a VM calibration pushes a measured value through
+     * [setSplCalibrationOffset] and [configure] retains it across meter
+     * rebuilds — before, a hard-coded 120 in the rebuild ignored any
+     * calibration the user had performed.
+     */
+    private var splCalibrationOffset = 120f
+
     // Reference spectrum (the "ideal" or source signature)
     private var referenceLevels: FloatArray? = null
     private var isReferenceCaptured: Boolean = false
@@ -82,6 +93,25 @@ class AudioEngine {
     var onStartFailed: ((String) -> Unit)? = null
     /** Invoked on every processor decision (decide every 800 ms, values adjust every 10 ms). */
     var onSweepUpdate: ((SweepProcess, SweeperProcessor.SweepStep) -> Unit)? = null
+
+    /**
+     * Listeners adicionales a cada resultado de análisis. El servicio FGS
+     * ([AudioAnalysisService]) se suscribe por aquí y NO por
+     * [onAnalysisUpdate]: ese slot es de uso exclusivo del ViewModel y
+     * pisarlo rompería la UI. CopyOnWrite: el bucle de análisis itera un
+     * snapshot mientras otro hilo (el servicio) añade/quita listeners.
+     */
+    private val extraAnalysisListeners = CopyOnWriteArrayList<(AnalysisResult) -> Unit>()
+
+    fun addAnalysisListener(listener: (AnalysisResult) -> Unit) {
+        if (!extraAnalysisListeners.contains(listener)) {
+            extraAnalysisListeners.add(listener)
+        }
+    }
+
+    fun removeAnalysisListener(listener: (AnalysisResult) -> Unit) {
+        extraAnalysisListeners.remove(listener)
+    }
 
     // Shared state between the analysis loop and the sweeper loop
     @Volatile private var lastMeasuredLevels: FloatArray? = null
@@ -103,6 +133,13 @@ class AudioEngine {
         val correctionIntensity: Float,
         val cpuLoadPercent: Float,
         val framesAnalyzed: Long,
+        /**
+         * Aggregated MEASURED band levels (1/N-octave, gated by the config
+         * noise floor) for this frame. Consumers that need band-level data
+         * with the engine's real band count (e.g. the RT60 estimator) use
+         * this instead of the raw FFT bins of [measuredSpectrum].
+         */
+        val measuredLevels: FloatArray = FloatArray(0),
         val noiseSpectrum: SpectrumFrame? = null,
         /** Per dynamic-EQ gain curves (auto corrections + its own support bands). */
         val dynamicEqGainsL: List<FloatArray> = emptyList(),
@@ -155,7 +192,7 @@ class AudioEngine {
                 noiseFloorDb = newConfig.noiseFloorDb,
                 correctionPeriodMs = newConfig.correctionPeriodMs
             )
-            splMeter = SplMeter(calibrationOffset = 120f)
+            splMeter = SplMeter(splCalibrationOffset)
             noiseProfiler = NoiseProfiler(
                 binCount = newConfig.fftSize.binCount,
                 maxCaptureFrames = 50,
@@ -167,6 +204,21 @@ class AudioEngine {
             bands = bandFrequencies.mapIndexed { i, freq ->
                 EqBand(index = i, centerFreq = freq, gainDb = 0f, targetGainDb = 0f)
             }.toMutableList()
+        }
+    }
+
+    /**
+     * Cambia el offset de calibración SPL EN CALIENTE (t. 10): sin detener
+     * el motor y sin perder estado de corrección — el meter se reescribe in
+     * place bajo [stateLock], el mismo lock que usa [configure]/[stop], así
+     * el bucle de análisis la ve ordenada. El valor sobrevive también a un
+     * rebuild estructural: [configure] reconstruye el meter con
+     * [splCalibrationOffset] en lugar del 120 fijo de antes.
+     */
+    fun setSplCalibrationOffset(offsetDb: Float) {
+        synchronized(stateLock) {
+            splCalibrationOffset = offsetDb
+            splMeter?.calibrationOffset = offsetDb
         }
     }
 
@@ -444,7 +496,10 @@ class AudioEngine {
                     analyzeFrame(floatBuffer, sampleRate, fftSize)
                 }
 
-                result?.let { onAnalysisUpdate?.invoke(it) }
+                result?.let { r ->
+                    onAnalysisUpdate?.invoke(r)
+                    extraAnalysisListeners.forEach { it(r) }
+                }
 
                 framesAnalyzed++
 
@@ -480,12 +535,17 @@ class AudioEngine {
         val corrector = roomCorrector ?: return null
         val meter = splMeter ?: return null
 
-        // Compute SPL from time-domain samples
-        val spl = meter.computeSpl(samples)
-
-        // Compute frequency spectrum
+        // Compute frequency spectrum FIRST: the SPL meter needs it (A-weighting
+        // is a frequency-domain measurement, see SplMeter).
         val rawMagnitudesDb = fft.computeMagnitudesDb(samples, sampleRate)
         val binFreqs = fft.getBinFrequencies(sampleRate)
+
+        // A-weighted SPL over the RAW spectrum (before noise subtraction):
+        // the meter measures the actual sound present in the room, like a
+        // physical SPL meter; the subtracted spectrum feeds the corrector.
+        // Before, this was a flat time-domain RMS and the "A" weighting was
+        // a no-op, so the reading ignored the ear's frequency sensitivity.
+        val spl = meter.computeWeightedSpl(rawMagnitudesDb, binFreqs)
 
         // Subtract noise profile if enabled and available
         val profiler = noiseProfiler
@@ -579,6 +639,7 @@ class AudioEngine {
             correctionIntensity = correctionIntensity,
             cpuLoadPercent = 0f,
             framesAnalyzed = framesAnalyzed,
+            measuredLevels = measuredLevels,
             noiseSpectrum = noiseSpectrum,
             dynamicEqGainsL = eqGainsL,
             dynamicEqGainsR = eqGainsR

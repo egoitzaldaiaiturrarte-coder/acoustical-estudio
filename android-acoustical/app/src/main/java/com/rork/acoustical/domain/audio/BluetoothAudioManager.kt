@@ -202,8 +202,11 @@ class BluetoothAudioManager(private val context: Context) {
         if (a.isDiscovering) {
             a.cancelDiscovery()
         }
-        deviceMap.clear()
-        _devices.value = emptyList()
+        // Antes aquí había deviceMap.clear() + _devices = emptyList(): los
+        // bonded desaparecían durante el escaneo y solo volvían si el radio
+        // hacía OFF→ON de nuevo (loadBondedDevices en ACTION_STATE_CHANGED).
+        // Ahora el descubrimiento solo MERGEA sobre el mapa (clave = address,
+        // estable, sin duplicados): los bonded conservan su sitio en la lista.
         return a.startDiscovery()
     }
 
@@ -250,6 +253,12 @@ class BluetoothAudioManager(private val context: Context) {
         val a = adapter ?: return
         if (!hasConnectPermission()) return
         if (!a.isEnabled) return
+        // Se re-ejecuta en cada ACTION_STATE_CHANGED→ON: si ya hay un proxy
+        // vivo, NO pedir otro. Cada getProfileProxy apila un proxy en el
+        // sistema y, acumulados, el sistema puede dejar de entregar
+        // onServiceConnected (callback que nunca llega) — los auriculares
+        // "desaparecen".
+        if (a2dpProxy != null) return
 
         try {
             a.getProfileProxy(context, object : BluetoothProfile.ServiceListener {
@@ -263,6 +272,9 @@ class BluetoothAudioManager(private val context: Context) {
 
                 override fun onServiceDisconnected(profile: Int) {
                     if (profile == BluetoothProfile.A2DP) {
+                        // El sistema invalidó el proxy: nullificar para que
+                        // setupA2dpProxy() (próximo ON del radio) pida uno
+                        // nuevo — y cleanup() lo cierra si llegamos antes.
                         a2dpProxy = null
                         Log.i(TAG, "A2DP proxy disconnected")
                     }
@@ -305,13 +317,18 @@ class BluetoothAudioManager(private val context: Context) {
         val isBonded = try { device.bondState == BluetoothDevice.BOND_BONDED } catch (e: SecurityException) { false }
         val name = try { device.name } catch (e: SecurityException) { null } ?: "Dispositivo BT"
 
+        // Merge sobre el mapa existente (el escaneo ya no lo borra): un bonded
+        // que ya estaba listado conserva su estado de conexión/A2DP — solo
+        // cambian los campos que el descubrimiento actualiza. Sin esto, un
+        // bonded+conectado que reaparece en el scan perdería el flag A2DP.
+        val existing = deviceMap[device.address]
         val bt = BtDevice(
             name = name,
             address = device.address,
             isBonded = isBonded,
-            isConnected = false,
+            isConnected = existing?.isConnected ?: false,
             rssi = rssi,
-            isA2dp = false
+            isA2dp = existing?.isA2dp ?: false
         )
         deviceMap[device.address] = bt
         publishDevices()
@@ -455,6 +472,18 @@ class BluetoothAudioManager(private val context: Context) {
                 Log.e(TAG, "Failed to unregister receiver", e)
             }
             receiverRegistered = false
+        }
+        // Cerrar el proxy del perfil A2DP: nulo solo la referencia lo deja
+        // fugado en el sistema (comportamiento documentado de la API de BT)
+        // y, con proxies acumulados, el siguiente getProfileProxy puede no
+        // entregar nunca onServiceConnected — los auriculares "desaparecen"
+        // en el próximo manager.
+        a2dpProxy?.let { proxy ->
+            runCatching {
+                adapter?.closeProfileProxy(BluetoothProfile.A2DP, proxy)
+            }.onFailure { e ->
+                Log.e(TAG, "Failed to close A2DP proxy", e)
+            }
         }
         a2dpProxy = null
     }

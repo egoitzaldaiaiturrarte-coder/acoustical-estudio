@@ -153,8 +153,10 @@ class OscClient {
     }
 
     // --- OSC Encoding ---
+    // internal (no private) para que src/test pueda hacer round-trips del
+    // codec en JVM sin socket: la API pública del cliente es send*/subscribe.
 
-    private fun encodeOscMessage(address: String, args: List<OscArgument>): ByteArray {
+    internal fun encodeOscMessage(address: String, args: List<OscArgument>): ByteArray {
         val out = ByteArrayOutputStream()
 
         // Address pattern
@@ -186,27 +188,41 @@ class OscClient {
         return out.toByteArray()
     }
 
+    /**
+     * Serializa [s] como string OSC 1.0: bytes UTF-8 + terminador NUL,
+     * rellenado a múltiplos de 4.
+     *
+     * El NUL cuenta DENTRO del último bloque: una string de longitud múltiplo
+     * de 4 (o la vacía) necesita un bloque extra solo con el terminador.
+     * La versión anterior (a) no emitía NUL en esos casos y el parser del
+     * receptor se des-sincronizaba leyendo más bytes de los reales, y (b)
+     * usaba US_ASCII, que corrompía cualquier carácter no-ASCII (el spec
+     * usa UTF-8: "calibración", emoji, etc.).
+     */
     private fun paddedString(s: String): ByteArray {
-        val bytes = s.toByteArray(Charsets.US_ASCII)
-        val padding = (4 - (bytes.size % 4)) % 4
-        return bytes + ByteArray(padding)
+        val bytes = s.toByteArray(Charsets.UTF_8)
+        val withTerminator = bytes.size + 1
+        val padding = (4 - withTerminator % 4) % 4
+        return bytes + byteArrayOf(0) + ByteArray(padding)
     }
 
     // --- OSC Decoding ---
+    // internal (no private) para que src/test pueda hacer round-trips del
+    // codec en JVM sin socket.
 
-    private fun decodeOscMessage(data: ByteArray): OscMessage? {
+    internal fun decodeOscMessage(data: ByteArray): OscMessage? {
         try {
             var offset = 0
 
             // Read address
-            val address = readPaddedString(data, offset)
-            offset += paddedLength(address)
+            val (address, addrLen) = readPaddedString(data, offset)
+            offset += addrLen
 
             if (offset >= data.size) return OscMessage(address, emptyList())
 
             // Read type tag
-            val typeTag = readPaddedString(data, offset)
-            offset += paddedLength(typeTag)
+            val (typeTag, tagLen) = readPaddedString(data, offset)
+            offset += tagLen
 
             val types = typeTag.removePrefix(",")
             val args = mutableListOf<OscArgument>()
@@ -226,9 +242,9 @@ class OscClient {
                         offset += 4
                     }
                     's' -> {
-                        val str = readPaddedString(data, offset)
+                        val (str, strLen) = readPaddedString(data, offset)
                         args.add(OscArgument.StringArg(str))
-                        offset += paddedLength(str)
+                        offset += strLen
                     }
                 }
             }
@@ -240,19 +256,44 @@ class OscClient {
         }
     }
 
-    private fun readPaddedString(data: ByteArray, offset: Int): String {
-        val sb = StringBuilder()
+    /**
+     * Lee una string OSC 1.0 desde [offset] y devuelve el par
+     * (texto decodificado UTF-8, nº de bytes que ocupó en el stream).
+     *
+     * El terminador NUL vive DENTRO del último bloque de 4 bytes: una string
+     * de N bytes ocupa redondeado(N+1, a múltiplo de 4), así que las de
+     * longitud múltiplo de 4 llevan su NUL en un bloque extra. El límite del
+     * bloque se calcula desde la posición del NUL (el payload ya delimita la
+     * longitud; no se asume relleno "hasta donde el parser quiera"):
+     *  - con NUL: el bloque acaba en el siguiente múltiplo de 4 (la
+     *    alineación de bloques es global en el mensaje, offset siempre
+     *    múltiplo de 4);
+     *  - sin NUL (emisor malformado/truncado): la string llega al fin del
+     *    buffer y el parseo se detiene ahí en vez de desbocarse.
+     *
+     * Nota: un NUL EMBEFIDO a mitad de la string (no el terminador) la
+     * trunca al primer cero — limitación del spec OSC 1.0 —, pero el parseo
+     * se limita a bloques de 4 alineados: no hay excepción ni desbocado más
+     * allá del buffer, y los mensajes bien formados no se ven afectados.
+     */
+    private fun readPaddedString(data: ByteArray, offset: Int): Pair<String, Int> {
         var i = offset
-        while (i < data.size && data[i].toInt() != 0) {
-            sb.append(data[i].toInt().toChar())
+        var terminator = -1
+        while (i < data.size) {
+            if (data[i].toInt() == 0) {
+                terminator = i
+                break
+            }
             i++
         }
-        return sb.toString()
-    }
-
-    private fun paddedLength(s: String): Int {
-        val len = s.toByteArray(Charsets.US_ASCII).size + 1
-        return len + ((4 - (len % 4)) % 4)
+        if (terminator < 0) {
+            // El buffer acabó antes del NUL (truncado): leer hasta el fin.
+            val text = String(data, offset, data.size - offset, Charsets.UTF_8)
+            return text to (data.size - offset)
+        }
+        val text = String(data, offset, terminator - offset, Charsets.UTF_8)
+        val blockEnd = minOf(((terminator + 1) + 3) / 4 * 4, data.size)
+        return text to (blockEnd - offset)
     }
 }
 

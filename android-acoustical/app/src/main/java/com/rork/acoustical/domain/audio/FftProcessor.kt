@@ -160,7 +160,12 @@ class FftProcessor(private val size: Int) : AutoCloseable {
         // Compute magnitudes in dB
         val binHz = sampleRate.toFloat() / size.toFloat()
         val logBase = ln(10f)
-        val normFactor = 2f / size
+        // Windowed normalization: 2·|X|/(n·0.54), identical to the shared C
+        // core (dsp/acoustical_dsp.c). The Hamming window's coherent gain is
+        // ≈ 0.54 (its sum is ≈ 0.54·n), so the rectangular normalization (2/n)
+        // made a full-scale sine read ~5.4 dB LOW; dividing by 0.54
+        // compensates so a 0 dBFS tone reads 0 dB on this path too.
+        val normFactor = 2f / (size * 0.54f)
 
         for (i in 0 until binCount) {
             val mag = sqrt(real[i] * real[i] + imag[i] * imag[i]) * normFactor

@@ -47,8 +47,9 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Permissions required for the full workflow: measuring, GPS tracking,
-     * Bluetooth output control and notifications. Bluetooth runtime
-     * permissions only exist on Android 12+.
+     * Bluetooth output control, notifications and — on Android 14+ — local
+     * Wi-Fi access. Bluetooth runtime permissions only exist on Android 12+,
+     * NEARBY_WIFI_DEVICES on Android 13+.
      */
     private val requiredPermissions: Array<String>
         get() = buildList {
@@ -59,6 +60,13 @@ class MainActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 add(Manifest.permission.BLUETOOTH_CONNECT)
                 add(Manifest.permission.BLUETOOTH_SCAN)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // Android 14+ (targetSdk 36): sin este permiso el sistema
+                // bloquea TODO el tráfico Wi-Fi local de la app — servidor
+                // 41041, baliza 41042 y audio remoto 41043/41044 dejarían de
+                // funcionar y el PC no encontraría el móvil en la red.
+                add(Manifest.permission.NEARBY_WIFI_DEVICES)
             }
         }.toTypedArray()
 
@@ -79,8 +87,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // Servidor de sincronización/actualización por USB (solo loopback + adb)
-        PhoneSyncManager.get(applicationContext).start()
+        // El servidor de sync + baliza Wi-Fi NO se arranca aquí: antes
+        // corrían toda la vida del proceso (TCP 41041 en todas las
+        // interfaces + baliza UDP 41042 cada 2 s) aunque nadie usara el PC.
+        // Ahora arrancan bajo demanda: al entrar en Ajustes > PC/Windows o
+        // al enviar un comando del Hub (ver PhoneSyncManager.start()).
         updateMissingPermissions()
         requestPendingPermissions()
         handleShortcutIntent(intent)
@@ -109,6 +120,16 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // The user may have granted permissions from system settings
         updateMissingPermissions()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Detiene el servidor de sync, la baliza Wi-Fi y el puente de audio:
+        // se arrancan bajo demanda (pantalla PC/Windows, comandos del Hub) y
+        // no deben quedar escuchando en todas las interfaces con la app en
+        // segundo plano. El onCleared del ViewModel hace el mismo stop de
+        // forma idempotente (doble stop inocuo).
+        PhoneSyncManager.get(applicationContext).stop()
     }
 
     override fun onNewIntent(intent: Intent) {

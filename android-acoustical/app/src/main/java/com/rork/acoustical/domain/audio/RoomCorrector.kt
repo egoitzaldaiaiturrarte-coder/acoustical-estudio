@@ -5,7 +5,6 @@ import com.rork.acoustical.domain.model.SpectrumFrame
 import com.rork.acoustical.domain.model.StandardFrequencies
 import kotlin.math.abs
 import kotlin.math.log10
-import kotlin.math.pow
 
 /**
  * Analyzes the difference between a reference spectrum (what the source sends)
@@ -63,19 +62,12 @@ class RoomCorrector(
     private var rankCursor = 0
 
     /**
-     * Band edge ratio for aggregation. With ultra band counts (124) the
-     * spacing is ~1/12 octave, so narrower edges avoid heavy overlap.
-     */
-    private val bandEdgeRatio: Double =
-        if (bandCount > 40) 2.0.pow(1.0 / 12.0) else 2.0.pow(1.0 / 6.0)
-
-    // Native (shared C core) fast path for band aggregation — same code the
-    // Windows app runs. Stateless: the native function takes all parameters
-    // directly, so no handle is needed.
-    private val useNative: Boolean = NativeDsp.isAvailable
-
-    /**
      * Aggregate raw FFT bins into perceptual bands using log-spaced center frequencies.
+     *
+     * Delegado a [BandAggregator] (único punto de agregación de la app:
+     * mismo ratio 1/6-1/12 de octava según nº de bandas, mismo gating por
+     * [noiseFloorDb] y mismo vector golden que el core C). El método se
+     * conserva como API estable para los callers existentes.
      *
      * @param magnitudesDb dB magnitudes from the FFT (size = fftBinCount)
      * @param binFrequencies frequency in Hz for each FFT bin
@@ -85,47 +77,9 @@ class RoomCorrector(
         magnitudesDb: FloatArray,
         binFrequencies: FloatArray
     ): FloatArray {
-        // Native (shared C core) fast path — same two-pointer aggregation the
-        // Windows app runs. Falls through to the pure-Kotlin implementation
-        // when the native lib is absent (e.g. JVM unit tests).
-        if (useNative) {
-            val bandLevels = FloatArray(bandCount)
-            NativeDsp.nativeAggregateBands(bandFrequencies, magnitudesDb, binFrequencies, noiseFloorDb, bandLevels)
-            currentBandLevels = bandLevels
-            return bandLevels
-        }
-
-        val bandLevels = FloatArray(bandCount)
-        val ratio = bandEdgeRatio
-        val totalBins = binFrequencies.size
-
-        // Two-pointer: both the band edges (lower/upper) and the bin
-        // frequencies are sorted, so the [lower, upper] window only ever moves
-        // forward. This is O(totalBins + bandCount) instead of the previous
-        // O(bandCount × totalBins), which matters with 124 bands × 2048 bins.
-        var start = 0
-        var end = 0
-        for (b in 0 until bandCount) {
-            val center = bandFrequencies[b]
-            val lower = center / ratio
-            val upper = center * ratio
-
-            while (start < totalBins && binFrequencies[start] < lower) start++
-            if (end < start) end = start
-            while (end < totalBins && binFrequencies[end] <= upper) end++
-
-            var sum = 0.0
-            var count = 0
-            for (i in start until end) {
-                val mag = magnitudesDb[i]
-                if (mag > noiseFloorDb) {
-                    sum += mag
-                    count++
-                }
-            }
-            bandLevels[b] = if (count > 0) (sum / count).toFloat() else noiseFloorDb
-        }
-
+        val bandLevels = BandAggregator.aggregate(
+            bandFrequencies, magnitudesDb, binFrequencies, noiseFloorDb
+        )
         currentBandLevels = bandLevels
         return bandLevels
     }

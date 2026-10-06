@@ -1,25 +1,33 @@
 package com.rork.acoustical.domain.audio
 
-import kotlin.math.exp
-import kotlin.math.ln
+import kotlin.math.log10
+import kotlin.math.pow
 
 /**
- * Estimates reverberation time (RT60) from a sequence of spectrum frames.
+ * Estimates reverberation time (RT60) from a sequence of band-level frames.
  *
  * RT60 is the time it takes for the sound pressure level to decrease by 60 dB
  * after the sound source stops. This implementation uses the energy decay
- * curve (EDC) method via Schroeder backward integration.
+ * curve (EDC) via Schroeder backward integration:
  *
- * The estimator maintains a history of band energy levels and computes
- * the decay slope to estimate RT60 in milliseconds.
+ *  - [feedFrame] converts each band's dB level to LINEAR ENERGY
+ *    (10^(dB/10) — it is energy, not amplitude) and stores it in a ring
+ *    buffer. IMPORTANT: the frame must hold AGGREGATED BAND levels (10/16/31/124
+ *    bands depending on the active config), not raw FFT bins: an estimator
+ *    built for N bands interprets the first N values of the frame as its N
+ *    bands, so feeding raw bins made the "bands" be 0-18 Hz.
+ *  - [computeRt60] builds the Schroeder EDC from the oldest frame:
+ *    EDC[j] = sum of energies of frames j..n-1. It starts at the total
+ *    energy and decays toward the latest frame; the dB curve is then linearly
+ *    regressed against time and the slope (dB/ms) yields RT60 = 60/|slope|.
  */
 class Rt60Estimator(
-    private val bandCount: Int = 8,
+    val bandCount: Int = 8,
     private val historySize: Int = 64,
     private val sampleIntervalMs: Long = 50L
 ) {
 
-    /** Ring buffer of total energy per frame */
+    /** Ring buffer of linear band energy per frame */
     private val energyHistory = Array(bandCount) { FloatArray(historySize) }
     private var writeIndex = 0
     private var framesCollected = 0
@@ -54,8 +62,10 @@ class Rt60Estimator(
 
     /**
      * Compute RT60 via Schroeder backward integration.
-     * For each band, integrate energy backwards from the latest frame,
-     * then fit a line to the log of the integrated curve to find the decay rate.
+     * For each band, build the EDC from the oldest frame (EDC[j] = sum of
+     * energies of frames j..n-1: total energy at the start, decaying toward
+     * the latest frame), then fit a line to the log of that curve to find
+     * the decay rate.
      */
     private fun computeRt60() {
         var sumRt60 = 0f
@@ -67,14 +77,19 @@ class Rt60Estimator(
 
             if (n < 4) continue
 
-            // Build Schroeder backward integration (cumulative sum from latest to oldest)
+            // Schroeder EDC: edc[j] = sum of the energies of frames j..n-1.
+            // The oldest frame (ring slot writeIndex-n) is edc's anchor: it
+            // holds the TOTAL energy, so the dB curve starts high and decays —
+            // the direction a real EDC has. (The previous code accumulated
+            // from the LATEST frame backwards, producing a curve that GREW
+            // with time, whose slope was always positive and therefore always
+            // rejected — the estimator could never output a decay.)
             val edc = FloatArray(n)
             var cumulative = 0f
-
-            for (i in 0 until n) {
-                val idx = (writeIndex - 1 - i + historySize) % historySize
+            for (j in n - 1 downTo 0) {
+                val idx = (writeIndex - n + j + historySize) % historySize
                 cumulative += history[idx]
-                edc[i] = cumulative
+                edc[j] = cumulative
             }
 
             // Normalize and convert to dB
@@ -139,7 +154,15 @@ class Rt60Estimator(
         currentRt60Ms = 0f
     }
 
-    private fun dbToLinear(db: Float): Float = exp((db / 8.6858896f).toDouble()).toFloat()
+    /**
+     * dB -> linear ENERGY. The Schroeder integral integrates energy, so the
+     * correct conversion is 10^(dB/10) (a 10 dB drop = 10x less energy).
+     * The previous 20·log10 (amplitude) version under-weighted the decay and
+     * made the fitted slope half as steep as it really was.
+     */
+    private fun dbToLinear(db: Float): Float = 10.0.pow(db / 10.0).toFloat()
 
-    private fun linearToDb(linear: Float): Float = if (linear > 0f) 8.6858896f * ln(linear.toDouble()).toFloat() else -120f
+    /** Linear energy -> dB (inverse of [dbToLinear]). */
+    private fun linearToDb(linear: Float): Float =
+        if (linear > 0f) (10.0 * log10(linear.toDouble())).toFloat() else -120f
 }

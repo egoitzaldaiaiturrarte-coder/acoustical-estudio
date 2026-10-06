@@ -1,5 +1,8 @@
 package com.rork.acoustical.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -34,6 +37,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -43,6 +47,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.rork.acoustical.domain.audio.SweepDirection
@@ -413,6 +418,11 @@ fun SettingsScreen(
 private fun WindowsPcCard() {
     val context = LocalContext.current
     val sync = remember(context) { PhoneSyncManager.get(context.applicationContext) }
+    // Arranque bajo demanda: la tarjeta PC/Windows es la que usa el servidor
+    // (TCP 41041, baliza 41042) — se arranca al verla y se detiene al salir
+    // de la app (MainActivity.onDestroy / onCleared del ViewModel). start()
+    // es idempotente: recomponer la pantalla no duplica nada.
+    LaunchedEffect(Unit) { sync.start() }
     val serverRunning by sync.serverRunning.collectAsState()
     val payloadReady by sync.payloadReady.collectAsState()
     val downloading by sync.downloading.collectAsState()
@@ -434,6 +444,27 @@ private fun WindowsPcCard() {
                 style = MaterialTheme.typography.labelSmall,
                 color = if (serverRunning) CyanGlow else AmberAccent
             )
+            // Android 14+ (API 33): sin NEARBY_WIFI_DEVICES el sistema bloquea
+            // TODO el Wi-Fi local de la app (servidor 41041 / baliza 41042 /
+            // audio 41043-41044) — el PC simplemente no encontraría al móvil.
+            // Se muestra aquí porque el banner genérico de permisos no dice
+            // cuál falta ni por qué importa.
+            val nearbyWifiGranted = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                true
+            } else {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.NEARBY_WIFI_DEVICES
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+            if (!nearbyWifiGranted) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Android 14+ detectado: falta el permiso «Dispositivos Wi-Fi cercanos». Concédelo (aviso inferior de la app o Ajustes del sistema) o el PC no te encontrará por Wi-Fi.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AmberAccent
+                )
+            }
             // --- Emparejamiento Wi-Fi: el PC pega este código una sola vez ---
             var pairCode by remember { mutableStateOf(sync.pairCode()) }
             val lanIp = remember { sync.lanIp() }

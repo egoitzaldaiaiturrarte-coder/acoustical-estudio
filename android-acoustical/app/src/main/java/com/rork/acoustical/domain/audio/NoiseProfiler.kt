@@ -140,36 +140,18 @@ class NoiseProfiler(
 
     /**
      * Get the noise profile as band levels (for display).
+     *
+     * Delegado a [BandAggregator] (antes había aquí una copia con ratio fijo
+     * 1/6 y sin gating). Usa floor -120, su antiguo valor de banda vacía:
+     * en la práctica no gatea nada y el resultado es comparable con el del
+     * motor.
      */
     fun getNoiseBandLevels(
         bandFrequencies: FloatArray,
         binFrequencies: FloatArray
     ): FloatArray {
         val profile = noiseProfile ?: return FloatArray(bandFrequencies.size)
-        val bandLevels = FloatArray(bandFrequencies.size)
-
-        for (b in bandFrequencies.indices) {
-            val center = bandFrequencies[b]
-            val ratio = 2.0.pow(1.0 / 6.0)
-            val lower = (center / ratio).toFloat()
-            val upper = (center * ratio).toFloat()
-
-            var sum = 0.0
-            var count = 0
-            for (i in binFrequencies.indices) {
-                val freq = binFrequencies[i]
-                if (freq >= lower && freq <= upper) {
-                    if (i < profile.size) {
-                        sum += profile[i]
-                        count++
-                    }
-                }
-                if (freq > upper) break
-            }
-            bandLevels[b] = if (count > 0) (sum / count).toFloat() else -120f
-        }
-
-        return bandLevels
+        return BandAggregator.aggregate(bandFrequencies, profile, binFrequencies, -120f)
     }
 
     fun clearProfile() {

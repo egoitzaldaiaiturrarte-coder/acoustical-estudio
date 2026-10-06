@@ -205,25 +205,44 @@ class TestSignalPlayer {
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
+        if (minBuffer <= 0) return null
+        val bufferBytes = maxOf(minBuffer, totalSamples * 2)
+        // Android 7/8 (API 24-25) no tiene AudioTrack.Builder (aparece en API 26):
+        // referenciarlo allí lanza NoSuchMethodError/NoClassDefFoundError, que son
+        // Error, NO Exception — un catch(Exception) no los atrapa y el crash mata al
+        // hilo principal. Mismo razonamiento que setPreferredDevice más arriba
+        // (líneas de la ruta a API 34): puerta por SDK_INT + catch(Throwable).
         return try {
-            AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
+            if (Build.VERSION.SDK_INT >= 26) {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(SAMPLE_RATE)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .setBufferSizeInBytes(bufferBytes)
+                    .build()
+            } else {
+                // Ruta legacy (minSdk 24): constructor clásico con los mismos parámetros.
+                AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    SAMPLE_RATE,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferBytes,
+                    AudioTrack.MODE_STATIC
                 )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(SAMPLE_RATE)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setTransferMode(AudioTrack.MODE_STATIC)
-                .setBufferSizeInBytes(maxOf(minBuffer, totalSamples * 2))
-                .build()
-        } catch (e: Exception) {
+            }
+        } catch (t: Throwable) {
             null
         }
     }

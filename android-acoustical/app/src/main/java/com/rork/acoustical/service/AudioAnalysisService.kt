@@ -45,6 +45,23 @@ class AudioAnalysisService : Service() {
 
     private var notificationManager: NotificationManager? = null
 
+    /**
+     * Puente resultado-motor → notificación. El servicio se suscribe al motor
+     * por los listeners adicionales (AudioEngine.addAnalysisListener) y NO
+     * por el slot onAnalysisUpdate, que es del ViewModel: pisarlo rompería la
+     * UI. [updateNotification] hace el throttle de ~1/s.
+     */
+    private val analysisToNotification = { r: AudioEngine.AnalysisResult ->
+        updateNotification(r.spl, r.correctionIntensity, r.framesAnalyzed)
+    }
+
+    /**
+     * Último envío de notificación (ms). El motor notifica a la cadencia de
+     * análisis (cada 10-100 ms según el intervalo configurado); actualizar la
+     * notificación a ese ritmo saturaría al sistema. Una por segundo basta.
+     */
+    @Volatile private var lastNotificationMs = 0L
+
     override fun onCreate() {
         super.onCreate()
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -55,19 +72,39 @@ class AudioAnalysisService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 engine?.stop()
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                // Guardado: si este ACTION_STOP llega a una instancia que nunca
+                // hizo startForeground (p. ej. re-entrada por un segundo stop),
+                // stopForeground lanzaría IllegalStateException.
+                runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
                 stopSelf()
                 onStopRequested?.invoke()
                 return START_NOT_STICKY
             }
             ACTION_START -> {
+                // startForeground ANTES de abrir el micro: en un dispositivo
+                // lento (AudioRecord a alta tasa + planificación de la FFT) el
+                // engine.start() puede superar la ventana de 5 s que Android
+                // concede a startForegroundService y el proceso crashea con
+                // ForegroundServiceDidNotStartInTimeException.
+                startForegroundCompat(buildNotification(0f, 0f, 0L))
+
                 // Reuse the shared engine created by the ViewModel when present;
                 // only fall back to our own instance after a sticky restart.
                 if (engine == null) {
                     engine = AudioEngine()
                 }
-                engine?.start()
-                startForegroundCompat(buildNotification(0f, 0f, 0L))
+                val started = engine?.start() ?: false
+                if (started) {
+                    // Alimentar la notificación con los datos reales del
+                    // análisis: antes NADIE llamaba a updateNotification y la
+                    // notificación quedaba congelada en «Calibrando...».
+                    engine?.addAnalysisListener(analysisToNotification)
+                } else {
+                    // El micro no se pudo abrir: el FGS no tiene razón de ser.
+                    // Si era el motor compartido, el error ya llegó a la UI por
+                    // el propio callback onStartFailed del motor.
+                    stopSelf()
+                }
             }
         }
         // NOT_STICKY: si el proceso muere, el servicio no revivie con intent==null
@@ -76,6 +113,9 @@ class AudioAnalysisService : Service() {
     }
 
     fun updateNotification(spl: Float, correction: Float, frames: Long) {
+        val now = System.currentTimeMillis()
+        if (now - lastNotificationMs < 1000L) return
+        lastNotificationMs = now
         val notification = buildNotification(spl, correction, frames)
         notificationManager?.notify(NOTIFICATION_ID, notification)
     }
@@ -149,6 +189,10 @@ class AudioAnalysisService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        // Desuscribirse antes de parar: si el motor es el compartido con el
+        // ViewModel puede seguir corriendo, y no queremos que la notificación
+        // de un servicio ya muerto siga actualizándose.
+        engine?.removeAnalysisListener(analysisToNotification)
         engine?.stop()
         engine = null
         super.onDestroy()

@@ -3,8 +3,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- ACCESS_WIFI_STATE y CHANGE_WIFI_MULTICAST_STATE se retiraron: la app
+         no usa WifiManager en ningún lado (la baliza es UDP crudo y el
+         servidor TCP no los necesitan). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
@@ -13,7 +14,11 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- BLUETOOTH_SCAN con neverForLocation: la app solo lista/empareja
+         dispositivos de audio y no usa el scan para derivar ubicación
+         (requisito de Play para targetSdk 31+). -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
     <!-- Android 14+: sin este permiso el sistema bloquea el tráfico Wi-Fi
          local (baliza 41042, servidor TCP 41041, audio UDP 41043/41044)
          de apps que apuntan a U+. En versiones anteriores se ignora. -->

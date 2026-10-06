@@ -231,18 +231,28 @@ class AudioEngineViewModel(
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     private var engine: AudioEngine? = null
-    private var notificationUpdateJob: Job? = null
     private var consoleManager: ConsoleManager? = null
     private var meshManager: MeshNetworkManager? = null
     private var usbAudioSource: UsbAudioSource? = null
     private var locationProvider: LocationProvider? = null
+    /**
+     * Volatile: lo escribe el hilo de análisis (reconstrucción al cambiar el
+     * nº de bandas del config) y lo anula el hilo principal en onCleared.
+     */
+    @Volatile
     private var rt60Estimator: Rt60Estimator? = null
     private var geoJob: Job? = null
     private var autoCheckJob: Job? = null
     private var btAudioManager: BluetoothAudioManager? = null
     private var musicianTrackingJob: Job? = null
+    /** Feed de niveles de la captura de apps (ver startCaptureFeed): solo
+     *  vive mientras la captura está activa. */
+    private var captureFeedJob: Job? = null
     private val engineerAgent = EngineerAgent()
-    // Servidor de sync con el PC (singleton de la app, arrancado en MainActivity)
+    // Servidor de sync con el PC (singleton de la app). Arranque bajo
+    // demanda: la pantalla Ajustes > PC/Windows o el primer envío de un
+    // comando del Hub lo arrancan; MainActivity.onDestroy / este onCleared
+    // lo detienen.
     private val phoneSync by lazy { PhoneSyncManager.get(getApplication()) }
     private var focusModeManager: FocusModeManager? = null
     private var walkieManager: WalkieTalkieManager? = null
@@ -278,8 +288,29 @@ class AudioEngineViewModel(
                 if (result.framesAnalyzed == 1L) {
                     Log.d("AudioEngineVM", "Primer frame analizado: ${result.bands.size} bandas, SPL %.1f".format(result.spl))
                 }
-                val rt60 = rt60Estimator
-                rt60?.feedFrame(result.measuredSpectrum.magnitudesDb)
+                // RT60: el estimador debe verse niveles de BANDA agregados
+                // (el nº de bandas del config activo), no los bins crudos del
+                // FFT: antes se construía con bandCount=8 y se le pasaban los
+                // 1024/4096 bins, interpretando los primeros 8 bins
+                // (0-~18 Hz) como "las 8 bandas". Si el nº de bandas cambió
+                // (config/preset) se reconstruye con la cadencia real.
+                val rt60: Rt60Estimator? = if (result.measuredLevels.isEmpty()) {
+                    null
+                } else {
+                    val current = rt60Estimator
+                    if (current != null && current.bandCount == result.measuredLevels.size) {
+                        current
+                    } else {
+                        val fresh = Rt60Estimator(
+                            bandCount = result.measuredLevels.size,
+                            historySize = 64,
+                            sampleIntervalMs = _uiState.value.config.analysisInterval.ms
+                        )
+                        rt60Estimator = fresh
+                        fresh
+                    }
+                }
+                rt60?.feedFrame(result.measuredLevels)
                 _uiState.update { state ->
                     val maxHistorySize = (30000L / state.config.analysisInterval.ms).toInt().coerceAtLeast(30)
                     val avgBandGain = if (result.bands.isNotEmpty()) {
@@ -356,21 +387,19 @@ class AudioEngineViewModel(
         // Show the EQ faders immediately (flat) instead of an empty placeholder
         syncBandsFromEngine()
 
-        // Publish the initial dynamic EQ setup and keep the app-capture feed alive
+        // Publish the initial dynamic EQ setup
         _uiState.value.dynamicEqs.forEachIndexed { i, eq ->
             engine?.setDynamicEqConfig(i, eq.config)
             engine?.setSupportBands(i, eq.supportBands)
         }
-        viewModelScope.launch(Dispatchers.Default) {
-            while (isActive) {
-                engine?.setAppCaptureLevels(
-                    if (_uiState.value.isAppCaptureActive && InternalCaptureService.isCapturing) {
-                        InternalCaptureService.latestLevels
-                    } else null
-                )
-                delay(50)
-            }
-        }
+        // El feed de niveles de la captura de apps (setAppCaptureLevels) ya
+        // no corre a 20 Hz toda la vida del VM con el motor dormido: ahora
+        // es un job que vive SOLO mientras la captura está activa (lo arranca
+        // onCaptureResult y lo acaba stopAppCapture / onCleared). El servicio
+        // no expone callback de "nuevos niveles listos" (escribe en el
+        // companion volatile), así que el polling de 50 ms —la misma cadencia
+        // a la que el servicio calcula— es la única vía; ver
+        // startCaptureFeed().
 
         // Initialize console manager
         consoleManager = ConsoleManager().also { cm ->
@@ -404,9 +433,12 @@ class AudioEngineViewModel(
         // Initialize location provider
         locationProvider = LocationProvider(application)
 
-        // Initialize RT60 estimator
+        // Initialize RT60 estimator with the ACTIVE config's band count
+        // (10/16/31/124): with the old hard-coded 8 it interpreted the
+        // first 8 raw FFT bins (0-~18 Hz) as its 8 bands. It is rebuilt in
+        // onAnalysisUpdate whenever the band count changes (see there).
         rt60Estimator = Rt60Estimator(
-            bandCount = 8,
+            bandCount = _uiState.value.config.bandCount.count,
             historySize = 64,
             sampleIntervalMs = _uiState.value.config.analysisInterval.ms
         )
@@ -789,19 +821,21 @@ class AudioEngineViewModel(
 
     /** Change one dynamic EQ's parameters (interval, gain, speed, extra sweeps…). */
     fun setDynamicEqConfig(index: Int, transform: (DynamicEqConfig) -> DynamicEqConfig) {
-        var pushed: DynamicEqConfig? = null
+        // El nuevo config se calcula ANTES del update{}: la versión anterior
+        // lo filtraba por un `var` asignado DENTRO del lambda del
+        // MutableStateFlow y leído después — un canal lateral frágil sobre el
+        // flow (nulo si el snapshot no contenía el índice, y dependiente de
+        // cuándo la flow ejecutara el lambda). Ahora: leer → calcular → escribir.
+        val current = _uiState.value.dynamicEqs.getOrNull(index) ?: return
+        val newConfig = transform(current.config)
         _uiState.update { st ->
             st.copy(
                 dynamicEqs = st.dynamicEqs.mapIndexed { i, eq ->
-                    if (i == index) {
-                        val cfg = transform(eq.config)
-                        pushed = cfg
-                        eq.copy(config = cfg)
-                    } else eq
+                    if (i == index) eq.copy(config = newConfig) else eq
                 }
             )
         }
-        pushed?.let { engine?.setDynamicEqConfig(index, it) }
+        engine?.setDynamicEqConfig(index, newConfig)
         publishLocalConfigToSync()
     }
 
@@ -860,6 +894,8 @@ class AudioEngineViewModel(
         }
         _uiState.update { it.copy(isAppCaptureActive = true) }
         updateInputs()
+        // El feed de niveles solo existe mientras la captura esté activa.
+        startCaptureFeed()
     }
 
     fun stopAppCapture() {
@@ -871,6 +907,39 @@ class AudioEngineViewModel(
         )
         _uiState.update { it.copy(isAppCaptureActive = false) }
         updateInputs()
+        stopCaptureFeed()
+    }
+
+    /**
+     * Arranca el feed que pasa los niveles de la captura de apps al motor.
+     * Solo vive mientras la captura está ACTIVA (el flag de UI y el flag del
+     * servicio): antes un bucle anónimo a 20 Hz corría toda la vida del VM
+     * aunque el motor durmiera. El servicio tarda un poco en ponerse a
+     * capturar tras el consentimiento (proyección media), así que la fase 1
+     * espera sin trabajar; la 2 alimenta a 50 ms (su cadencia real); al
+     * acabar (stop o onCleared) se nulifica la fuente para que el motor no
+     * se quede con un nivel congelado.
+     */
+    private fun startCaptureFeed() {
+        if (captureFeedJob?.isActive == true) return
+        captureFeedJob = viewModelScope.launch(Dispatchers.Default) {
+            while (isActive && _uiState.value.isAppCaptureActive && !InternalCaptureService.isCapturing) {
+                delay(100)
+            }
+            while (isActive && _uiState.value.isAppCaptureActive && InternalCaptureService.isCapturing) {
+                engine?.setAppCaptureLevels(InternalCaptureService.latestLevels)
+                delay(50)
+            }
+            engine?.setAppCaptureLevels(null)
+        }
+    }
+
+    private fun stopCaptureFeed() {
+        captureFeedJob?.cancel()
+        captureFeedJob = null
+        // Si el job murió por cancelación a medio feed, el motor no se
+        // entera solo de que la fuente desapareció: se le notifica aquí.
+        engine?.setAppCaptureLevels(null)
     }
 
     // === Output Management ===
@@ -1471,7 +1540,6 @@ class AudioEngineViewModel(
                 engine?.setDynamicEqEnabled(i, eq.enabled)
             }
             _uiState.update { it.copy(isRunning = true) }
-            startNotificationUpdates()
         } else {
             // engineError was already set by the engine's callback; make sure
             // the foreground service is not left running with a dead engine
@@ -1509,7 +1577,6 @@ class AudioEngineViewModel(
                 }
             )
         }
-        notificationUpdateJob?.cancel()
     }
 
     fun toggleEngine() {
@@ -1581,13 +1648,23 @@ class AudioEngineViewModel(
      * empuja la suya). Es el mismo JSON de serializeEngine(); se ignora lo que
      * el móvil no tiene (la curva manual eqGains) y se conservan los valores
      * locales si un campo falta.
+     *
+     * Idempotencia: el PC puede reenviar la MISMA config (repite el botón o su
+     * sondeo re-lee nuestra respuesta y la re-empuja). Se compara lo recibido
+     * con lo que ya hay —los 7 campos del config base + los 3 EQ dinámicos— y
+     * si no hay delta NO se aplica nada: ni stop/configure/start del motor, ni
+     * re-publicación de la config local. Ese "no re-publicar" es el guard de
+     * reentrancia: re-aplicar un push idéntico volvía a emitir nuestra config,
+     * el PC la veía como un nuevo push y el eco de config PC→móvil→PC no
+     * terminaba.
      */
     private fun applyRemoteConfig(cfg: JsonObject) {
         fun d(key: String): Double? = (cfg[key] as? JsonPrimitive)
             ?.takeIf { it !is JsonNull }?.content?.toDoubleOrNull()
         fun b(key: String): Boolean? = (cfg[key] as? JsonPrimitive)
             ?.takeIf { it !is JsonNull }?.content?.toBooleanStrictOrNull()
-        val c = _uiState.value.config
+        val state = _uiState.value
+        val c = state.config
         val newCfg = c.copy(
             maxGainDb = d("maxGainDb")?.toFloat() ?: c.maxGainDb,
             smoothingFactor = d("smoothingFactor")?.toFloat() ?: c.smoothingFactor,
@@ -1597,42 +1674,62 @@ class AudioEngineViewModel(
             targetSpl = d("targetSpl")?.toFloat() ?: c.targetSpl,
             audioDelayMs = d("audioDelayMs")?.toFloat() ?: c.audioDelayMs
         )
-        updateConfig { newCfg }
-        // Espejo del retardo a nivel de UI (setAudioDelayMs lo mantiene igual)
-        _uiState.update { it.copy(audioDelayMs = newCfg.audioDelayMs) }
 
+        // Pre-calcular lo que el push cambia en cada EQ dinámico y compararlo
+        // con lo actual: si el resultado es idéntico al que ya hay, es un
+        // reenvío y se omite (no se re-aplica ni se re-publica).
+        val eqConfigChanges = mutableMapOf<Int, DynamicEqConfig>()
+        val eqEnabledChanges = mutableMapOf<Int, Boolean>()
         (cfg["dynamicEqs"] as? JsonObject)?.forEach { (name, el) ->
             val idx = name.removePrefix("eq").toIntOrNull()?.minus(1) ?: return@forEach
             if (idx !in 0..2) return@forEach
             val eq = el as? JsonObject ?: return@forEach
+            val cur = state.dynamicEqs.getOrNull(idx) ?: return@forEach
             val di = (eq["intervalMs"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toIntOrNull()
             val dg = (eq["maxGainDb"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
             val dm = (eq["mixerLevel"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
             val ds = (eq["speedMultiplier"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
             val de = (eq["extraSweeps"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toIntOrNull()
-            val on = (eq["enabled"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toBooleanStrictOrNull()
             if (di != null || dg != null || dm != null || ds != null || de != null) {
-                setDynamicEqConfig(idx) { cur ->
-                    cur.copy(
-                        decisionIntervalMs = di ?: cur.decisionIntervalMs,
-                        maxGainDb = dg ?: cur.maxGainDb,
-                        mixerLevel = dm ?: cur.mixerLevel,
-                        speedMultiplier = ds ?: cur.speedMultiplier,
-                        extraSweeps = de ?: cur.extraSweeps
-                    )
-                }
+                val merged = cur.config.copy(
+                    decisionIntervalMs = di ?: cur.config.decisionIntervalMs,
+                    maxGainDb = dg ?: cur.config.maxGainDb,
+                    mixerLevel = dm ?: cur.config.mixerLevel,
+                    speedMultiplier = ds ?: cur.config.speedMultiplier,
+                    extraSweeps = de ?: cur.config.extraSweeps
+                )
+                if (merged != cur.config) eqConfigChanges[idx] = merged
             }
-            if (on != null && on != _uiState.value.dynamicEqs.getOrNull(idx)?.enabled) {
-                // Se aplica sin arrancar el motor de paso: el PC decide ajustes,
-                // no el estado del micro del móvil.
-                _uiState.update { st ->
-                    st.copy(dynamicEqs = st.dynamicEqs.mapIndexed { i, e ->
-                        if (i == idx) e.copy(enabled = on) else e
-                    })
-                }
-                engine?.setDynamicEqEnabled(idx, on && _uiState.value.isRunning)
-                publishLocalConfigToSync()
+            val on = (eq["enabled"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toBooleanStrictOrNull()
+            if (on != null && on != cur.enabled) eqEnabledChanges[idx] = on
+        }
+
+        // Sin delta: reenvío de lo que ya tenemos. Salir sin aplicar y sin
+        // publicar (guard de reentrancia: ver el KDoc de arriba).
+        if (newCfg == c && eqConfigChanges.isEmpty() && eqEnabledChanges.isEmpty()) return
+
+        if (newCfg != c) {
+            updateConfig { newCfg }
+            // Espejo del retardo a nivel de UI (setAudioDelayMs lo mantiene igual)
+            _uiState.update { it.copy(audioDelayMs = newCfg.audioDelayMs) }
+        }
+
+        eqConfigChanges.forEach { (idx, newEqCfg) ->
+            // El transform devuelve el config ya fusionado (el delta se
+            // calculó arriba; aquí solo se escribe). Cada apply re-publica la
+            // config, pero solo si de verdad había cambiado algo.
+            setDynamicEqConfig(idx) { newEqCfg }
+        }
+        eqEnabledChanges.forEach { (idx, on) ->
+            // Se aplica sin arrancar el motor de paso: el PC decide ajustes,
+            // no el estado del micro del móvil.
+            _uiState.update { st ->
+                st.copy(dynamicEqs = st.dynamicEqs.mapIndexed { i, e ->
+                    if (i == idx) e.copy(enabled = on) else e
+                })
             }
+            engine?.setDynamicEqEnabled(idx, on && _uiState.value.isRunning)
+            publishLocalConfigToSync()
         }
     }
 
@@ -1686,7 +1783,7 @@ class AudioEngineViewModel(
             )
         }
         rt60Estimator = Rt60Estimator(
-            bandCount = 8,
+            bandCount = preset.bandCount.count,
             historySize = 64,
             sampleIntervalMs = preset.analysisInterval.ms
         )
@@ -1822,6 +1919,17 @@ class AudioEngineViewModel(
     // === Calibration ===
 
     fun startCalibration() {
+        // Calibrar solo tiene sentido con el motor midiendo: sin frames
+        // recientes currentSpl es 0 y el "medido en dBFS" sería falso,
+        // produciendo un offset sin relación con la realidad.
+        val state0 = _uiState.value
+        if (!state0.isRunning || state0.framesAnalyzed < 10) {
+            _uiState.update {
+                it.copy(engineError = "Arranca el motor primero: la calibración " +
+                    "necesita unos segundos de análisis real para medir el nivel")
+            }
+            return
+        }
         _uiState.update { it.copy(isCalibrating = true, calibrationProgress = 0f) }
         viewModelScope.launch(Dispatchers.Default) {
             val steps = 100
@@ -1845,6 +1953,10 @@ class AudioEngineViewModel(
                     splCalibration = newCalibration
                 )
             }
+            // El offset resultante viaja al motor EN CALIENTE (sin stop, sin
+            // pérdida de estado de corrección): antes el offset calculado aquí
+            // nunca se usaba — el metro llevaba un 120 fijo en el motor.
+            engine?.setSplCalibrationOffset(newCalibration.conversionOffset)
         }
     }
 
@@ -2078,24 +2190,26 @@ class AudioEngineViewModel(
 
     // === Internal ===
 
-    private fun startNotificationUpdates() {
-        notificationUpdateJob?.cancel()
-        notificationUpdateJob = viewModelScope.launch(Dispatchers.Default) {
-            while (isActive) {
-                delay(1000)
-                val state = _uiState.value
-                if (state.isRunning) {
-                    AudioAnalysisService.engine?.let { _ ->
-                        // Service notification updates could go here
-                    }
-                }
-            }
-        }
-    }
-
     override fun onCleared() {
         super.onCleared()
-        engine?.stop()
+        // Si el motor sigue corriendo, el FGS quedaría huérfano en primer
+        // plano (notificación + micro reservado). Antes de anular las
+        // referencias, se manda la acción de parada: el servicio retira la
+        // notificación y libera el micro. (Con el motor parado, el servicio
+        // ya se auto-terminó vía stopEngine y esto no hace nada.)
+        // Nulificar ANTES de enviar el callback de parada: el ACTION_STOP
+        // llega al servicio en el main thread (después de este onCleared) y
+        // sin esto invocaría stopEngine() sobre un VM que se está limpiando.
+        val engineToRelease = engine
+        if (engineToRelease?.isRunning() == true) {
+            AudioAnalysisService.onStopRequested = null
+            getApplication<Application>().startService(
+                Intent(getApplication<Application>(), AudioAnalysisService::class.java).apply {
+                    action = AudioAnalysisService.ACTION_STOP
+                }
+            )
+        }
+        engineToRelease?.stop()
         engine = null
         AudioAnalysisService.engine = null
         AudioAnalysisService.onStopRequested = null
@@ -2109,6 +2223,16 @@ class AudioEngineViewModel(
         geoJob?.cancel()
         autoCheckJob?.cancel()
         musicianTrackingJob?.cancel()
+        // El feed de la captura de apps es el único job no atado al scope que
+        // no se cancelaba antes (el bucle de 50 ms era anónimo): si el
+        // usuario sale con la captura activa, el servicio seguiría escribiendo
+        // niveles a los que nadie los leería.
+        captureFeedJob?.cancel()
+        captureFeedJob = null
+        // Detener el servidor de sync + baliza + puente de audio (idempotente
+        // con el stop de MainActivity.onDestroy): nada de lo que aquí se
+        // arranque bajo demanda debe sobrevivir al ViewModel.
+        phoneSync.stop()
         walkieManager?.stop()
         walkieManager = null
         focusModeManager = null

@@ -20,11 +20,9 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.rork.acoustical.MainActivity
 import com.rork.acoustical.R
+import com.rork.acoustical.domain.audio.BandAggregator
 import com.rork.acoustical.domain.audio.FftProcessor
 import com.rork.acoustical.domain.model.StandardFrequencies
-import kotlin.math.abs
-import kotlin.math.log10
-import kotlin.math.pow
 
 /**
  * Captures the internal audio of other apps (Spotify, YouTube…) digitally via
@@ -62,6 +60,12 @@ class InternalCaptureService : Service() {
 
     private var projection: MediaProjection? = null
     private var captureThread: Thread? = null
+    @Volatile private var captureRecord: AudioRecord? = null
+    // Serializa releaseCapture: el callback de revocación de MediaProjection,
+    // ACTION_STOP y onDestroy pueden llamarlo a la vez; dos releases en
+    // paralelo doble-liberarían el AudioRecord y el plan FFT.
+    private val releaseLock = Any()
+    @Volatile private var releaseInFlight = false
 
     @Volatile
     private var shouldCapture: Boolean = false
@@ -132,9 +136,13 @@ class InternalCaptureService : Service() {
         projection = mediaProjection
         mediaProjection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
-                // The user revoked the capture from the system cast dialog.
-                // Detener TODO el servicio (antes seguía vivo con la captura
-                // activa y el FGS, sin consentimiento vigente).
+                // El usuario revocó la captura desde el diálogo de sistema:
+                // pasar por releaseCapture() libera el AudioRecord y el plan
+                // FFT del hilo de captura. Antes (stopForeground + stopSelf
+                // directos) el hilo se fugaba con los recursos y
+                // isCapturing/latestLevels quedaban huérfanos, con el motor
+                // mezclando niveles de una captura ya muerta.
+                releaseCapture()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -169,7 +177,7 @@ class InternalCaptureService : Service() {
 
         if (record.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord de captura no inicializado")
-            record.release()
+            runCatching { record.release() }
             stopSelf()
             return
         }
@@ -177,6 +185,9 @@ class InternalCaptureService : Service() {
         shouldCapture = true
         isCapturing = true
         latestLevels = FloatArray(StandardFrequencies.ultra124.size)
+        // Referencia a nivel de clase para que releaseCapture() pueda hacer
+        // stop()/release() del record aunque el hilo siga bloqueado en read().
+        captureRecord = record
 
         captureThread = Thread {
             record.startRecording()
@@ -197,7 +208,10 @@ class InternalCaptureService : Service() {
                         break
                     }
                     read == 0 -> {
-                        try { Thread.sleep(2) } catch (_: InterruptedException) {}
+                        // 50 ms (antes 2): «aún no hay datos» es frecuente con
+                        // la entrada suspendida en segundo plano; a 2 ms el
+                        // bucle spinnearía con cientos de lecturas vacías/segundo.
+                        try { Thread.sleep(50) } catch (_: InterruptedException) {}
                         continue
                     }
                 }
@@ -221,36 +235,45 @@ class InternalCaptureService : Service() {
             } catch (e: Exception) {
                 Log.w(TAG, "Error deteniendo captura", e)
             }
-            record.release()
+            try {
+                record.release()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error liberando el AudioRecord de captura", e)
+            }
             fft.close()  // libera el plan FFT nativo (ver FftProcessor.close)
+            // El hilo limpia su propio estado al terminar, SOLO si sigue
+            // siendo el registrado: así un «zombi» (cuyo join expiró en
+            // releaseCapture) no borra el estado de una captura nueva que
+            // se hubiera montado en el entretanto.
+            if (captureThread === Thread.currentThread()) {
+                captureThread = null
+                captureRecord = null
+                latestLevels = null
+                isCapturing = false
+            }
         }.also { it.start() }
     }
 
-    /** Same 1/12-octave log aggregation the engine's corrector uses. */
+    /**
+     * Agregación en el único punto canónico ([BandAggregator]). Antes había
+     * aquí una copia propia con ratio FIJO 2^(1/12) y sin gating, por lo que
+     * sus niveles no eran comparables con los del micrófono. Elige floor -120
+     * (su antiguo valor de banda vacía): en la práctica no gatea nada y una
+     * banda sin bins sigue valiendo -120 como antes.
+     */
     private fun aggregateBands(magnitudesDb: FloatArray, binFreqs: FloatArray): FloatArray {
-        val bands = StandardFrequencies.ultra124
-        val levels = FloatArray(bands.size)
-        val edgeRatio = 2.0.pow(1.0 / 12.0)
-        for (b in bands.indices) {
-            val center = bands[b]
-            val lower = center / edgeRatio
-            val upper = center * edgeRatio
-            var sum = 0.0
-            var count = 0
-            for (i in binFreqs.indices) {
-                val freq = binFreqs[i]
-                if (freq in lower..upper) {
-                    sum += magnitudesDb[i]
-                    count++
-                }
-                if (freq > upper) break
-            }
-            levels[b] = if (count > 0) (sum / count).toFloat() else -120f
-        }
-        return levels
+        return BandAggregator.aggregate(
+            StandardFrequencies.ultra124, magnitudesDb, binFreqs, -120f
+        )
     }
 
     private fun releaseCapture() {
+        // Idempotente y serializado: revocación del sistema, ACTION_STOP y
+        // onDestroy pueden llegar en cualquier orden y a la vez.
+        synchronized(releaseLock) {
+            if (releaseInFlight) return
+            releaseInFlight = true
+        }
         shouldCapture = false
         // Primero detener la proyección (es lo que desbloquea el record.read en
         // el hilo de captura) y DESPUÉS esperar al hilo. Antes el join iba antes
@@ -261,13 +284,36 @@ class InternalCaptureService : Service() {
             Log.w(TAG, "Error deteniendo proyección", e)
         }
         projection = null
+        // stop() del AudioRecord DESDE AQUÍ, antes del join: desbloquea un
+        // read() en curso en el hilo de captura. Sin esto, si el hilo está
+        // bloqueado en read (entrada suspendida en segundo plano), el join
+        // expira y el hilo — con su AudioRecord y su plan FFT — se fuga.
+        val record = captureRecord
+        runCatching { record?.stop() }
         try {
             captureThread?.join(500)
         } catch (_: InterruptedException) {
         }
-        captureThread = null
-        latestLevels = null
-        isCapturing = false
+        if (record != null && captureThread?.isAlive == true) {
+            // El join expiró y el hilo sigue vivo: forzar el release lo
+            // desbloquea; el read lanza, el catch del bucle lo saca y el
+            // hilo termina solo (limpiando su propio estado al morir).
+            Log.w(TAG, "Hilo de captura aún vivo tras el join; forzando release")
+            runCatching { record.release() }
+        }
+        // Re-evaluar el estado según el hilo siga vivo: si ya terminó (o
+        // terminó en el intento) aseguramos limpieza — por si su limpieza
+        // propia no llegó a ejecutarse (excepción en el bucle) —; si sigue
+        // vivo, la captura sigue activa y el propio hilo limpiará al morir.
+        if (captureThread?.isAlive != true) {
+            captureThread = null
+            captureRecord = null
+            latestLevels = null
+            isCapturing = false
+        }
+        synchronized(releaseLock) {
+            releaseInFlight = false
+        }
     }
 
     private fun buildNotification(): Notification {

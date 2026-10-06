@@ -2,6 +2,12 @@ node_modules
 .env
 .expo
 .rork
+# Keystore de Android (llaves de firma): fuera de git — cada copia lo trae
+# en local (local.properties) o por variables de entorno. Ver
+# android-acoustical/keystore/README.md.
+keystore/
+# local.properties de Android (lleva los passwords de la firma)
+local.properties
 # build artifacts
 windows-acoustical/build/
 windows-acoustical/build-bridge64/
