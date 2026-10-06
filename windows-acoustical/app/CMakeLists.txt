@@ -20,11 +20,16 @@ target_compile_definitions(AcousticalEstudio PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(AcousticalEstudio PRIVATE /utf-8 /Zi)
+    # /guard:cf (Control Flow Guard): los indirect calls de la app llevan
+    # comprobación de integridad en runtime; si un bug (o una DLL maliciosa)
+    # corrompe un puntero a función, el fallo es una excepción controlada
+    # (0x40000005) y no un salto al azar.
+    target_compile_options(AcousticalEstudio PRIVATE /utf-8 /Zi /guard:cf)
     # /Zi + /DEBUG: genera el PDB incluso en Release. Lo usa el filtro de
     # crash (mapear "exe +0x..." a función/línea) y el build ASan (los
     # informes simbolizan los marcos con el PDB junto al exe).
-    target_link_options(AcousticalEstudio PRIVATE /DEBUG)
+    # /guard:cf también va en el enlace: activa el thunk de CFG del import.
+    target_link_options(AcousticalEstudio PRIVATE /DEBUG /guard:cf)
     # psapi: el filtro de crash (Main.cpp) usa EnumProcessModules/
     # GetModuleInformation/GetModuleBaseNameW para decir en qué módulo
     # (exe o DLL) ha fallado la dirección del fault.

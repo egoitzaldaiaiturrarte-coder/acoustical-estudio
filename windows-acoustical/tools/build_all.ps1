@@ -20,16 +20,20 @@ if (-not (Test-Path "tools\adb\adb.exe")) {
 }
 
 # 1. Configurar + compilar app, engine y plugin (x64)
+# Ojo: se re-configura si falta el CMakeCache.txt (no solo si falta la
+# carpeta): la CI cachea build\_deps (el clon de JUCE de FetchContent) y al
+# restaurarla la carpeta build\ existe SIN cache — re-configurar es lo que
+# hace que FetchContent reaproveche el clon en vez de clonar de nuevo.
 Write-Host "== App + plugin (x64) ==" -ForegroundColor Yellow
-if (-not (Test-Path "build")) {
+if (-not (Test-Path "build\CMakeCache.txt")) {
     cmake -S . -B build -A x64
 }
 cmake --build build --config Release --parallel
 if ($LASTEXITCODE -ne 0) { throw "Fallo compilando la app o el plugin" }
 
-# 2. Driver ASIO x64
+# 2. Driver ASIO x64 (mismo criterio de re-config que el build principal)
 Write-Host "== Acoustical Bridge (x64) ==" -ForegroundColor Yellow
-if (-not (Test-Path "build-bridge64")) {
+if (-not (Test-Path "build-bridge64\CMakeCache.txt")) {
     cmake -S asio-bridge -B build-bridge64 -A x64
 }
 cmake --build build-bridge64 --config Release
@@ -37,7 +41,7 @@ if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el bridge x64" }
 
 # 3. Plugin Win32 (Cubase 5 de 32 bits only loads 32-bit plugins)
 Write-Host "== App + plugin (Win32) ==" -ForegroundColor Yellow
-if (-not (Test-Path "build-plugin32")) {
+if (-not (Test-Path "build-plugin32\CMakeCache.txt")) {
     cmake -S . -B build-plugin32 -A Win32
 }
 cmake --build build-plugin32 --config Release --target AcousticalDynamicEq_VST AcousticalDynamicEq_VST3 --parallel
@@ -45,7 +49,7 @@ if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el plugin Win32" }
 
 # 4. Driver ASIO Win32 (Cubase 5 de 32 bits)
 Write-Host "== Acoustical Bridge (Win32) ==" -ForegroundColor Yellow
-if (-not (Test-Path "build-bridge32")) {
+if (-not (Test-Path "build-bridge32\CMakeCache.txt")) {
     cmake -S asio-bridge -B build-bridge32 -A Win32
 }
 cmake --build build-bridge32 --config Release
@@ -91,6 +95,14 @@ if (-not $bridge64) { throw "No se encontró AcousticalBridge.dll x64" }
 if (-not $bridge32) { throw "No se encontró AcousticalBridge.dll Win32" }
 Copy-Item $bridge64.FullName "$dist\bridge\x64\" -Force
 Copy-Item $bridge32.FullName "$dist\bridge\x86\" -Force
+# PDBs del driver ASIO (el CMakeLists del asio-bridge genera PDB en Debug y
+# Release a propósito): se copian junto a cada dll para que el instalador
+# (installer\acoustical.iss) las empaquete, igual que la PDB de la app:
+# un crash dentro del DAW con un offset del driver pasa a ser resoluble.
+$bridge64Pdb = [System.IO.Path]::ChangeExtension($bridge64.FullName, ".pdb")
+if (Test-Path $bridge64Pdb) { Copy-Item $bridge64Pdb "$dist\bridge\x64\" -Force }
+$bridge32Pdb = [System.IO.Path]::ChangeExtension($bridge32.FullName, ".pdb")
+if (Test-Path $bridge32Pdb) { Copy-Item $bridge32Pdb "$dist\bridge\x86\" -Force }
 
 Write-Host ""
 Write-Host "=== Todo compilado en dist\ ===" -ForegroundColor Green

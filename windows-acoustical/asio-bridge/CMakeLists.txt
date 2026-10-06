@@ -30,3 +30,18 @@ target_link_libraries(AcousticalBridge PRIVATE
 set_source_files_properties(AcousticalBridge.cpp PROPERTIES
     COMPILE_OPTIONS "/EHsc"
 )
+
+if(MSVC)
+    # /guard:cf (Control Flow Guard): el driver corre DENTRO del proceso del
+    # DAW (Cubase): un puntero a función corrupto pasa a ser una excepción
+    # controlada (0x40000005) en vez de un salto al azar que tumbaría el host.
+    target_compile_options(AcousticalBridge PRIVATE /guard:cf)
+    target_link_options(AcousticalBridge PRIVATE /guard:cf)
+
+    # PDB en Debug y Release (/Zi al compilar + /DEBUG al enlazar), la misma
+    # política que la app, que genera sus PDBs a propósito: hoy el driver
+    # no producía PDB y un crash dentro de Cubase con un offset del
+    # AcousticalBridge.dll era irresoluble.
+    target_compile_options(AcousticalBridge PRIVATE /Zi)
+    target_link_options(AcousticalBridge PRIVATE /DEBUG)
+endif()

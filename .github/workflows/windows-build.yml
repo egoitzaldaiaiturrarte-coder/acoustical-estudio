@@ -1,0 +1,681 @@
+# Workflow REUTILIZABLE: la ÚNICA definición del build de Windows de
+# Acoustical Estudio (app + plugin VST + driver ASIO + instalador Inno Setup),
+# del gate del núcleo DSP (tests del core C y del motor C++ sobre Linux) y del
+# build de diagnóstico ASan.
+#
+# Lo llaman:
+#   - build-windows.yml → tags v* y dispatch manual (publish: true), y
+#     pull_request (solo el gate dsp; el build de Windows NO corre en PRs).
+#   - nightly.yml       → corrida diaria (publish: false,
+#     artifact-suffix "-nocturno").
+#
+# Beneficio: el build de Windows (incluido el pin fijo de Inno Setup 6.7.3 y
+# la generación del sha256) se define en un solo sitio, de modo que el
+# nocturno valida el instalador REAL de la misma forma que el build oficial,
+# y ambas corridas comparten el mismo gate DSP.
+name: "Acoustical Estudio — build y gates (reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Publicar el instalador (y el binario ASan) en un GitHub Release"
+        type: boolean
+        required: false
+        default: false
+      version-override:
+        description: >-
+          Version alternativa del instalador (p. ej. "1.7.0-rc1"). Si se deja
+          vacía, la version sale de JUCE_APPLICATION_VERSION_STRING en
+          app\CMakeLists.txt (la única fuente de verdad: la CI reescribe el
+          .iss con ella).
+        type: string
+        required: false
+        default: ""
+      artifact-suffix:
+        description: >-
+          Sufijo para los nombres de artefacto (p. ej. "-nocturno"), para
+          distinguir las corridas nocturnas de las oficiales.
+        type: string
+        required: false
+        default: ""
+      run-windows-build:
+        description: >-
+          Ejecutar los jobs de Windows (build + asan). Los pull_request
+          llaman al reusable con false para que solo corra el gate DSP de
+          Linux (barato); el build de Windows se queda solo en dispatch y
+          tags.
+        type: boolean
+        required: false
+        default: true
+
+# El GITHUB_TOKEN de la corrida llamadora necesita write de contents para
+# publicar el Release (publish: true) y para empujar a la rama
+# ci-diagnostics cuando un job falla.
+permissions:
+  contents: write
+
+jobs:
+  dsp:
+    # Gate canónico del núcleo DSP (Linux, barato): el core C (dsp/) que
+    # enlazan Windows y Android por igual, más el motor C++ que lo envuelve.
+    # Corre TODOS los tests del núcleo:
+    #   - test_wiring: el motor real (FftProcessor + EqDsp) enlazado contra el
+    #     core C, end-to-end (FFT -> bandas -> corrección -> ganancias).
+    #   - test_jni: el puente JNI de Android contra un stub de jni.h (sin NDK).
+    #   - test_dsp: test diferencial FFT original C++ vs core C (drop-in).
+    #   - test_signalgen: el seno/sweep de SignalGenerator suena a la
+    #     frecuencia pedida (fix A1/A2).
+    #   - test_engine_race: estrés del motor real: configure()/setBandGain()/
+    #     resetBands() con el motor corriendo (bugs C1/C4).
+    #   - test_winbridge y test_crashfilter (×2, con y sin
+    #     __SANITIZE_ADDRESS__): syntax-checks del camino solo-Windows contra
+    #     las firmas reales de las API de Win32 (fakewin).
+    #   - LanTest: el protocolo móvil↔PC contra un "móvil falso" en loopback,
+    #     compilando los mismos .cpp que la app con los módulos JUCE reales.
+    #
+    # Nota histórica: dsp, signalgen, engine_race y winbridge corrían en NINGÚN
+    # job (o en copias divergentes: nightly.yml tenía un gate dsp sin los
+    # syntax-checks y con test_dsp de más, y build-windows.yml al revés).
+    # Ahora hay UN solo gate canónico, compartido por el build oficial y el
+    # nocturno: los tests que antes no corría nadie por fin se corrigen aquí.
+    #
+    # Presupuesto de tiempo (objetivo < 4 min para el gate de PRs): los tests
+    # C/C++ compilan/run en ~1-2 min en total; el LanTest es el más caro
+    # (~2-4 min: recompila juce_core + juce_events + juce_cryptography desde
+    # el clon de JUCE en cada run). El clon de JUCE SÍ se cachea (paso de
+    # caché de abajo), pero no su compilación: si el job sube de ~4 min, el
+    # tradeoff documentado es mover el LanTest fuera del gate de PRs
+    # (seguiría corriendo en dispatch, tags y nocturno).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Ojo con el group: en un workflow llamable ${{ github.workflow }} vale
+    # el nombre del LLAMADOR (no de este fichero). Si el group coincidiera
+    # exacto con el del job que nos llama, este job lo cancelaría nada más
+    # arrancar (lo advierte la doc oficial de reusable workflows): por eso
+    # el sufijo "-reusable".
+    concurrency:
+      group: ${{ github.workflow }}-reusable-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Extraer la version de JUCE (para la caché)
+        id: juce_tag
+        run: |
+          # Fuente de verdad de la version de JUCE: el FetchContent del
+          # CMakeLists.txt raíz. La key de la caché se deriva de aquí, así
+          # que un bump de la version de JUCE invalida la caché sola.
+          tag=$(sed -n 's/.*GIT_TAG[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' \
+                   windows-acoustical/CMakeLists.txt | head -n1)
+          if [ -z "$tag" ]; then
+            echo "No se encontró GIT_TAG en windows-acoustical/CMakeLists.txt" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "JUCE $tag (caché: juce-$tag-${RUNNER_OS})"
+
+      - name: Caché del clon de JUCE (LanTest)
+        uses: actions/cache@v4
+        with:
+          # El clon a /tmp/juce se restaura si la key coincide (mismo tag de
+          # JUCE que el CMakeLists raíz): evita el git clone de ~100 MB en
+          # cada corrida.
+          path: /tmp/juce
+          key: juce-${{ steps.juce_tag.outputs.tag }}-${{ runner.os }}
+
+      # Fast gate: compile the shared C DSP core and run the C++ engine tests
+      # against it. Catches regressions in the DSP that both the Windows app
+      # and the Android native lib depend on, in seconds.
+      - name: Compilar y testear el núcleo DSP compartido (C)
+        run: |
+          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp \
+            dsp/test_engine_wiring.cpp dsp/acoustical_dsp.c \
+            windows-acoustical/engine/FftProcessor.cpp windows-acoustical/engine/EqDsp.cpp \
+            -o /tmp/test_wiring -lm
+          /tmp/test_wiring
+
+      - name: Compilar y testear el puente JNI (sin NDK)
+        run: |
+          g++ -std=c++17 -O2 -Idsp/jni_stub -Idsp \
+            android-acoustical/app/src/main/cpp/acoustical_jni.cpp \
+            dsp/acoustical_dsp.c dsp/test_jni.cpp -o /tmp/test_jni -lm
+          /tmp/test_jni
+
+      # Test diferencial: el FFT C++ original (FftProcessor) frente al core C
+      # (acoustical_dsp.c): mismo resultado, la vía drop-in del motor.
+      - name: Compilar y testear el núcleo DSP puro (C)
+        run: |
+          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp \
+            dsp/test_dsp.cpp dsp/acoustical_dsp.c \
+            windows-acoustical/engine/FftProcessor.cpp \
+            -o /tmp/test_dsp -lm
+          /tmp/test_dsp
+
+      # El generador de señal del motor (senos y sweep logarítmico): valida el
+      # fix A1/A2 (antes el seno sonaba a la mitad de la frecuencia pedida).
+      # Solo necesita SignalGenerator.cpp + FftProcessor.cpp (delega en el
+      # core C) — nada de JUCE, compila en Linux.
+      - name: Compilar y testear el generador de señal (SignalGenerator)
+        run: |
+          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp \
+            dsp/test_signalgen.cpp dsp/acoustical_dsp.c \
+            windows-acoustical/engine/FftProcessor.cpp \
+            windows-acoustical/engine/SignalGenerator.cpp \
+            -o /tmp/test_signalgen -lm
+          /tmp/test_signalgen
+
+      # Estrés de carrera del motor REAL: el test compila los cinco .cpp del
+      # motor (AcousticalEngine.cpp no depende de JUCE/Windows — solo
+      # headers propios del motor y std), alimenta audio por un hilo y
+      # martillea configure()/setBandGain()/resetBands() desde otro (el bug
+      # C1/C4). -pthread porque usa std::thread.
+      - name: Compilar y testear el motor bajo carrera de hilos (engine_race)
+        run: |
+          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp \
+            dsp/test_engine_race.cpp dsp/acoustical_dsp.c \
+            windows-acoustical/engine/FftProcessor.cpp \
+            windows-acoustical/engine/EqDsp.cpp \
+            windows-acoustical/engine/SweeperProcessor.cpp \
+            windows-acoustical/engine/SignalGenerator.cpp \
+            windows-acoustical/engine/AcousticalEngine.cpp \
+            -o /tmp/test_engine_race -lm -pthread
+          /tmp/test_engine_race
+
+      # El camino #ifdef _WIN32 del puente ASIO solo compila en MSVC: se
+      # valida aquí contra un windows.h con las firmas reales de las API
+      # (pilla typos como UnmapViewOfSection antes del job de Windows).
+      - name: Syntax-check del puente ASIO (camino Win32)
+        run: |
+          g++ -std=c++17 -fsyntax-only \
+            -Iwindows-acoustical/tools/fakewin \
+            -Iwindows-acoustical/asio-bridge \
+            -Iwindows-acoustical/app \
+            windows-acoustical/tools/test_winbridge.cpp
+
+      # Filtro de crash (camino solo-Windows de CrashFilter.h) contra las
+      # firmas reales de Win32 (fakewin): pilla typos de API antes del build.
+      - name: Syntax-check del filtro de crash (Win32)
+        run: |
+          g++ -std=c++17 -fsyntax-only -DJUCE_WINDOWS=1 \
+            -Iwindows-acoustical/tools/fakewin \
+            -Iwindows-acoustical/app \
+            windows-acoustical/tools/test_crashfilter.cpp
+
+      # Mismo check con __SANITIZE_ADDRESS__: valida el bloque de
+      # redirección del stderr a asan.log (build de diagnóstico ASan).
+      - name: Syntax-check del filtro de crash (camino ASan)
+        run: |
+          g++ -std=c++17 -fsyntax-only -DJUCE_WINDOWS=1 -D__SANITIZE_ADDRESS__=1 \
+            -Iwindows-acoustical/tools/fakewin \
+            -Iwindows-acoustical/app \
+            windows-acoustical/tools/test_crashfilter.cpp
+
+      # Protocolo del enlace móvil↔PC (SyncClient + BeaconListener) contra un
+      # "móvil falso" en loopback: baliza UDP, emparejamiento por código,
+      # sync push/pull, HTTP /manifest + /payload con SHA-256. Compila los
+      # mismos .cpp que la app de Windows (JUCE directo, sin X11/freetype).
+      # El clon de JUCE usa la version extraída del CMakeLists raíz (antes
+      # estaba hardcodeada a 7.0.12 aquí y en el FetchContent: dos fuentes de
+      # verdad que podían divergir) y solo se re-clona si la caché no lo
+      # restauró.
+      - name: Test del protocolo Wi-Fi (móvil falso, JUCE)
+        run: |
+          if [ ! -d "/tmp/juce/modules/juce_core" ]; then
+            git clone --quiet --depth 1 \
+              --branch "${{ steps.juce_tag.outputs.tag }}" \
+              https://github.com/juce-framework/JUCE.git /tmp/juce
+          fi
+          JUCE_DIR=/tmp/juce bash windows-acoustical/tools/build_lantest.sh /tmp/AcousticalLanTest --run
+
+  build:
+    # Build completo de Windows: app + plugin VST (x64 y Win32) + driver ASIO
+    # (x64 y Win32) + instalador Inno Setup.
+    #
+    # OJO con el pin de Inno Setup 6.7.3 (paso "Instalar Inno Setup"): es
+    # FIXO y deliberado. choco "latest" instaló Inno 7 (otra carpeta) y
+    # rompió este build dos veces seguidas. No cambiar a choco.
+    if: inputs.run-windows-build
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # El sufijo "-reusable" en el group es obligatorio: ver el comentario del
+    # job dsp (un group idéntico al del llamador lo cancelaría).
+    concurrency:
+      group: ${{ github.workflow }}-reusable-${{ github.ref }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: windows-acoustical
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Extraer la version de JUCE (para la caché)
+        id: juce_tag
+        shell: pwsh
+        run: |
+          # Fuente de verdad de la version de JUCE: el FetchContent del
+          # CMakeLists.txt raíz (la misma que descargan los FetchContent de
+          # este build y del build ASan). La key de la caché se deriva de
+          # aquí: un bump de la version de JUCE invalida la caché sola.
+          $cmake = Get-Content "CMakeLists.txt" -Raw
+          $m = [regex]::Match($cmake, 'GIT_TAG\s+(\S+)')
+          if (-not $m.Success) {
+              throw "No se encontro GIT_TAG en CMakeLists.txt (raiz de windows-acoustical)"
+          }
+          "tag=$($m.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+          Write-Host "JUCE $($m.Groups[1].Value) (caché: juce-$($m.Groups[1].Value)-${env:RUNNER_OS})"
+
+      - name: Caché de JUCE (FetchContent)
+        uses: actions/cache@v4
+        with:
+          # Cachea el clon de JUCE que hace FetchContent (build\_deps\juce-src
+          # y sus subbuilds): sin esto cada run hacía un git clone de ~100 MB.
+          # Si la caché se restaura, build\_deps existe sin CMakeCache.txt y
+          # build_all.ps1 re-configura de todas formas (verifica la presencia
+          # de CMakeCache.txt, no la carpeta).
+          path: windows-acoustical/build/_deps
+          key: juce-${{ steps.juce_tag.outputs.tag }}-${{ runner.os }}
+
+      - name: Compilar app, plugin y driver ASIO (x64 + Win32)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools\build_all.ps1
+
+      # El exe + PDB de la app (fuera del instalador): con el offset del crash
+      # que anota startup.log se localiza la función/línea exacta en el PDB.
+      - name: Subir el binario de la app (exe + PDB)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AcousticalEstudio-Binary${{ inputs.artifact-suffix }}
+          path: |
+            windows-acoustical/dist/app/Acoustical Estudio.exe
+            windows-acoustical/dist/app/Acoustical Estudio.pdb
+          if-no-files-found: ignore
+
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: |
+          # Version FIJADA y bajada directa de la release oficial de Inno: no
+          # usar choco "latest" porque cambio la version (Inno 7 se instala en
+          # otra carpeta) y rompio el build dos veces seguidas.
+          $out = @()
+          $exit = 0
+          try {
+              $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+              $installer = Join-Path $env:TEMP "innosetup-6.7.3.exe"
+              Write-Host "Descargando Inno Setup 6.7.3 (release oficial)..."
+              Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+              $out += (& $installer /S /VERYSILENT /NORESTART 2>&1 | ForEach-Object { "$_" })
+              $exit = $LASTEXITCODE
+          } catch {
+              $exit = 1
+              $out += "ERROR: $($_.Exception.Message)"
+          }
+          $out | ForEach-Object { Write-Host $_ }
+          if (Test-Path "inno-install.log") { Remove-Item "inno-install.log" -Force }
+          ($out | ForEach-Object { $_ }) | Set-Content "inno-install.log" -Encoding utf8
+          $iscc6 = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc6)) {
+              throw "Inno Setup 6 no quedo instalado (sin ISCC en '$iscc6') - detalle en el artefacto installer-diagnostics"
+          }
+          Write-Host "Inno Setup 6.7.3 listo: $iscc6"
+
+      - name: Generar el instalador
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'   # el error se controla a mano; el runner pone 'Stop'
+          foreach ($req in @("app\CMakeLists.txt", "installer\acoustical.iss")) {
+              if (-not (Test-Path $req)) { throw "Falta el archivo $req (working dir: $PWD)" }
+          }
+          # Version: por defecto sale de app\CMakeLists.txt (la unica fuente de
+          # verdad: JUCE_APPLICATION_VERSION_STRING); el input version-override
+          # permite probar otra version sin tocar las fuentes. El .iss se
+          # reescribe con el valor resultante.
+          $verOverride = "${{ inputs.version-override }}"
+          if ($verOverride -ne "") {
+              $ver = $verOverride
+              Write-Host "Version del instalador (override): $ver"
+          } else {
+              $cmakeApp = Get-Content "app\CMakeLists.txt" -Raw
+              # Grupo de captura (sin \K: el motor regex de .NET de pwsh no lo soporta)
+              $m = [regex]::Match($cmakeApp, 'JUCE_APPLICATION_VERSION_STRING\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+              if (-not $m.Success) { throw "No se encontro JUCE_APPLICATION_VERSION_STRING en app\CMakeLists.txt" }
+              $ver = $m.Groups[1].Value
+              Write-Host "Version del instalador: $ver"
+          }
+          # Reescritura que preserva la codificacion del .iss con BOM UNICO
+          # (el archivo original ya trae BOM: se quita antes de volver a escribir)
+          $issPath = "installer\acoustical.iss"
+          $bytes = [System.IO.File]::ReadAllBytes($issPath)
+          $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+          if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+          $text = [regex]::Replace($text, '(?m)^#define\s+AppVersion\s+"[^"]*"', ('#define AppVersion "' + $ver + '"'))
+          [System.IO.File]::WriteAllText($issPath, $text, (New-Object System.Text.UTF8Encoding($true)))
+          Select-String -Path $issPath -Pattern 'AppVersion' | ForEach-Object { Write-Host ("  " + $_.Line.Trim()) }
+          # Buscar ISCC: el paso anterior fija Inno 6.7.3; se acepta cualquier
+          # una de las ubicaciones conocidas (p. ej. si alguien lo corrio a
+          # mano con choco, que instala la ultima Inno, 6 o 7, en el
+          # directorio que sea)
+          $cands = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 7\ISCC.exe"
+          )
+          $iscc = $cands | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { $g = Get-Command ISCC.exe -ErrorAction SilentlyContinue; if ($g) { $iscc = $g.Source } }
+          if (-not $iscc) {
+              $cands | ForEach-Object { Write-Host ("  sin ISCC en: " + $_) }
+              throw "ISCC.exe no encontrado (Inno Setup 6 o 7)"
+          }
+          Write-Host ("ISCC: " + $iscc)
+          # Compilar; se guarda el output completo para poder leerlo a posteriori
+          New-Item -ItemType Directory -Force -Path "dist\installer" | Out-Null
+          if (Test-Path "dist\installer\iscc-output.txt") { Remove-Item "dist\installer\iscc-output.txt" -Force }
+          $isccOut = & $iscc $issPath 2>&1
+          $isccExit = $LASTEXITCODE
+          $isccOut | ForEach-Object { Write-Host "$_" }
+          ($isccOut | ForEach-Object { "$_" }) | Set-Content "dist\installer\iscc-output.txt" -Encoding utf8
+          # Diagnostico: siempre se genera (el siguiente paso lo sube si hay fallo)
+          $diag = @("version: $ver", "iscc: $iscc", "iscc_exit: $isccExit")
+          $diag += "----- ISCC: ultimas 80 lineas -----"
+          $diag += (Get-Content "dist\installer\iscc-output.txt" -Tail 80)
+          $diag += "----- contenido de dist\installer -----"
+          $diag += (Get-ChildItem "dist\installer" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+          $diag | Set-Content "dist\installer\installer-diagnostics.txt" -Encoding utf8
+          if ($isccExit -ne 0) {
+              throw "ISCC termino con codigo $isccExit — el detalle esta en el artefacto installer-diagnostics"
+          }
+          # Verificacion: el exe generado debe llamarse con la version correcta
+          $expected = "dist\installer\AcousticalEstudioSetup-$ver.exe"
+          if (-not (Test-Path $expected)) {
+              throw "El instalador no se llama como se esperaba: AcousticalEstudioSetup-$ver.exe (detalle en installer-diagnostics)"
+          }
+          Write-Host "Instalador OK: $expected"
+
+      - name: Subir diagnosticos del instalador (cualquier resultado)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-diagnostics${{ inputs.artifact-suffix }}
+          path: |
+            windows-acoustical/inno-install.log
+            windows-acoustical/dist/installer/installer-diagnostics.txt
+            windows-acoustical/dist/installer/iscc-output.txt
+          if-no-files-found: ignore
+
+      # Red de seguridad: si el job falla, publica los diagnosticos en la rama
+      # ci-diagnostics (se puede leer sin permisos via raw.githubusercontent).
+      - name: Publicar diagnosticos en rama ci-diagnostics (si el job fallo)
+        if: failure()
+        shell: pwsh
+        run: |
+          $ws = $env:GITHUB_WORKSPACE
+          $cands = @(
+            "$ws\windows-acoustical\inno-install.log",
+            "$ws\windows-acoustical\dist\installer\installer-diagnostics.txt",
+            "$ws\windows-acoustical\dist\installer\iscc-output.txt"
+          )
+          $files = @($cands | Where-Object { Test-Path $_ })
+          if ($files.Count -eq 0) {
+              # Ningun fichero de diagnostico llego a existir: volcar el estado
+              # del disco para saber porque (el fallo ocurrio antes de escribir)
+              $state = @(
+                "run: $env:GITHUB_RUN_ID / intento $env:GITHUB_RUN_ATTEMPT",
+                "ws: $ws",
+                "----- listado de $ws -----",
+                (Get-ChildItem $ws -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }),
+                "----- listado de $ws\windows-acoustical -----",
+                (Get-ChildItem "$ws\windows-acoustical" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+              )
+              $state | Set-Content "$ws\ws-state.txt" -Encoding utf8
+              $files += "$ws\ws-state.txt"
+          }
+          $repo = Join-Path $env:RUNNER_TEMP "diag-push"
+          git clone --quiet --depth 1 "https://x-access-token:${env:GITHUB_TOKEN}@github.com/${env:GITHUB_REPOSITORY}.git" $repo
+          foreach ($f in $files) {
+              Copy-Item $f (Join-Path $repo (Split-Path $f -Leaf)) -Force
+          }
+          Set-Location $repo
+          git config user.email "ci-diagnostics@acoustical.local"
+          git config user.name "CI Diagnostics"
+          git checkout -B ci-diagnostics
+          git add -A
+          git commit -m "diagnostico build run $env:GITHUB_RUN_ID ($(Get-Date -Format 'yyyyMMdd-HHmmss'))"
+          git push --force --quiet origin ci-diagnostics
+          Write-Host "Diagnosticos publicados en la rama ci-diagnostics"
+
+      - name: Calcular SHA-256 del instalador
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "dist\installer\*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "No se generó el instalador" }
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($exe.Name)" | Out-File "$($exe.FullName).sha256" -Encoding ascii
+          Write-Host "SHA-256: $hash"
+
+      - name: Subir el instalador como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: AcousticalEstudioSetup${{ inputs.artifact-suffix }}
+          path: |
+            windows-acoustical/dist/installer/*.exe
+            windows-acoustical/dist/installer/*.sha256
+          if-no-files-found: error
+
+      - name: Publicar en Releases (solo al crear una etiqueta vX.Y.Z)
+        # Con el reusable el publicador es quien decide (input publish): solo
+        # se publica si el llamador paso publish: true Y la corrida es un tag
+        # v* (un dispatch manual con publish: true no publica nada).
+        if: inputs.publish && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            windows-acoustical/dist/installer/*.exe
+            windows-acoustical/dist/installer/*.sha256
+
+  asan:
+    # Build de DIAGNÓSTICO con AddressSanitizer (MSVC): instrumenta la app
+    # (y con ella todo el código de JUCE, que en JUCE 7 se compila como parte
+    # del target de la app), el motor y el núcleo DSP, para capturar la
+    # PRIMERA violación de heap del proceso (nuestra o de una DLL cargada,
+    # p. ej. el driver de audio) con la pila exacta del hilo culpable. El exe
+    # reabre el stderr como %AppData%\Acoustical\asan.log (Main.cpp →
+    # crashfilter). Necesario mientras se caza la corrupción de heap que mata
+    # a la app en la máquina con salida HDMI LG TV (crash 0xC0000005 desde la
+    # v1.6.0).
+    #
+    # También instrumenta el plugin VST (targets AcousticalDynamicEq_VST3 y
+    # _VST): el código que corre DENTRO del DAW (y que puede tumbar al host,
+    # no solo a la app) pasa así por su propia pasada de sanitizers.
+    if: inputs.run-windows-build
+    runs-on: windows-latest
+    needs: build
+    timeout-minutes: 45
+    # El sufijo "-reusable" en el group es obligatorio: ver el comentario del
+    # job dsp (un group idéntico al del llamador lo cancelaría).
+    concurrency:
+      group: ${{ github.workflow }}-reusable-${{ github.ref }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: windows-acoustical
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Extraer la version de JUCE (para la caché)
+        id: juce_tag
+        shell: pwsh
+        run: |
+          # Misma version de JUCE que el build principal (FetchContent del
+          # CMakeLists raíz): cada build (build, build-asan) tiene su propio
+          # _deps, así que cada job cachea el suyo.
+          $cmake = Get-Content "CMakeLists.txt" -Raw
+          $m = [regex]::Match($cmake, 'GIT_TAG\s+(\S+)')
+          if (-not $m.Success) {
+              throw "No se encontro GIT_TAG en CMakeLists.txt (raiz de windows-acoustical)"
+          }
+          "tag=$($m.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+          Write-Host "JUCE $($m.Groups[1].Value) (caché: juce-$($m.Groups[1].Value)-${env:RUNNER_OS})"
+
+      - name: Caché de JUCE (FetchContent del build ASan)
+        uses: actions/cache@v4
+        with:
+          path: windows-acoustical/build-asan/_deps
+          key: juce-${{ steps.juce_tag.outputs.tag }}-${{ runner.os }}
+
+      - name: Compilar la app con AddressSanitizer
+        shell: pwsh
+        run: |
+          # Todo el output queda en dist\asan-build.log (se sube como
+          # artefacto en cualquier caso): sin acceso a las logs del runner
+          # es la unica forma de leer el error de un fallo.
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force -Path "dist\asan" | Out-Null
+          $log = "dist\asan-build.log"
+          $out = @()
+          $out += "=== cmake configure ==="
+          $out += (cmake -S . -B build-asan -A x64 -DACOUSTICAL_ASAN=ON 2>&1 | ForEach-Object { "$_" })
+          if ($LASTEXITCODE -ne 0) { $out | Set-Content $log -Encoding utf8; throw "Fallo cmake configure (detalle en el artefacto asan-build-log)" }
+          $out += "=== cmake build ==="
+          $out += (cmake --build build-asan --config Release --target AcousticalEstudio --parallel 2>&1 | ForEach-Object { "$_" })
+          if ($LASTEXITCODE -ne 0) { $out | Set-Content $log -Encoding utf8; throw "Fallo cmake build (detalle en el artefacto asan-build-log)" }
+          $exe = Get-ChildItem "build-asan" -Recurse -Filter "Acoustical*Estudio*.exe" |
+              Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
+          if (-not $exe) {
+              $out += "=== listado de .exe en build-asan ==="
+              $out += (Get-ChildItem "build-asan" -Recurse -Filter "*.exe" | ForEach-Object { $_.FullName })
+              $out | Set-Content $log -Encoding utf8
+              throw "No se encontro el exe de ASan en build-asan\ (detalle en el artefacto asan-build-log)"
+          }
+          $out | Set-Content $log -Encoding utf8
+          Copy-Item $exe.FullName "dist\asan\AcousticalEstudio-ASan.exe" -Force
+          $pdb = [System.IO.Path]::ChangeExtension($exe.FullName, ".pdb")
+          if (Test-Path $pdb) { Copy-Item $pdb "dist\asan\AcousticalEstudio-ASan.pdb" -Force }
+          # Runtime dinámico de ASan (MSVC): el exe lo exige junto a el.
+          # Viene incluido en el toolset de Visual Studio del runner. OJO: el
+          # runner tiene VARIOS toolsets de MSVC (14.16, 14.29, 14.4x…) y el
+          # build usa el MAS RECIENTE; hay que coger la DLL de ese toolset,
+          # no la primera que salga (una version antigua no exporta los
+          # __asan_* que el exe espera: "punto de entrada no encontrado").
+          $asanDll = $null
+          foreach ($root in @("C:\Program Files\Microsoft Visual Studio",
+                              "C:\Program Files (x86)\Microsoft Visual Studio")) {
+              if (Test-Path $root) {
+                  $cands = @(Get-ChildItem $root -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" `
+                      -ErrorAction SilentlyContinue)
+                  $out += "DLLs candidatas: $($cands.FullName -join ' | ')"
+                  # version del toolset = segmento "MSVC\<x.y.z>\..." de la ruta
+                  $asanDll = $cands | Sort-Object {
+                      $m = [regex]::Match($_.FullName, 'MSVC\\([0-9.]+)\\')
+                      if ($m.Success) { [version]$m.Groups[1].Value } else { [version]'0.0' }
+                  } -Descending | Select-Object -First 1
+                  if ($asanDll) { break }
+              }
+          }
+          if (-not $asanDll) {
+              $out | Set-Content $log -Encoding utf8
+              throw "No se encontro clang_rt.asan_dynamic-x86_64.dll en Visual Studio (detalle en el artefacto asan-build-log)"
+          }
+          Copy-Item $asanDll.FullName "dist\asan\clang_rt.asan_dynamic-x86_64.dll" -Force
+          # Verificacion: la DLL debe exportar los simbolos que el exe
+          # importaba al compilar (canaria: __asan_delete_array).
+          $exports = @(dumpbin /exports "dist\asan\clang_rt.asan_dynamic-x86_64.dll" 2>&1 | ForEach-Object { "$_" })
+          if ($exports -notmatch '__asan_delete_array') {
+              $out += "dumpbin exports: $($exports -join ' | ')"
+              $out | Set-Content $log -Encoding utf8
+              throw "La DLL de ASan no exporta __asan_delete_array (version desajustada; candidatas en el log)"
+          }
+          $out += "ASan runtime DLL: $($asanDll.FullName)"
+          $out | Set-Content $log -Encoding utf8
+          Write-Host "ASan exe: $($exe.FullName)"
+
+      # El plugin VST (VST3 x64 + VST2 x64) también compila bajo ASan,
+      # reutilizando la MISMA configuración build-asan (ACOUSTICAL_ASAN=ON,
+      # Release) que ya configuro el paso anterior: los targets del plugin
+      # ya llevan /fsanitize=address (plugin/CMakeLists.txt). El log va a su
+      # propio fichero (subido junto al de la app) para no mezclar ambos.
+      - name: Compilar el plugin VST con AddressSanitizer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force -Path "dist\asan" | Out-Null
+          $log = "dist\asan-plugin-build.log"
+          $out = @()
+          $out += "=== cmake build (plugin VST3 + VST2) ==="
+          $out += (cmake --build build-asan --config Release --target AcousticalDynamicEq_VST3 AcousticalDynamicEq_VST --parallel 2>&1 | ForEach-Object { "$_" })
+          if ($LASTEXITCODE -ne 0) {
+              $out | Set-Content $log -Encoding utf8
+              throw "Fallo la compilacion del plugin con ASan (detalle en el artefacto asan-build-log)"
+          }
+          $dlls = @(Get-ChildItem "build-asan" -Recurse -Filter "Acoustical*Dynamic*EQ*.dll" `
+              | Where-Object { $_.FullName -match "Release" })
+          if ($dlls.Count -eq 0) {
+              $out += "=== listado de .dll en build-asan ==="
+              $out += (Get-ChildItem "build-asan" -Recurse -Filter "*.dll" | ForEach-Object { $_.FullName })
+              $out | Set-Content $log -Encoding utf8
+              throw "No se encontro el dll del plugin ASan en build-asan\ (detalle en el artefacto asan-build-log)"
+          }
+          foreach ($d in $dlls) { Copy-Item $d.FullName "dist\asan\" -Force }
+          $out += "Plugin ASan: $($dlls.Count) dlls: $(($dlls.Name) -join ', ')"
+          $out | Set-Content $log -Encoding utf8
+          Write-Host ($out | Select-Object -Last 1)
+
+      - name: Subir el log de build ASan (cualquier resultado)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # El artefacto lleva los DOS logs (app y plugin) si existen.
+          name: asan-build-log${{ inputs.artifact-suffix }}
+          path: |
+            windows-acoustical/dist/asan-build.log
+            windows-acoustical/dist/asan-plugin-build.log
+          if-no-files-found: ignore
+
+      # Red de seguridad: si el job falla, publica el log de build en la rama
+      # ci-diagnostics (se puede leer sin permisos via raw.githubusercontent).
+      - name: Publicar diagnosticos en rama ci-diagnostics (si el job fallo)
+        if: failure()
+        shell: pwsh
+        run: |
+          $ws = $env:GITHUB_WORKSPACE
+          $src = "$ws\windows-acoustical\dist\asan-build.log"
+          if (-not (Test-Path $src)) {
+              "fallo antes de escribir el log de build (run $env:GITHUB_RUN_ID)" | Set-Content $src -Encoding utf8
+          }
+          $repo = Join-Path $env:RUNNER_TEMP "diag-push"
+          git clone --quiet --depth 1 "https://x-access-token:${env:GITHUB_TOKEN}@github.com/${env:GITHUB_REPOSITORY}.git" $repo
+          Copy-Item $src (Join-Path $repo "asan-build.log") -Force
+          Set-Location $repo
+          git config user.email "ci-diagnostics@acoustical.local"
+          git config user.name "CI Diagnostics"
+          git checkout -B ci-diagnostics
+          git add -A
+          git commit -m "diagnostico asan run $env:GITHUB_RUN_ID ($(Get-Date -Format 'yyyyMMdd-HHmmss'))"
+          git push --force --quiet origin ci-diagnostics
+          Write-Host "Diagnosticos publicados en la rama ci-diagnostics"
+
+      - name: Subir el binario ASan como artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # El directorio dist\asan ya incluye los dlls del plugin (los
+          # copio el paso de build del plugin): un solo artefacto para todo
+          # lo que corre instrumentado.
+          name: AcousticalEstudio-ASan${{ inputs.artifact-suffix }}
+          path: |
+            windows-acoustical/dist/asan/*
+          if-no-files-found: error
+
+      - name: Añadir el binario ASan al Release (solo al crear una etiqueta)
+        if: inputs.publish && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            windows-acoustical/dist/asan/AcousticalEstudio-ASan.exe
+            windows-acoustical/dist/asan/AcousticalEstudio-ASan.pdb
+            windows-acoustical/dist/asan/clang_rt.asan_dynamic-x86_64.dll
+          fail_on_unmatched_files: false

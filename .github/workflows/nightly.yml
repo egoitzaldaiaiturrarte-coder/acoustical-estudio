@@ -9,42 +9,54 @@ on:
     - cron: "0 3 * * *"   # diario a las 03:00 UTC
   workflow_dispatch:
 
+# contents: write en el job que llama al reusable (abajo): el workflow
+# llamable exige contents:write (publica el Release y empuja a
+# ci-diagnostics) y las permissions de un workflow llamable solo pueden
+# MANTENERSE o REDUCIRSE respecto a las del llamador: si el llamador diera
+# read, la corrida no arrancaría.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  dsp:
-    # Núcleo DSP compartido C + motor C++ + puente JNI: la única fuente de
-    # verdad que usan Windows y Android por igual.
-    runs-on: ubuntu-latest
-    steps:
-      - name: Descargar el código
-        uses: actions/checkout@v4
-
-      - name: Compilar y testear el núcleo DSP compartido (C)
-        run: |
-          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp \
-            dsp/test_engine_wiring.cpp dsp/acoustical_dsp.c \
-            windows-acoustical/engine/FftProcessor.cpp windows-acoustical/engine/EqDsp.cpp \
-            -o /tmp/test_wiring -lm
-          /tmp/test_wiring
-
-      - name: Compilar y testear el puente JNI (sin NDK)
-        run: |
-          g++ -std=c++17 -O2 -Idsp/jni_stub -Idsp \
-            android-acoustical/app/src/main/cpp/acoustical_jni.cpp \
-            dsp/acoustical_dsp.c dsp/test_jni.cpp -o /tmp/test_jni -lm
-          /tmp/test_jni
-
-      - name: Compilar y testear el núcleo DSP puro (C)
-        run: |
-          g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp dsp/test_dsp.cpp dsp/acoustical_dsp.c \
-            windows-acoustical/engine/FftProcessor.cpp -o /tmp/test_dsp -lm
-          /tmp/test_dsp
+  nocturno:
+    # Corrida nocturna del workflow reusable: gate DSP + build de Windows +
+    # ASan, sin publicar nada (publish: false) y con el sufijo "nocturno" en
+    # los artefactos para distinguirlos de los oficiales.
+    #
+    # Este job SUSTITUYE al antiguo job "build" de este fichero, que estaba
+    # ROTO por dos motivos:
+    #   1) Instalaba Inno Setup con choco (que descarga la última version,
+    #      i.e. Inno 7, que se instala en otra carpeta) pero el paso
+    #      siguiente solo buscaba la ruta "Inno Setup 6".
+    #   2) Subía *.exe + *.sha256 con if-no-files-found: error, cuando
+    #      NINGÚN paso del job generaba el .sha256.
+    # Ahora el pin de Inno 6.7.3, la reescritura de version, la generación del
+    # sha256 y los diagnosticos viven en windows-build.yml (compartido con
+    # build-windows.yml): el nocturno valida por fin el instalador REAL,
+    # exactamente igual que el build oficial.
+    uses: $/.github/workflows/windows-build.yml
+    with:
+      publish: false
+      artifact-suffix: "-nocturno"
+    # El group del job llamador es distinto del de los jobs del reusable
+    # (esos llevan el sufijo "-reusable": en un workflow llamable
+    # ${{ github.workflow }} vale el nombre del LLAMADOR, así que si
+    # llamador y llamable compartieran exactamente el mismo group, el job
+    # llamable cancelaría al llamador nada más arrancar — lo advierte la doc
+    # oficial de reusable workflows).
+    # Un job llamador no puede llevar timeout-minutes: el timeout de 45 min
+    # de los jobs Windows vive en el propio reusable.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
 
   android:
     # App Android: tests JVM + APK debug como artefacto de control.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     defaults:
       run:
         working-directory: android-acoustical
@@ -57,6 +69,22 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      # Caché de Gradle (~/.gradle: wrapper + dependencias) y de Maven
+      # (~/.m2): la key es un hash de los ficheros Gradle del proyecto, así
+      # que cualquier cambio en build.gradle.kts/settings.gradle.kts
+      # (o en la version del wrapper) invalida la caché automáticamente.
+      - name: Caché de Gradle y Maven
+        uses: actions/cache@v4
+        with:
+          # Ojo: hashFiles se resuelve desde la RAIZ del workspace, no desde
+          # el working-directory del job (android-acoustical).
+          path: |
+            ~/.gradle
+            ~/.m2
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android-acoustical/settings.gradle.kts', 'android-acoustical/build.gradle.kts', 'android-acoustical/app/build.gradle.kts', 'android-acoustical/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
 
       - name: Instalar Android SDK components
         run: |
@@ -80,38 +108,4 @@ jobs:
         with:
           name: AcousticalEstudio-Android-nocturno
           path: android-acoustical/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-
-  build:
-    # Instalador Windows nocturno (artefacto de control, sin publicar nada).
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: windows-acoustical
-    steps:
-      - name: Descargar el código
-        uses: actions/checkout@v4
-
-      - name: Compilar app, plugin y driver ASIO (x64 + Win32)
-        shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File tools\build_all.ps1
-
-      - name: Instalar Inno Setup
-        shell: pwsh
-        run: choco install innosetup -y --no-progress
-
-      - name: Generar el instalador
-        shell: pwsh
-        run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { throw "ISCC.exe no encontrado" }
-          & $iscc installer\acoustical.iss
-
-      - name: Subir el instalador como artefacto
-        uses: actions/upload-artifact@v4
-        with:
-          name: AcousticalEstudioSetup-nocturno
-          path: |
-            windows-acoustical/dist/installer/*.exe
-            windows-acoustical/dist/installer/*.sha256
           if-no-files-found: error

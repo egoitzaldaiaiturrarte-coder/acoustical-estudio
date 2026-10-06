@@ -54,6 +54,16 @@ Source: "..\dist\plugin32\Acoustical Dynamic EQ.dll"; DestDir: "{cf32}\Vstplugin
 ; Driver ASIO x64 y x86 (Cubase 5 de 32 y 64 bits)
 Source: "..\dist\bridge\x64\AcousticalBridge.dll"; DestDir: "{app}\bridge\x64"; Flags: ignoreversion
 Source: "..\dist\bridge\x86\AcousticalBridge.dll"; DestDir: "{app}\bridge\x86"; Flags: ignoreversion
+; PDBs del driver ASIO (las genera el build a propósito, /Zi + /DEBUG en el
+; CMakeLists del asio-bridge, igual que la app): empaquetadas junto a cada
+; dll para poder mapear un crash DENTRO DEL DAW (offset del driver) a
+; función/línea — la app ya se empaqueta con la suya (Acoustical Estudio.pdb
+; dentro de dist\app\*, la línea de arriba). skipifsourcedoesntexist: si el
+; build no generó PDB (build manual antiguo) el instalador no falla.
+Source: "..\dist\bridge\x64\AcousticalBridge.pdb"; DestDir: "{app}\bridge\x64"; \
+  Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\dist\bridge\x86\AcousticalBridge.pdb"; DestDir: "{app}\bridge\x86"; \
+  Flags: ignoreversion skipifsourcedoesntexist
 ; Cable virtual (opcional)
 Source: "..\dist\cable\*"; DestDir: "{app}\cable"; Flags: recursesubdirs ignoreversion skipifsourcedoesntexist; \
   Tasks: cable
@@ -74,6 +84,22 @@ Root: HKLM32; Subkey: "SOFTWARE\Acoustical"; ValueType: string; ValueName: "Vers
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
   ValueType: string; ValueName: "AcousticalEstudio"; \
   ValueData: """{app}\{#AppExe}"""; Tasks: autostart; Flags: uninsdeletevalue
+; Limpieza del driver ASIO al desinstalar (red de seguridad): el
+; DllUnregisterServer del driver (regsvr32 /u en [UninstallRun]) ya borra
+; estas ramas, pero si no llega a ejecutarse (p. ej. el DAW seguía
+; teniendo el driver cargado al desinstalar) quedaría la rama ASIO y la
+; rama CLSID huérfanas. Con dontcreatekey el instalador NO crea estas
+; ramas (las crea el propio driver al registrarse): Inno solo las borra al
+; desinstalar. CLSID fijo: debe coincidir con kBridgeClsid de
+; asio-bridge\asio.h.
+Root: HKLM64; Subkey: "SOFTWARE\ASIO\Acoustical Bridge"; \
+  Flags: dontcreatekey uninsdeletekey
+Root: HKLM32; Subkey: "SOFTWARE\ASIO\Acoustical Bridge"; \
+  Flags: dontcreatekey uninsdeletekey
+Root: HKCR64; Subkey: "CLSID\{B7A9E3D1-2C45-4F0A-8D63-1E5A0B7C9F42}"; \
+  Flags: dontcreatekey uninsdeletekey
+Root: HKCR32; Subkey: "CLSID\{B7A9E3D1-2C45-4F0A-8D63-1E5A0B7C9F42}"; \
+  Flags: dontcreatekey uninsdeletekey
 
 [Run]
 ; 1. Registrar los drivers ADB incluidos (firmados por Google) para el móvil
