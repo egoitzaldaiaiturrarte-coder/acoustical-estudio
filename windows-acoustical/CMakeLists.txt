@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.22)
 # app\CMakeLists.txt y reescribe el .iss; esta linea es solo la version del
 # proyecto para CMake (metadata, no se usa en el instalador): al subir la
 # version de la app, subirla también aquí y en el .iss (respaldo manual).
-project(AcousticalEstudio VERSION 1.7.0 LANGUAGES C CXX)
+project(AcousticalEstudio VERSION 1.7.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
