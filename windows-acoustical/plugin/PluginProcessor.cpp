@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <cmath>
+
 using juce::String;
 // utf8() viene del anonymous namespace de PluginEditor.h (incluido arriba):
 // etiquetas en español seguras para MSVC. No redefinirla aquí (C2084).
@@ -253,10 +255,23 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     }
 
     // 1. Generador de referencia: sustituye el contenido del canal con una
-    //    señal conocida (ruido rosa/blanco, barrido o seno por banda).
+    //    señal conocida (ruido rosa/blanco, barrido o seno). "Apagado" (0)
+    //    deja el input pasar tal cual: la referencia se captura del anillo
+    //    pre-EQ (paso 3), así que el generador no debe dejar huella en él.
     const int genSource = static_cast<int>(l("genSource"));
     if (genSource > 0) {
-        const auto wave = static_cast<acoustical::SignalGenerator::Waveform>(genSource - 1);
+        // Mapeo menú->Waveform EXPLÍCITO: el enum
+        // {Sine, BandSine, LogSweep, PinkNoise, WhiteNoise, Silence} no sigue
+        // el orden del menú. El `genSource - 1` antiguo sonaba "Ruido rosa"
+        // como seno, "Ruido blanco" como seno por banda y "Seno" como ruido
+        // rosa, y dejaba a "Apagado" sin efecto una vez se salía de él (el
+        // bloque se saltaba pero la última forma de onda seguía rellenando el
+        // canal: imposible de apagar desde el menú).
+        const auto wave =
+            genSource == 1 ? acoustical::SignalGenerator::Waveform::PinkNoise
+          : genSource == 2 ? acoustical::SignalGenerator::Waveform::WhiteNoise
+          : genSource == 3 ? acoustical::SignalGenerator::Waveform::LogSweep
+                           : acoustical::SignalGenerator::Waveform::Sine;
         if (wave != genWaveform_) {
             genWaveform_ = wave;
             generator_.setWaveform(wave);

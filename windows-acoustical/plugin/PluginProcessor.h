@@ -190,7 +190,11 @@ private:
     acoustical::SignalGenerator::Waveform genWaveform_ =
         acoustical::SignalGenerator::Waveform::Silence;
     float genFrequency_ = 1000.0f;
-    float genLevelDb_ = -12.0f;
+    // Valor envenenado (fuera del rango del slider [-60, 0]): en el primer
+    // bloque activo se aplica SIEMPRE el nivel del menú. Con el antiguo -12
+    // (coincidencia con el default del parámetro) el generador arrancaba con
+    // su default interno (amplitud 0.5 = -6 dB) en vez de los -12 pedidos.
+    float genLevelDb_ = -999.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcousticalAudioProcessor)
 };
