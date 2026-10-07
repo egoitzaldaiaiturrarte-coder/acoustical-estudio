@@ -65,18 +65,32 @@ android {
                 "en el local.properties de android-acoustical/, o las variables de " +
                 "entorno AcousticalStorePassword / AcousticalKeyPassword en la CI."
         )
-        else -> throw GradleException(
-            "[AcoustiCal] No hay password de firma ni keystore. " +
-                "  - Build local: añade acoustical.storePassword y " +
-                "acoustical.keyPassword al local.properties de android-acoustical/ " +
-                "(ese fichero ya está en el .gitignore) y copia keystore/acoustical.jks. " +
-                "  - CI: exporta AcousticalStorePassword y AcousticalKeyPassword y " +
-                "copia el keystore. " +
-                "  - Si has PERDIDO el keystore original: regenera uno con keytool " +
-                "(ver keystore/README.md), pero TEN EN CUENTA la consecuencia: con " +
-                "una firma nueva, los dispositivos con la app ya instalada NO " +
-                "podrán actualizarse encima y deberán desinstalarla primero."
-        )
+        // Ni password ni keystore: la copia no puede firmar con la llave del
+        // proyecto, pero NO es un error en sí — el build de CI (tests JVM +
+        // APK debug) y el desarrollo local corren perfectamente con la llave
+        // debug por defecto. Si este aviso te sorprende:
+        //   - Build local: añade acoustical.storePassword y
+        //     acoustical.keyPassword al local.properties de android-acoustical/
+        //     (ese fichero ya está en el .gitignore) y copia
+        //     keystore/acoustical.jks.
+        //   - CI: exporta AcousticalStorePassword y AcousticalKeyPassword y
+        //     copia el keystore.
+        //   - Si has PERDIDO el keystore original: regenera uno con keytool
+        //     (ver keystore/README.md), pero TEN EN CUENTA la consecuencia:
+        //     con una firma nueva, los dispositivos con la app ya instalada
+        //     NO podrán actualizarse encima y deberán desinstalarla primero.
+        // Un release sin la llave del proyecto sale SIN firmar: un APK de
+        // release solo se distribuye cuando useProjectSigning es true.
+        else -> {
+            logger.warn(
+                "[AcoustiCal] No hay password de firma ni keystore en esta " +
+                    "copia: se compila con la llave debug por defecto (vale para " +
+                    "debug y tests; un release queda SIN firmar). Ver " +
+                    "keystore/README.md para recuperar o regenerar la llave del " +
+                    "proyecto."
+            )
+            false
+        }
     }
 
     if (useProjectSigning) {
