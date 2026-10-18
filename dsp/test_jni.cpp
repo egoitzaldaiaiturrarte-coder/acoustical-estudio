@@ -16,6 +16,10 @@ void  Java_com_rork_acoustical_domain_audio_NativeDsp_nativeFftFree(JNIEnv*, job
 void  Java_com_rork_acoustical_domain_audio_NativeDsp_nativeFftCompute(JNIEnv*, jobject, jlong, jfloatArray, jint, jfloatArray);
 void  Java_com_rork_acoustical_domain_audio_NativeDsp_nativeFftBinFrequencies(JNIEnv*, jobject, jlong, jint, jfloatArray);
 void  Java_com_rork_acoustical_domain_audio_NativeDsp_nativeAggregateBands(JNIEnv*, jobject, jfloatArray, jfloatArray, jfloatArray, jfloat, jfloatArray);
+jlong Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenCreate(JNIEnv*, jobject);
+void  Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenFree(JNIEnv*, jobject, jlong);
+void  Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenFill(JNIEnv*, jobject, jlong, jint, jfloat, jfloat, jfloat, jfloat, jfloat, jint, jfloatArray);
+void  Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSpatialCompensate(JNIEnv*, jobject, jfloat, jfloat, jfloat, jfloat, jfloatArray);
 }
 
 static int g_checks = 0;
@@ -79,6 +83,60 @@ int main() {
 
     acoustical_fft_free(fft);
     Java_com_rork_acoustical_domain_audio_NativeDsp_nativeFftFree(&env, nullptr, h);
+
+    // --- Siggen via JNI: must be IDENTICAL to calling the C core directly ---
+    {
+        jlong sg = Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenCreate(&env, nullptr);
+        CHECK(sg != 0, "siggenCreate returned non-zero handle");
+
+        const int M = 1024;
+        std::vector<float> viaJni(M), direct(M);
+
+        // Sine: same params through both paths
+        _jfloatArray inJni;  inJni.data = viaJni.data();  inJni.length = M;
+        Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenFill(&env, nullptr, sg, 1, 1000.0f, 0.5f, 20.0f, 20000.0f, 5.0f, 48000, &inJni);
+        acoustical_siggen* g = acoustical_siggen_create();
+        acoustical_siggen_fill(g, 1, 1000.0f, 0.5f, 20.0f, 20000.0f, 5.0f, 48000.0f, direct.data(), M);
+        CHECK(nearlyEqual(viaJni, direct, 1e-6f), "siggen SINE: JNI == direct C");
+
+        // Pink: stateful (filter), so both handles must agree sample by sample
+        Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenFill(&env, nullptr, sg, 4, 1000.0f, 1.0f, 20.0f, 20000.0f, 5.0f, 48000, &inJni);
+        acoustical_siggen_fill(g, 4, 1000.0f, 1.0f, 20.0f, 20000.0f, 5.0f, 48000.0f, direct.data(), M);
+        CHECK(nearlyEqual(viaJni, direct, 1e-6f), "siggen PINK: JNI == direct C (stateful)");
+
+        // Silence: all zeros either way
+        Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenFill(&env, nullptr, sg, 0, 1000.0f, 1.0f, 20.0f, 20000.0f, 5.0f, 48000, &inJni);
+        bool allZero = true;
+        for (float v : viaJni) if (v != 0.0f) allZero = false;
+        CHECK(allZero, "siggen SILENCE via JNI is all zeros");
+
+        acoustical_siggen_free(g);
+        Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenFree(&env, nullptr, sg);
+    }
+
+    // --- Spatial via JNI: must be IDENTICAL to the direct C call ---
+    {
+        const float inputs[][4] = {
+            { 0.0f, 0.0f, 0.5f, 0.5f },
+            { 1.0f, 0.0f, 0.9f, 1.0f },
+            { -1.0f, 0.3f, 0.0f, 0.0f },
+            { 2.0f, 0.0f, 5.0f, 99.0f },  // out of range -> clamped
+            { NAN, 0.0f, INFINITY, 0.5f } // corrupt -> neutral
+        };
+        for (const auto& in : inputs) {
+            // Un "FloatArray" real: buffer contiguo de 2 (como el lado Kotlin).
+            float outArr[2] = { -999.0f, -999.0f };
+            _jfloatArray spJni;
+            spJni.data = outArr;
+            spJni.length = 2;
+            Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSpatialCompensate(&env, nullptr, in[0], in[1], in[2], in[3], &spJni);
+
+            float gainDirect = 0.0f, delayDirect = 0.0f;
+            acoustical_spatial_compensate(in[0], in[1], in[2], in[3], &gainDirect, &delayDirect);
+            CHECK(std::fabs(outArr[0] - gainDirect) < 1e-6f && std::fabs(outArr[1] - delayDirect) < 1e-6f,
+                  "spatial: JNI == direct C");
+        }
+    }
 
     std::printf("JNI BRIDGE: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -74,4 +74,63 @@ Java_com_rork_acoustical_domain_audio_NativeDsp_nativeAggregateBands(
     env->ReleaseFloatArrayElements(binFrequencies, bins, JNI_ABORT);
 }
 
+// --- Generador de señal (núcleo C: seno, barrido, rosa/blanco, silencio) ---
+
+namespace {
+inline acoustical_siggen* siggenFromHandle(jlong h) {
+    return reinterpret_cast<acoustical_siggen*>(h);
+}
+} // namespace
+
+JNIEXPORT jlong JNICALL
+Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenCreate(JNIEnv*, jobject) {
+    acoustical_siggen* g = acoustical_siggen_create();
+    return reinterpret_cast<jlong>(g); // 0 on failure -> Kotlin falls back
+}
+
+JNIEXPORT void JNICALL
+Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenFree(JNIEnv*, jobject, jlong handle) {
+    acoustical_siggen_free(siggenFromHandle(handle));
+}
+
+// Los parámetros se pasan en CADA llamada (el caller toma su snapshot), igual
+// que en el wrapper C++ de Windows: el handle solo conserva el estado de
+// fases/filtro rosa/PRNG, nada compartido entre hilos.
+JNIEXPORT void JNICALL
+Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenFill(
+        JNIEnv* env, jobject, jlong handle, jint waveform,
+        jfloat frequencyHz, jfloat amplitude,
+        jfloat sweepStartHz, jfloat sweepEndHz, jfloat sweepSeconds,
+        jint sampleRate, jfloatArray out) {
+    acoustical_siggen* g = siggenFromHandle(handle);
+    if (!g) return;
+    float* outp = env->GetFloatArrayElements(out, nullptr);
+    acoustical_siggen_fill(g, waveform,
+                           static_cast<float>(frequencyHz),
+                           static_cast<float>(amplitude),
+                           static_cast<float>(sweepStartHz),
+                           static_cast<float>(sweepEndHz),
+                           static_cast<float>(sweepSeconds),
+                           static_cast<float>(sampleRate),
+                           outp, env->GetArrayLength(out));
+    env->ReleaseFloatArrayElements(out, outp, 0);
+}
+
+// --- Compensación espacial (ganancia dB + retardo ms; ley única C) --------
+
+// Rellena `out` (longitud >= 2) con [0]=ganancia dB, [1]=retardo ms.
+JNIEXPORT void JNICALL
+Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSpatialCompensate(
+        JNIEnv* env, jobject,
+        jfloat x, jfloat y, jfloat z, jfloat size, jfloatArray out) {
+    float gainDb = 0.0f, delayMs = 0.0f;
+    acoustical_spatial_compensate(static_cast<float>(x), static_cast<float>(y),
+                                  static_cast<float>(z), static_cast<float>(size),
+                                  &gainDb, &delayMs);
+    float* outp = env->GetFloatArrayElements(out, nullptr);
+    outp[0] = gainDb;
+    outp[1] = delayMs;
+    env->ReleaseFloatArrayElements(out, outp, 0);
+}
+
 } // extern "C"

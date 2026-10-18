@@ -135,6 +135,171 @@ void acoustical_make_peaking(float center_freq_hz, float sample_rate,
 float acoustical_biquad_process(const acoustical_biquad_coeffs *c,
                                 float state[2], float x);
 
+/* =========================================================================
+ * Signal generator (sine, log sweep, pink/white noise, silence)
+ *
+ * Shared by the Windows app (app/plugin, via the C++ SignalGenerator wrapper)
+ * and Android (Kotlin via JNI): the EXACT same generation code — phase
+ * accumulation of the sine/log-sweep, Paul Kellet's pink filter and the white
+ * noise source — runs on both platforms, and both are validated against this
+ * core by the tests (dsp/test_siggen.cpp, dsp/test_jni.cpp).
+ *
+ * Waveforms (canonical values; every platform's menu maps to these):
+ *   0 = Silence — the FIRST entry of every generator menu: the first
+ *     option of every program and the only one that never sounds.
+ *     Picking any other waveform must make the program sound immediately.
+ *   1 = Sine, 2 = BandSine (a per-band sine, same generation as Sine),
+ *   3 = LogSweep, 4 = Pink, 5 = White.
+ *
+ * Thread contract: a handle is owned by ONE consumer (the audio thread in
+ * the Windows app, a worker coroutine on Android). The parameters are passed
+ * to every fill() call — the caller takes its own snapshot of its controls
+ * (atomics, config…) — so no parameter storage is shared between threads.
+ * The internal state (phases, pink filter, RNG) is private to the handle.
+ * Changing the waveform between two calls resets the internal state, so
+ * returning to Pink never leaves a level transient (same rule the C++
+ * wrapper applied before the unification).
+ * ========================================================================= */
+
+/* Values canonicos de forma de onda. En los tres programas el 0 (Silencio)
+ * es siempre la PRIMERA entrada de su menu generador; cada plataforma mapea
+ * su propio menu a estos valores (en el header de cada generador). */
+enum {
+    ACOUSTICAL_WAVE_SILENCE   = 0,
+    ACOUSTICAL_WAVE_SINE      = 1,
+    ACOUSTICAL_WAVE_BAND_SINE = 2,
+    ACOUSTICAL_WAVE_LOG_SWEEP = 3,
+    ACOUSTICAL_WAVE_PINK      = 4,
+    ACOUSTICAL_WAVE_WHITE     = 5
+};
+
+typedef struct acoustical_siggen acoustical_siggen;
+
+/* Create/free a generator. create returns NULL on OOM; free(NULL) is safe. */
+acoustical_siggen *acoustical_siggen_create(void);
+void acoustical_siggen_free(acoustical_siggen *g);
+
+/*
+ * Fill `out` with `count` mono samples in [-1, 1] * amplitude.
+ *
+ *   waveform        one of the ACOUSTICAL_WAVE_* values above.
+ *   frequencyHz     frequency of Sine/BandSine (ignored by the rest).
+ *   amplitude       linear amplitude (1.0 = full scale); the caller converts
+ *                   dB (10^(db/20)) and pre-scaled values — the core keeps
+ *                   one way to express level so every platform agrees.
+ *   sweep*          LogSweep range in Hz and duration in seconds; a
+ *                   non-positive duration falls back to 5 s.
+ *   sampleRate      must be > 0 and finite; a corrupted rate silences the
+ *                   block instead of producing Inf/NaN phase increments.
+ *
+ * Sine/BandS integrate the phase sample by sample (exact instantaneous
+ * frequency, no aliasing); LogSweep integrates f(t) = f0·(f1/f0)^(t/T) the
+ * same way; Pink is Paul Kellet's 7-tap -3 dB/octave filter; White is a
+ * portable PRNG in [-1, 1).
+ */
+void acoustical_siggen_fill(acoustical_siggen *g,
+                            int waveform,
+                            float frequencyHz,
+                            float amplitude,
+                            float sweepStartHz,
+                            float sweepEndHz,
+                            float sweepSeconds,
+                            float sampleRate,
+                            float *out,
+                            int count);
+
+/* =========================================================================
+ * Spatial position → SPL compensation (gain + delay)
+ *
+ * Same law in every program (Windows app, VST, Android): the position is a
+ * normalized point (x/y lateral-frontal, z distance, size element) and the
+ * compensation is the inverse-square-law gain plus the propagation delay at
+ * the speed of sound — so a "far and big" element and a "close and small"
+ * one sound at the same level with aligned timing in whichever program plays
+ * them. One implementation here means the three versions cannot drift.
+ * ========================================================================= */
+
+/*
+ * out_gain_db = 20·log10(z·15 m) (when the distance exceeds 0.5 m)
+ *               + (0.5 − size)·6 dB (larger element = more efficient)
+ *               + |x|·1.5 dB (off-axis);
+ * out_delay_ms = (z·15 m)/343 m/s · 1000.
+ *
+ * Inputs are clamped (x,y ∈ [-1,1]; z,size ∈ [0,1]); non-finite inputs
+ * return 0 dB / 0 ms instead of poisoning a live output chain.
+ */
+void acoustical_spatial_compensate(float x, float y, float z, float size,
+                                    float *out_gain_db, float *out_delay_ms);
+
+/* =========================================================================
+ * Work modes (catalog of startup profiles)
+ *
+ * The five work modes (Coche Normal / Coche Aire libre / Estudio-Escenario
+ * 1 / Escenario 2 / Escenario 3 / PAs) and their FULL startup settings:
+ * motor (SPL, gain limit, bands, FFT, analysis, smoothing, correction,
+ * noise subtraction, delay), the three dynamic EQs (on/off, interval,
+ * gain, mixer, speed, extra sweeps, start direction and the four
+ * free-frequency support bands of each) and the spatial position.
+ *
+ * One C table here; the Windows app and the VST read it directly, Android
+ * keeps the same values in its Kotlin catalog (port, like the rest of the
+ * shared models) and both sides are pinned by tests (dsp/test_modes.cpp and
+ * the Android unit tests) so the three versions cannot drift.
+ * ========================================================================= */
+
+/* One free-frequency support band of a dynamic EQ. */
+typedef struct {
+    float frequencyHz;
+    float gainDb;
+    float q;
+} acoustical_support_band;
+
+/* The full settings of one dynamic EQ within a mode. */
+typedef struct {
+    int enabled;
+    int intervalMs;
+    float maxGainDb;
+    float mixerLevel;
+    float speedMultiplier;
+    int extraSweeps;
+    int startFrom;  /* 0 = where needed, 1 = bass-up, 2 = treble-down */
+    acoustical_support_band support[4];
+} acoustical_eq_profile;
+
+/* The complete, editable, persistent profile of one work mode. */
+typedef struct {
+    const char *id;
+    const char *name;
+    /* Motor */
+    float targetSpl;
+    float maxGainDb;
+    int bandCountIndex;        /* 0=8, 1=10, 2=16, 3=31, 4=124 */
+    int fftSizeIndex;          /* 0=512, 1=1024, 2=2048, 3=4096, 4=8192 */
+    int analysisIntervalIndex; /* 0=25 ms … 4=500 ms */
+    float smoothingFactor;
+    int correctionEnabled;
+    int noiseSubtractionEnabled;
+    float audioDelayMs;
+    /* The three dynamic EQs (same corrector, different settings) */
+    acoustical_eq_profile eqs[3];
+    /* Spatial position (normalized; see acoustical_spatial_compensate) */
+    float spatialX;
+    float spatialY;
+    float spatialZ;
+    float spatialSize;
+    /* Reference generator: waveform + level (Silence = the default, the
+     * generator stays off and the input passes through) */
+    int generatorWaveform;
+    float generatorLevelDb;
+} acoustical_mode_profile;
+
+#define ACOUSTICAL_MODE_COUNT 6
+
+/* The catalog (static, valid for the life of the process). */
+const acoustical_mode_profile *acoustical_mode_profiles(void);
+/* Look up one mode by id ("carro-normal", "pas", …); NULL when unknown. */
+const acoustical_mode_profile *acoustical_mode_by_id(const char *id);
+
 #ifdef __cplusplus
 }
 #endif

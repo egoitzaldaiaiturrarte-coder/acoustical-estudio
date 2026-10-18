@@ -66,6 +66,12 @@ jobs:
     #   - test_dsp: test diferencial FFT original C++ vs core C (drop-in).
     #   - test_signalgen: el seno/sweep de SignalGenerator suena a la
     #     frecuencia pedida (fix A1/A2).
+    #   - test_siggen: el generador del core C (Silencio = cero, seno a la
+    #     frecuencia pedida, rosa/blanco/barrido suenan y se distinguen).
+    #   - test_spatial: la compensación espacial (ganancia + retardo), una
+    #     sola ley en las tres versiones (app Windows, VST, Android).
+    #   - test_modes: el catálogo de los 6 modos de arranque (valores fijados
+    #     en el core C; la copia Kotlin de Android lo fija un test espejo).
         #   - test_engine_race: estrés del motor real: configure()/setBandGain()/
     #     resetBands() con el motor corriendo (bugs C1/C4).
     #   - test_golden: el vector dorado dsp/golden_bands.json que fija el
@@ -195,6 +201,32 @@ jobs:
           g++ -std=c++17 -O2 -Iwindows-acoustical/engine -Idsp \
             dsp/test_golden.cpp dsp/acoustical_dsp.c -o /tmp/test_golden -lm
           /tmp/test_golden
+
+      # Generador de señal del core C (Silencio, seno, seno por banda,
+      # barrido log, rosa, blanco): la única fuente de generación que comparten
+      # la app Windows (wrapper C++) y Android (JNI); Silencio = 0 es la
+      # primera entrada de todos los menús de las tres versiones.
+      - name: Compilar y testear el generador del core compartido (siggen)
+        run: |
+          g++ -std=c++17 -O2 -Idsp \
+            dsp/test_siggen.cpp dsp/acoustical_dsp.c -o /tmp/test_siggen -lm
+          /tmp/test_siggen
+
+      # Compensación espacial (ganancia + retardo de propagación): una sola
+      # ley en el core C para las tres versiones (app Windows, VST, Android).
+      - name: Compilar y testear la compensación espacial (spatial)
+        run: |
+          g++ -std=c++17 -O2 -Idsp \
+            dsp/test_spatial.cpp dsp/acoustical_dsp.c -o /tmp/test_spatial -lm
+          /tmp/test_spatial
+
+      # Catálogo de los 6 modos de arranque (valores canónicos del core C;
+      # la copia Kotlin de Android está fijada por su test espejo).
+      - name: Compilar y testear el catálogo de modos (modes)
+        run: |
+          g++ -std=c++17 -O2 -Idsp \
+            dsp/test_modes.cpp dsp/acoustical_dsp.c -o /tmp/test_modes -lm
+          /tmp/test_modes
 
       # El camino #ifdef _WIN32 del puente ASIO solo compila en MSVC: se
       # valida aquí contra un windows.h con las firmas reales de las API
