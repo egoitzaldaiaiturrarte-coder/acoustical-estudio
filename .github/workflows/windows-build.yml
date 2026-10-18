@@ -339,7 +339,15 @@ jobs:
 
       - name: Compilar app, plugin y driver ASIO (x64 + Win32)
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File tools\build_all.ps1
+        run: |
+          # El log del build se deja en disco (ci-compile.log): si este paso
+          # falla, el step de diagnosticos publica una version reducida en la
+          # rama ci-diagnostics. Sin esto, el error real del compilador solo
+          # viviria en el log del job, que no se puede leer sin autenticacion.
+          $log = Join-Path $env:GITHUB_WORKSPACE "windows-acoustical\ci-compile.log"
+          powershell -ExecutionPolicy Bypass -File tools\build_all.ps1 2>&1 |
+              Tee-Object -FilePath $log
+          exit $LASTEXITCODE
 
       # El exe + PDB de la app (fuera del instalador): con el offset del crash
       # que anota startup.log se localiza la función/línea exacta en el PDB.
@@ -472,7 +480,11 @@ jobs:
         shell: pwsh
         run: |
           $ws = $env:GITHUB_WORKSPACE
+          # Candidatos: el log del paso de compilacion (el fallo tipico: error
+          # de MSVC/CMake; sin esta captura el error solo vivia en el log del
+          # job, ilegible sin autenticacion) + los diagnosticos del instalador.
           $cands = @(
+            "$ws\windows-acoustical\ci-compile.log",
             "$ws\windows-acoustical\inno-install.log",
             "$ws\windows-acoustical\dist\installer\installer-diagnostics.txt",
             "$ws\windows-acoustical\dist\installer\iscc-output.txt"
@@ -493,9 +505,27 @@ jobs:
               $files += "$ws\ws-state.txt"
           }
           $repo = Join-Path $env:RUNNER_TEMP "diag-push"
-          git clone --quiet --depth 1 "https://x-access-token:${env:GITHUB_TOKEN}@github.com/${env:GITHUB_REPOSITORY}.git" $repo
+          $out = (git clone --quiet --depth 1 "https://x-access-token:${env:GITHUB_TOKEN}@github.com/${env:GITHUB_REPOSITORY}.git" $repo 2>&1)
+          if ($LASTEXITCODE -ne 0) {
+              # Clone roto (token sin permisos, red, ...): dejar el error de git
+              # visible en el log del job en vez de fallar en silencio.
+              Write-Host ($out -join [Environment]::NewLine)
+              throw "git clone de la rama de diagnosticos fallo (error de git arriba)"
+          }
           foreach ($f in $files) {
-              Copy-Item $f (Join-Path $repo (Split-Path $f -Leaf)) -Force
+              $leaf = Split-Path $f -Leaf
+              if ($leaf -eq "ci-compile.log") {
+                  # El log completo puede pesar megabytes: a la rama solo va la
+                  # version reducida (lineas de error + la cola del log).
+                  $errs = @(Select-String -Path $f -Pattern "error|fatal|FAILED|failed" |
+                            Select-Object -First 300 | ForEach-Object { $_.Line })
+                  $tail = @(Get-Content $f -Tail 300)
+                  (@("=== lineas con error/fatal (max 300) ===") + $errs +
+                   "", "=== ultimas 300 lineas del log ===") + $tail |
+                      Set-Content (Join-Path $repo "ci-compile-reduced.txt") -Encoding utf8
+              } else {
+                  Copy-Item $f (Join-Path $repo $leaf) -Force
+              }
           }
           Set-Location $repo
           git config user.email "ci-diagnostics@acoustical.local"
@@ -503,7 +533,11 @@ jobs:
           git checkout -B ci-diagnostics
           git add -A
           git commit -m "diagnostico build run $env:GITHUB_RUN_ID ($(Get-Date -Format 'yyyyMMdd-HHmmss'))"
-          git push --force --quiet origin ci-diagnostics
+          $out = (git push --force --quiet origin ci-diagnostics 2>&1)
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host ($out -join [Environment]::NewLine)
+              throw "git push de la rama ci-diagnostics fallo (error de git arriba)"
+          }
           Write-Host "Diagnosticos publicados en la rama ci-diagnostics"
 
       - name: Calcular SHA-256 del instalador
@@ -707,7 +741,11 @@ jobs:
               "fallo antes de escribir el log de build (run $env:GITHUB_RUN_ID)" | Set-Content $src -Encoding utf8
           }
           $repo = Join-Path $env:RUNNER_TEMP "diag-push"
-          git clone --quiet --depth 1 "https://x-access-token:${env:GITHUB_TOKEN}@github.com/${env:GITHUB_REPOSITORY}.git" $repo
+          $out = (git clone --quiet --depth 1 "https://x-access-token:${env:GITHUB_TOKEN}@github.com/${env:GITHUB_REPOSITORY}.git" $repo 2>&1)
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host ($out -join [Environment]::NewLine)
+              throw "git clone de la rama de diagnosticos fallo (error de git arriba)"
+          }
           Copy-Item $src (Join-Path $repo "asan-build.log") -Force
           Set-Location $repo
           git config user.email "ci-diagnostics@acoustical.local"
@@ -715,7 +753,11 @@ jobs:
           git checkout -B ci-diagnostics
           git add -A
           git commit -m "diagnostico asan run $env:GITHUB_RUN_ID ($(Get-Date -Format 'yyyyMMdd-HHmmss'))"
-          git push --force --quiet origin ci-diagnostics
+          $out = (git push --force --quiet origin ci-diagnostics 2>&1)
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host ($out -join [Environment]::NewLine)
+              throw "git push de la rama ci-diagnostics fallo (error de git arriba)"
+          }
           Write-Host "Diagnosticos publicados en la rama ci-diagnostics"
 
       - name: Subir el binario ASan como artefacto

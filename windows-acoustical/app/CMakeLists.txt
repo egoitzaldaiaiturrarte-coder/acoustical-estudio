@@ -17,6 +17,12 @@ target_compile_definitions(AcousticalEstudio PRIVATE
     NOMINMAX
     JUCE_APPLICATION_NAME_STRING="Acoustical Estudio"
     JUCE_APPLICATION_VERSION_STRING="1.9.0"
+    # JUCE 7 cambió el default de JUCE_MODAL_LOOPS_PERMITTED de 1 a 0
+    # (BREAKING_CHANGES.md): con 0, Component::runModalLoop() ni existe y el
+    # diálogo de confirmación de la instalación (PhoneLink.cpp) no compila.
+    # Esta app es de escritorio — no un plugin, donde los modal loops sí
+    # están desaconsejados — así que se reactiva solo para este target.
+    JUCE_MODAL_LOOPS_PERMITTED=1
 )
 
 if(MSVC)

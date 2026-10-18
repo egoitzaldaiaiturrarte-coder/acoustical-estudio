@@ -626,24 +626,34 @@ void PhoneLink::runUpdateCheck() {
 // tiempo: si el diálogo no puede resolverse por alguna razón (p. ej. se está
 // cerrando la app y el bucle de mensajes ya no corre) se trata como
 // cancelación en lugar de bloquearse para siempre.
+//
+// IDs de los botones: JUCE 7 eliminó las constantes IDYes/IDNo de siempre;
+// lo que runModalLoop() devuelve es el int que se le pasó a addButton(),
+// así que se usan ids propios (1 = instalar, 0 = cancelar/ESC).
+static constexpr int kInstallId = 1;
+static constexpr int kCancelId  = 0;
+
 bool PhoneLink::confirmInstallOnUiThread(const juce::String& version) {
     auto result = std::make_shared<std::promise<int>>();
     auto future = result->get_future();
-    MessageManager::callAsync([result, version] {
-        auto* aw = new juce::AlertWindow(
+    juce::MessageManager::callAsync([result, version] {
+        // El diálogo se posee con un unique_ptr: se destruye al salir de la
+        // lambda, es decir, ya terminado runModalLoop() (botón pulsado o
+        // diálogo cerrado) — sin la new del viejo código que nadie borraba.
+        auto aw = std::make_unique<juce::AlertWindow>(
             juce::String::fromUTF8("Actualizar Acoustical"),
             juce::String::fromUTF8("¿Instalar Acoustical ") + version
                 + juce::String::fromUTF8(" descargada del móvil?\n\n"
                                          "Windows pedirá permiso de administrador (UAC)."),
             juce::MessageBoxIconType::QuestionIcon);
-        aw->addButton(juce::String::fromUTF8("Instalar"), juce::Button::IDYes);
-        aw->addButton(juce::String::fromUTF8("Cancelar"), juce::Button::IDNo);
-        result->set_value(aw->runModal());
+        aw->addButton(juce::String::fromUTF8("Instalar"), kInstallId);
+        aw->addButton(juce::String::fromUTF8("Cancelar"), kCancelId);
+        result->set_value(aw->runModalLoop());
     });
     if (future.wait_for(std::chrono::minutes(2)) != std::future_status::ready)
         return false;   // sin respuesta a tiempo (p. ej. cierre de la app): no se instala
     try {
-        return future.get() == juce::Button::IDYes;
+        return future.get() == kInstallId;
     } catch (const std::future_error&) {
         return false;
     }

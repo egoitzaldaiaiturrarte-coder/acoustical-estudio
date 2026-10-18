@@ -41,13 +41,15 @@ g++ -std=c++17 -O1 \
     -o "$OUT"
 echo "Compilado: $OUT"
 
-# PhoneLink.cpp y RemoteAudioLink.cpp: se compilan aquí aunque no enlacen
-# (PhoneLink usa Windows en la mitad de su cuerpo) para pillar errores antes
-# del job de Windows.
+# PhoneLink.cpp: se compila aquí aunque no enlace (usa Windows en la mitad
+# de su cuerpo) para pillar errores antes del job de Windows. Con los mismos
+# flags que el target real de la app: JUCE 7 tiene
+# JUCE_MODAL_LOOPS_PERMITTED=0 por defecto (los modal loops se opt-in por
+# target; ver app/CMakeLists.txt), y PhoneLink.cpp usa runModalLoop().
 g++ -std=c++17 -fsyntax-only \
     -I"$JUCE/modules" -I"$JUCE" -I"$ROOT/app" \
     -DJUCE_WEB_BROWSER=0 -DJUCE_USE_CURL=0 -DJUCE_LOAD_CURL_SYMBOLS_LAZILY=0 \
-    -DJUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 \
+    -DJUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 -DJUCE_MODAL_LOOPS_PERMITTED=1 \
     "$ROOT/app/PhoneLink.cpp"
 echo "PhoneLink.cpp: syntax OK"
 
