@@ -8,9 +8,9 @@ pantalla grande.
 
 | Componente | Carpeta | Qué hace |
 |---|---|---|
-| **Acoustical Estudio** (app) | `app/` | EQ compacto de 124 bandas, 3 ecuas dinámicos, matriz de ruteo de tarjetas, Ajustes completos, RTA/osciloscopio/SPL, generador de señales, presets, enlace USB con el móvil |
-| **Motor de audio** | `engine/` | Port exacto en C++ del motor de la app Android (FFT, corrector de sala, los 3 ecuas dinámicos, perfil de ruido, medidor SPL, generador de señales) |
-| **Plugin VST** | `plugin/` | VST3 + VST2.4 (32 y 64 bits) para Cubase 5 con el mismo motor autocorrector |
+| **Acoustical Estudio** (app) | `app/` | EQ compacto de 124 bandas, 3 ecuas dinámicos, matriz de ruteo de tarjetas, Ajustes completos (incluida la sección Espacio y los 6 Modos de trabajo de arranque), RTA/osciloscopio/SPL, generador de señales (Silencio = apagado), presets, enlace USB con el móvil |
+| **Motor de audio** | `engine/` | Port exacto en C++ del motor de la app Android (FFT, corrector de sala, los 3 ecuas dinámicos, perfil de ruido, medidor SPL, generador de señales); la generación y la compensación espacial delegan en el core C compartido `dsp/` |
+| **Plugin VST** | `plugin/` | VST3 + VST2.4 (32 y 64 bits) para Cubase 5 con el mismo motor autocorrector, compensación espacial real en la salida (PDC) y los 6 modos de trabajo |
 | **Acoustical Bridge** | `asio-bridge/` | Driver ASIO virtual en modo usuario: Cubase 5 lo ve como interface de audio. No necesita firma de kernel |
 | **Cable virtual de audio** | `virtual-cable/` | Dispositivo de audio virtual (driver de kernel) para meter el sonido de cualquier programa en la cadena |
 | **Instalador todo-en-uno** | `installer/` | Inno Setup: app + plugin + ASIO + drivers ADB + cable virtual + arranque automático al conectar el móvil |
