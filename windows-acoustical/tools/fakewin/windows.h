@@ -3,6 +3,7 @@
 // camino #ifdef JUCE_WINDOWS / _WIN32 en Linux.
 // Si una llamada no compila contra estas firmas, no compila contra el SDK real.
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 typedef void* HANDLE;
@@ -158,6 +159,64 @@ DWORD   GetLastError(void);
 // declaraciones se mantienen aquí para ser fieles al SDK.
 HANDLE  GetCurrentProcess(void);
 #define GetCurrentProcess() ((HANDLE)(intptr_t)-1)
+// --- Codigo del driver ASIO (AcousticalBridge.cpp): registro COM, QPC, ---
+// --- hilo del worker, temporizacion. Firmas REALES del SDK.               ---
+#define HKEY_CLASSES_ROOT  ((HKEY)(intptr_t)0x80000000)
+#define KEY_WRITE          0x20196
+#define DLL_PROCESS_ATTACH 1
+#define APIENTRY
+typedef long long LONGLONG;
+typedef DWORD (WINAPI* LPTHREAD_START_ROUTINE)(LPVOID);
+#define S_FALSE  ((HRESULT)1L)
+#define E_NOINTERFACE            ((HRESULT)0x80004002L)
+#define E_POINTER                ((HRESULT)0x80004003L)
+#define E_OUTOFMEMORY           ((HRESULT)0x8007000EL)
+#define CLASS_E_NOAGGREGATION   ((HRESULT)0x80040110L)
+#define CLASS_E_CLASSNOTAVAILABLE ((HRESULT)0x80040111L)
+DWORD   GetModuleFileNameA(HMODULE hModule, LPSTR lpFilename, DWORD nSize);
+// El SDK real tiene NUEVE parametros (el 7º es lpSecurityAttributes, que
+// el driver pasa nullptr): una llamada con 8 o 10 no compila contra MSVC.
+LSTATUS RegCreateKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD dwReserved,
+                        LPCSTR lpClass, DWORD dwFlags, DWORD samDesired,
+                        LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+                        HKEY* phkResult, LPDWORD lpdwDisposition);
+LSTATUS RegSetValueExA(HKEY hKey, LPCSTR lpValueName, DWORD Reserved,
+                       DWORD dwType, const BYTE* lpData, DWORD cbData);
+LSTATUS RegDeleteTreeA(HKEY hKey, LPCSTR lpSubKey);
+typedef struct _LARGE_INTEGER {
+    union {
+        struct { unsigned long LowPart; long HighPart; };
+        long long QuadPart;
+    };
+} LARGE_INTEGER;
+BOOL    QueryPerformanceFrequency(LARGE_INTEGER* lpFrequency);
+BOOL    QueryPerformanceCounter(LARGE_INTEGER* lpPerformanceCount);
+void    Sleep(DWORD dwMilliseconds);
+DWORD   GetProcessId(void);
+HANDLE  CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize,
+                     LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter,
+                     DWORD dwCreationFlags, LPDWORD lpThreadId);
+DWORD   WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
+// --- Dialogos (user32.h en el SDK real; MessageBoxA de controlPanel) ---
+typedef unsigned int UINT;
+#define MB_OK                0x00000000
+#define MB_ICONINFORMATION   0x00000040
+typedef void* HWND;
+int     MessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType);
 #ifdef __cplusplus
 }
 #endif
+
+// --- CRT segura (stdio.h/string.h de MSVC): las versiones C exigen el ---
+// --- size como 2º parametro; en C++ el CRT añade sobrecargas TEMPLATE   ---
+// --- que lo deducen del array destino (así `strncpy_s(buf, "x", _TRUNCATE)` ---
+// --- y `sprintf_s(buf, fmt, args...)` compilan en MSVC — es lo que usa ---
+// --- este driver desde v1.0.0). Por eso se declaran FUERA del bloque C. ---
+#define _TRUNCATE ((size_t)-1)
+int     sprintf_s(char* dst, size_t size, const char* fmt, ...);
+template <typename T, size_t N>
+int     sprintf_s(T(&dst)[N], const char* fmt, ...);
+int     strncpy_s(char* dst, size_t size, const char* src);
+int     strncpy_s(char* dst, size_t size, const char* src, size_t count);
+template <typename T, size_t N>
+int     strncpy_s(T(&dst)[N], const char* src, size_t count);

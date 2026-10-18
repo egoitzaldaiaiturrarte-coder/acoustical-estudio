@@ -270,6 +270,18 @@ jobs:
             -Iwindows-acoustical/app \
             windows-acoustical/tools/test_crashfilter.cpp
 
+      # El driver ASIO (AcousticalBridge.cpp) solo se compila con MSVC en el
+      # job build: su camino _WIN32 (registro COM, QPC, worker, class
+      # factory) se valida aqui contra un windows.h/unknwn.h/objbase.h fake
+      # con las firmas REALES del SDK (fakewin): un typo o una llamada mal
+      # formada en el driver se pilla aqui, antes de quemar el job de Windows.
+      - name: Syntax-check del driver ASIO (camino Win32)
+        run: |
+          g++ -std=c++17 -fsyntax-only -D_WIN32 \
+            -Iwindows-acoustical/tools/fakewin \
+            -Iwindows-acoustical/asio-bridge \
+            windows-acoustical/asio-bridge/AcousticalBridge.cpp
+
       # Protocolo del enlace móvil↔PC (SyncClient + BeaconListener) contra un
       # "móvil falso" en loopback: baliza UDP, emparejamiento por código,
       # sync push/pull, HTTP /manifest + /payload con SHA-256. Compila los
@@ -348,6 +360,18 @@ jobs:
           powershell -ExecutionPolicy Bypass -File tools\build_all.ps1 2>&1 |
               Tee-Object -FilePath $log
           exit $LASTEXITCODE
+
+      # Si el paso de arriba fallo, el log COMPLETO del build se sube como
+      # artefacto: en la UI del job se descarga con un clic y tiene el error
+      # exacto de MSVC/CMake (la rama ci-diagnostics, si llega a publicarse,
+      # trae solo una version reducida).
+      - name: Subir el log de compilacion (si el paso de compilar fallo)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-log${{ inputs.artifact-suffix }}
+          path: windows-acoustical/ci-compile.log
+          if-no-files-found: ignore
 
       # El exe + PDB de la app (fuera del instalador): con el offset del crash
       # que anota startup.log se localiza la función/línea exacta en el PDB.
@@ -480,6 +504,25 @@ jobs:
         shell: pwsh
         run: |
           $ws = $env:GITHUB_WORKSPACE
+          # Primero lo importante: IMPRIMIR en el log del job (visible en la UI
+          # sin autenticacion de API) el error real del build — lineas de
+          # error de MSVC/CMake sacadas de ci-compile.log — para que el fallo
+          # se vea directamente en el paso, no solo en un artefacto/rama.
+          $clog = "$ws\windows-acoustical\ci-compile.log"
+          if (Test-Path $clog) {
+              $hits = @(Select-String -Path $clog -Pattern 'error C\d+|fatal error|error LNK\d+|: error|error:|FAILED:|CMake Error|Error [0-9]+' |
+                        Select-Object -First 40 | ForEach-Object { $_.Line.Trim() })
+              if ($hits.Count -gt 0) {
+                  Write-Host "----- ERRORES DEL BUILD (de ci-compile.log) -----"
+                  $hits | ForEach-Object { Write-Host $_ }
+                  Write-Host "----- (fin; log completo en el artefacto compile-log) -----"
+              } else {
+                  Write-Host "----- ci-compile.log: sin lineas de error reconocidas; ultimas 40 lineas -----"
+                  Get-Content $clog -Tail 40 | ForEach-Object { Write-Host $_ }
+              }
+          } else {
+              Write-Host "----- ci-compile.log NO existe: el fallo ocurrio antes de la captura (ver arriba el log del paso de compilar) -----"
+          }
           # Candidatos: el log del paso de compilacion (el fallo tipico: error
           # de MSVC/CMake; sin esta captura el error solo vivia en el log del
           # job, ilegible sin autenticacion) + los diagnosticos del instalador.
@@ -736,6 +779,21 @@ jobs:
         shell: pwsh
         run: |
           $ws = $env:GITHUB_WORKSPACE
+          # Igual que el job build: imprimir en el log del job el error real
+          # (lineas de error de MSVC/CMake de asan-build.log) para que el
+          # fallo se vea en la UI sin autenticacion de API.
+          if (Test-Path "$ws\windows-acoustical\dist\asan-build.log") {
+              $hits = @(Select-String -Path "$ws\windows-acoustical\dist\asan-build.log" -Pattern 'error C\d+|fatal error|error LNK\d+|: error|error:|FAILED:|CMake Error|Error [0-9]+' |
+                        Select-Object -First 40 | ForEach-Object { $_.Line.Trim() })
+              if ($hits.Count -gt 0) {
+                  Write-Host "----- ERRORES DEL BUILD ASAN (de asan-build.log) -----"
+                  $hits | ForEach-Object { Write-Host $_ }
+                  Write-Host "----- (fin; log completo en el artefacto asan-build-log) -----"
+              } else {
+                  Write-Host "----- asan-build.log: sin lineas de error reconocidas; ultimas 40 lineas -----"
+                  Get-Content "$ws\windows-acoustical\dist\asan-build.log" -Tail 40 | ForEach-Object { Write-Host $_ }
+              }
+          }
           $src = "$ws\windows-acoustical\dist\asan-build.log"
           if (-not (Test-Path $src)) {
               "fallo antes de escribir el log de build (run $env:GITHUB_RUN_ID)" | Set-Content $src -Encoding utf8
