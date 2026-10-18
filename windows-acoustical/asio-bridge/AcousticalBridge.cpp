@@ -555,9 +555,10 @@ private:
     // (mapSharedMemory). El otro extremo la lee; si tras unos segundos de magia
     // válida ve un instanceId ajeno que no reconoce, puede avisar en UI "el driver
     // parece estar en otra sesión" (lo pinta la app, frente 4B). Distinto en cada
-    // lado: GetTickCount64() * 100000 + GetProcessId().
+    // lado: GetTickCount64() * 100000 + GetCurrentProcessId().
     static uint64_t makeInstanceId() {
-        return (GetTickCount64() * 100000ull) + static_cast<uint64_t>(GetProcessId());
+        return (GetTickCount64() * 100000ull)
+             + static_cast<uint64_t>(GetCurrentProcessId());
     }
 
     // MachineGuid (HKLM\SOFTWARE\Microsoft\Cryptography): base del sufijo ESTABLE

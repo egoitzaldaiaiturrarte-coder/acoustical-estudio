@@ -192,7 +192,10 @@ typedef struct _LARGE_INTEGER {
 BOOL    QueryPerformanceFrequency(LARGE_INTEGER* lpFrequency);
 BOOL    QueryPerformanceCounter(LARGE_INTEGER* lpPerformanceCount);
 void    Sleep(DWORD dwMilliseconds);
-DWORD   GetProcessId(void);
+// GetProcessId lleva el HANDLE del proceso (GetProcessId(GetCurrentProcess()));
+// la forma sin argumento es GetCurrentProcessId() (lo que usa la app y el
+// resto del driver): con la firma real, un GetProcessId() sin args NO compila.
+DWORD   GetProcessId(HANDLE hProcess);
 HANDLE  CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize,
                      LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter,
                      DWORD dwCreationFlags, LPDWORD lpThreadId);
