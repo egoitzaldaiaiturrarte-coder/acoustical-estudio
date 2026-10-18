@@ -104,9 +104,12 @@ jobs:
     # el nombre del LLAMADOR (no de este fichero). Si el group coincidiera
     # exacto con el del job que nos llama, este job lo cancelaría nada más
     # arrancar (lo advierte la doc oficial de reusable workflows): por eso
-    # el sufijo "-reusable".
+    # el sufijo "-reusable". Y cada job del reusable lleva además su sufijo
+    # propio (-dsp/-build/-asan): con un group común, dsp y build (que
+    # arrancan a la vez) se habrían cancelado entre sí y el instalador nunca
+    # se habría publicado.
     concurrency:
-      group: ${{ github.workflow }}-reusable-${{ github.ref }}
+      group: ${{ github.workflow }}-reusable-${{ github.ref }}-dsp
       cancel-in-progress: true
     steps:
       - name: Descargar el código
@@ -295,9 +298,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     # El sufijo "-reusable" en el group es obligatorio: ver el comentario del
-    # job dsp (un group idéntico al del llamador lo cancelaría).
+    # job dsp (un group idéntico al del llamador lo cancelaría); el sufijo
+    # final "-build" lo separa de los jobs hermanos del reusable.
     concurrency:
-      group: ${{ github.workflow }}-reusable-${{ github.ref }}
+      group: ${{ github.workflow }}-reusable-${{ github.ref }}-build
       cancel-in-progress: true
     defaults:
       run:
@@ -550,9 +554,10 @@ jobs:
     needs: build
     timeout-minutes: 45
     # El sufijo "-reusable" en el group es obligatorio: ver el comentario del
-    # job dsp (un group idéntico al del llamador lo cancelaría).
+    # job dsp (un group idéntico al del llamador lo cancelaría); el sufijo
+    # final "-asan" lo separa de los jobs hermanos del reusable.
     concurrency:
-      group: ${{ github.workflow }}-reusable-${{ github.ref }}
+      group: ${{ github.workflow }}-reusable-${{ github.ref }}-asan
       cancel-in-progress: true
     defaults:
       run:

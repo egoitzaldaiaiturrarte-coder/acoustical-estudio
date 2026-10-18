@@ -44,10 +44,13 @@ jobs:
     # llamador y llamable compartieran exactamente el mismo group, el job
     # llamable cancelaría al llamador nada más arrancar — lo advierte la doc
     # oficial de reusable workflows).
+    # Y cada job del workflow lleva SU PROPIO sufijo final (-nocturno/
+    # -android): con el mismo group, los jobs de la misma corrida se
+    # cancelarían entre sí (así se cancelaban los ocho últimos nocturnos).
     # Un job llamador no puede llevar timeout-minutes: el timeout de 45 min
     # de los jobs Windows vive en el propio reusable.
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
+      group: ${{ github.workflow }}-${{ github.ref }}-nocturno
       cancel-in-progress: true
 
   android:
@@ -55,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
+      group: ${{ github.workflow }}-${{ github.ref }}-android
       cancel-in-progress: true
     defaults:
       run:

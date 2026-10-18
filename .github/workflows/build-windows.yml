@@ -40,8 +40,14 @@ jobs:
     uses: $/.github/workflows/windows-build.yml
     with:
       run-windows-build: false
+    # Sufijo por JOB en el group: varios jobs del mismo workflow con el mismo
+    # group y cancel-in-progress se CANCELARÍAN entre sí (el segundo en
+    # arrancar mata al primero) — así se cancelaba el build v1.9.0 y todos
+    # los nocturnos. Cada job lleva su propio sufijo (-dsp-gate/-windows/
+    # -android): un run nuevo del MISMO job y ref reemplaza al en curso, y
+    # los jobs hermanos de la misma corrida conviven en paz.
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
+      group: ${{ github.workflow }}-${{ github.ref }}-dsp-gate
       cancel-in-progress: true
 
   windows:
@@ -57,7 +63,7 @@ jobs:
     with:
       publish: true
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
+      group: ${{ github.workflow }}-${{ github.ref }}-windows
       cancel-in-progress: true
 
   android:
@@ -69,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
+      group: ${{ github.workflow }}-${{ github.ref }}-android
       cancel-in-progress: true
     defaults:
       run:
