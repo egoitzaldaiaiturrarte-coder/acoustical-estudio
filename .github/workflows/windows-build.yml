@@ -282,6 +282,17 @@ jobs:
             -Iwindows-acoustical/asio-bridge \
             windows-acoustical/asio-bridge/AcousticalBridge.cpp
 
+      # El .iss del instalador: ISCC aborta con 'Unknown constant' si algun
+      # {...} no es una constante Inno ({app}, {autopf}, ...) — para valores
+      # literales (CLSID, GUIDs) hay que doblar las llaves ({{ ... }}). La
+      # corrida 7 de v1.9.0 murio ahi; este cheque valida todas las
+      # constantes del script (incluidas las {#ISPP} definidas en el propio
+      # fichero) y el balanceo de llaves, antes de quemar el job de Windows.
+      - name: Validar las constantes Inno del instalador (.iss)
+        run: |
+          python3 windows-acoustical/tools/check_inno.py \
+            windows-acoustical/installer/acoustical.iss
+
       # Protocolo del enlace móvil↔PC (SyncClient + BeaconListener) contra un
       # "móvil falso" en loopback: baliza UDP, emparejamiento por código,
       # sync push/pull, HTTP /manifest + /payload con SHA-256. Compila los

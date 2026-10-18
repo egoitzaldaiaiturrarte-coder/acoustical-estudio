@@ -91,14 +91,16 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
 ; rama CLSID huérfanas. Con dontcreatekey el instalador NO crea estas
 ; ramas (las crea el propio driver al registrarse): Inno solo las borra al
 ; desinstalar. CLSID fijo: debe coincidir con kBridgeClsid de
-; asio-bridge\asio.h.
+; asio-bridge\asio.h. Las llaves dobladas ({{ }}) son la forma de Inno de
+; escribir un {literal}: con una sola, ISCC lo lee como constante y aborta
+; con 'Unknown constant' (fallo real de la corrida 7 de v1.9.0).
 Root: HKLM64; Subkey: "SOFTWARE\ASIO\Acoustical Bridge"; \
   Flags: dontcreatekey uninsdeletekey
 Root: HKLM32; Subkey: "SOFTWARE\ASIO\Acoustical Bridge"; \
   Flags: dontcreatekey uninsdeletekey
-Root: HKCR64; Subkey: "CLSID\{B7A9E3D1-2C45-4F0A-8D63-1E5A0B7C9F42}"; \
+Root: HKCR64; Subkey: "CLSID\{{B7A9E3D1-2C45-4F0A-8D63-1E5A0B7C9F42}}"; \
   Flags: dontcreatekey uninsdeletekey
-Root: HKCR32; Subkey: "CLSID\{B7A9E3D1-2C45-4F0A-8D63-1E5A0B7C9F42}"; \
+Root: HKCR32; Subkey: "CLSID\{{B7A9E3D1-2C45-4F0A-8D63-1E5A0B7C9F42}}"; \
   Flags: dontcreatekey uninsdeletekey
 
 [Run]
