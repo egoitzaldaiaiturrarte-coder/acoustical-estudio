@@ -220,6 +220,26 @@ fun SettingsScreen(
                                 onCheckedChange = { viewModel.setDynamicEqEnabled(index, it) }
                             )
                         }
+                        // v1.9: the sweep direction is a first-class control
+                        // (the mode catalog sets a default per EQ; the user can
+                        // override it here and the change is persisted over the
+                        // mode, as in the Windows app).
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Dirección de barrido",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = CyanGlow
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SweepDirection.entries.forEach { dir ->
+                                ChipSelector(
+                                    label = directionShort(dir),
+                                    selected = eq.config.startFrom == dir
+                                ) {
+                                    viewModel.setDynamicEqConfig(index) { c -> c.copy(startFrom = dir) }
+                                }
+                            }
+                        }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             "Intervalo de decisión: ${eq.config.decisionIntervalMs} ms · los valores se ajustan cada 10 ms",
@@ -661,4 +681,11 @@ private fun directionLabel(direction: SweepDirection): String = when (direction)
     SweepDirection.NEED_BASED -> "Va donde más se necesita"
     SweepDirection.BOTTOM_UP -> "Empieza por los graves"
     SweepDirection.TOP_DOWN -> "Empieza por los agudos"
+}
+
+/** Short label for the "dirección de barrido" chips. */
+private fun directionShort(direction: SweepDirection): String = when (direction) {
+    SweepDirection.NEED_BASED -> "Donde haga falta"
+    SweepDirection.BOTTOM_UP -> "De graves a agudos"
+    SweepDirection.TOP_DOWN -> "De agudos a graves"
 }

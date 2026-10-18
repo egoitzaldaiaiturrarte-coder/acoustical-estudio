@@ -2,6 +2,7 @@ package com.rork.acoustical.service
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.rork.acoustical.domain.model.CustomSettings
 import com.rork.acoustical.domain.model.RoomProfile
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -54,6 +55,26 @@ class ProfileStore(context: Context) {
 
     fun loadActiveModeId(): String? = prefs.getString(KEY_ACTIVE_MODE, null)
 
+    /**
+     * Custom settings (v1.9): the user's full last-tuned snapshot — engine
+     * config, the three dynamic EQs (with sweep direction and support bands)
+     * and the spatial position. Saved on every change; at startup it is
+     * re-applied over the persisted work mode (the Android mirror of the
+     * Windows "catalog is the base, settings.json the personalization").
+     */
+    fun saveCustomSettings(settings: CustomSettings) {
+        prefs.edit().putString(KEY_CUSTOM_SETTINGS, json.encodeToString(settings)).apply()
+    }
+
+    fun loadCustomSettings(): CustomSettings? =
+        prefs.getString(KEY_CUSTOM_SETTINGS, null)?.let { raw ->
+            try {
+                json.decodeFromString(raw)
+            } catch (e: Exception) {
+                null
+            }
+        }
+
     /** Serialize a single profile into a shareable JSON payload. */
     fun exportProfile(profile: RoomProfile): String = json.encodeToString(profile)
 
@@ -69,5 +90,6 @@ class ProfileStore(context: Context) {
         private const val KEY_PROFILES = "profiles_json"
         private const val KEY_ACTIVE = "active_profile_name"
         private const val KEY_ACTIVE_MODE = "active_mode_id"
+        private const val KEY_CUSTOM_SETTINGS = "custom_settings_json"
     }
 }

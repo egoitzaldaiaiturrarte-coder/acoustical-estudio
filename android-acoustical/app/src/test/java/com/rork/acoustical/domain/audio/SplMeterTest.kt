@@ -25,7 +25,7 @@ class SplMeterTest {
     }
 
     @Test
-    fun `rms de una senal seno - el rms real de la onda (1/sqrt(2))`() {
+    fun `rms de una senal seno - el rms real de la onda, 1 sobre raiz de 2`() {
         val meter = SplMeter()
         val samples = FloatArray(8192) { i ->
             sin(2.0 * PI * 440.0 * i / 48000.0).toFloat()
@@ -35,7 +35,7 @@ class SplMeterTest {
     }
 
     @Test
-    fun `ponderacion A - un bin a 100 Hz corrige según la tabla real (-19.1 dB)`() {
+    fun `ponderacion A - un bin a 100 Hz corrige según la tabla real`() {
         val meter = SplMeter()
         // Synthetic 2-bin spectrum: DC bin (skipped, no energy) + one bin at
         // 100 Hz at 0 dBFS.
@@ -44,7 +44,7 @@ class SplMeterTest {
         val a = meter.computeWeightedSpl(magnitudes, binFrequencies)
 
         // The expected correction is read from the shipped table itself:
-        val idx = SplMeter.aWeightingFrequencies.indexOf(100f)
+        val idx = SplMeter.aWeightingFrequencies.indexOfFirst { it == 100f }
         assertTrue("100 Hz must be a table entry", idx >= 0)
         val tableA = SplMeter.aWeightingDb[idx] // -19.1 dB at 100 Hz
         assertEquals(120f + tableA, a, 0.1f)
@@ -65,7 +65,7 @@ class SplMeterTest {
     }
 
     @Test
-    fun `ponderacion A - dos bins suman energia (no dB)`() {
+    fun `ponderacion A - dos bins suman energia, no dB`() {
         val meter = SplMeter()
         // Two 0 dBFS bins: 100 Hz (−19.1 dB A) and 1 kHz (0 dB A).
         // Energy = 10^((0−19.1)/10) + 10^(0/10) ≈ 0.0123 + 1 → +0.05 dB.

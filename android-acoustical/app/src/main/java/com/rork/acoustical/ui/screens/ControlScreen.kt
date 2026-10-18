@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -26,7 +25,6 @@ import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Speaker
@@ -59,9 +57,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
-import com.rork.acoustical.domain.model.AgentAdvice
-import com.rork.acoustical.domain.model.AgentMode
-import com.rork.acoustical.domain.model.AgentSeverity
 import com.rork.acoustical.domain.model.BitDepth
 import com.rork.acoustical.domain.model.DistanceStep
 import com.rork.acoustical.domain.model.PanZone
@@ -151,56 +146,8 @@ fun ControlScreen(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Agent mode selector (4 modes)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                AgentMode.entries.forEach { mode ->
-                    val selected = state.agentMode == mode
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                if (selected) CyanPrimary.copy(alpha = 0.25f)
-                                else SurfaceElevated.copy(alpha = 0.5f)
-                            )
-                            .clickable { viewModel.setAgentMode(mode) }
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Filled.Psychology,
-                                contentDescription = null,
-                                tint = if (selected) CyanGlow else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                mode.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (selected) CyanGlow else MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Agent advice panel
-            if (state.agentAdvices.isNotEmpty()) {
-                AgentAdvicePanel(
-                    advices = state.agentAdvices.take(4),
-                    isOnDemand = state.agentMode == AgentMode.ON_DEMAND,
-                    showExplanations = state.agentMode == AgentMode.MASTER,
-                    onConsult = { viewModel.consultAgent() },
-                    onDismiss = { viewModel.clearAgentAdvices() }
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-            }
+            // (v1.9: sección "Agente ingeniero" retirada: selector de modos,
+            //  panel de consejos y pre-vuelos no funcionaban en el móvil)
 
             // Sweep modifiers — affect every action on this device
             Row(
@@ -585,92 +532,6 @@ fun ControlScreen(
                     onApply = { viewModel.applyDistanceAutomation() },
                     onReset = { viewModel.resetDistanceMeasure() }
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AgentAdvicePanel(
-    advices: List<AgentAdvice>,
-    isOnDemand: Boolean,
-    showExplanations: Boolean,
-    onConsult: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    GlassCard(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Agente ingeniero",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = CyanGlow,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isOnDemand) {
-                        androidx.compose.material3.TextButton(onClick = onConsult) {
-                            Text("Consultar", color = CyanPrimary)
-                        }
-                    }
-                    androidx.compose.material3.TextButton(onClick = onDismiss) {
-                        Text("OK", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            advices.forEach { advice ->
-                val color = when (advice.severity) {
-                    AgentSeverity.INFO -> CyanDim
-                    AgentSeverity.WARN -> AmberAccent
-                    AgentSeverity.BLOCK -> CoralAlert
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.Top
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .padding(top = 5.dp)
-                            .size(8.dp)
-                            .background(color, CircleShape)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Column {
-                        Text(
-                            advice.title,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = color,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            advice.message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (advice.suggestion.isNotEmpty()) {
-                            Text(
-                                advice.suggestion,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = CyanPrimary
-                            )
-                        }
-                        if (showExplanations && advice.explanation.isNotEmpty()) {
-                            Text(
-                                advice.explanation,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.outline,
-                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
-                            )
-                        }
-                    }
-                }
             }
         }
     }

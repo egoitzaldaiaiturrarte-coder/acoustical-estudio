@@ -370,38 +370,6 @@ data class StereoSpatialState(
 }
 
 /**
- * Operating mode of the engineer agent.
- * OFF keeps only critical protections; protection rules always run.
- */
-@Serializable
-enum class AgentMode(val label: String, val description: String) {
-    OFF("Apagado", "Solo protecciones críticas"),
-    ON_DEMAND("Consulta", "Lo enciendes cuando quieres consultar"),
-    ASSISTANT("Asistente", "Orienta y protege en todo momento"),
-    MASTER("Maestro", "Modo estudio: explica el porqué de cada ajuste")
-}
-
-/**
- * Severity of an agent advice.
- */
-enum class AgentSeverity(val label: String) {
-    INFO("Info"),
-    WARN("Aviso"),
-    BLOCK("Bloqueo")
-}
-
-/**
- * A single recommendation or protection from the engineer agent.
- */
-data class AgentAdvice(
-    val severity: AgentSeverity,
-    val title: String,
-    val message: String,
-    val suggestion: String = "",
-    val explanation: String = ""
-)
-
-/**
  * Zones of the linked pan matrix L / Mid / R / Lados.
  * All four are really one send: adjusting one auto-corrects the others.
  */

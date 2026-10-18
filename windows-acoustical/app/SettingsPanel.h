@@ -280,7 +280,7 @@ private:
         {
             const auto w = engine_.signalGenerator().waveform();
             const int selected = comboIndexForWaveform(w);
-            addCombo(juce::String::fromUTF8("Señal (Silencio = generador apagado)"),
+            addCombo(juce::String::fromUTF8("Señal (Silencio = sin señal añadida: la entrada pasa tal cual)"),
                      {juce::String::fromUTF8("Silencio"), juce::String::fromUTF8("Seno"),
                       juce::String::fromUTF8("Seno por banda"), juce::String::fromUTF8("Barrido log"),
                       juce::String::fromUTF8("Ruido rosa"), juce::String::fromUTF8("Ruido blanco")},

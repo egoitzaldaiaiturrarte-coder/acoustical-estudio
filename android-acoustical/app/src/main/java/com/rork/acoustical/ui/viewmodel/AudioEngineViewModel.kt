@@ -17,7 +17,6 @@ import com.rork.acoustical.domain.audio.SweepProcess
 import com.rork.acoustical.domain.audio.LocationProvider
 import com.rork.acoustical.domain.audio.AudioOutputInfo
 import com.rork.acoustical.domain.audio.BluetoothAudioManager
-import com.rork.acoustical.domain.audio.EngineerAgent
 import com.rork.acoustical.domain.audio.FocusModeManager
 import com.rork.acoustical.domain.audio.WalkieTalkieManager
 import com.rork.acoustical.domain.audio.Rt60Estimator
@@ -34,10 +33,8 @@ import com.rork.acoustical.domain.console.MeshNetworkManager
 import com.rork.acoustical.domain.console.MeshPeer
 import com.rork.acoustical.domain.console.UsbAudioSource
 import com.rork.acoustical.domain.model.AppMode
-import com.rork.acoustical.domain.model.AgentAdvice
-import com.rork.acoustical.domain.model.AgentMode
-import com.rork.acoustical.domain.model.AgentSeverity
 import com.rork.acoustical.domain.model.AnalysisInterval
+import com.rork.acoustical.domain.model.CustomSettings
 import com.rork.acoustical.domain.model.AudioConfig
 import com.rork.acoustical.domain.model.FftSize
 import com.rork.acoustical.domain.model.AutoCheckConfig
@@ -165,9 +162,6 @@ class AudioEngineViewModel(
         val musicianState: MusicianState = MusicianState(),
         val splHistoryMeasured: List<Float> = emptyList(),
         val splHistoryCorrected: List<Float> = emptyList(),
-        // Engineer agent
-        val agentMode: AgentMode = AgentMode.ASSISTANT,
-        val agentAdvices: List<AgentAdvice> = emptyList(),
         // Sweep modifiers affecting every action
         val isFastSweep: Boolean = false,
         val isFineSweep: Boolean = false,
@@ -253,7 +247,6 @@ class AudioEngineViewModel(
     /** Feed de niveles de la captura de apps (ver startCaptureFeed): solo
      *  vive mientras la captura está activa. */
     private var captureFeedJob: Job? = null
-    private val engineerAgent = EngineerAgent()
     // Servidor de sync con el PC (singleton de la app). Arranque bajo
     // demanda: la pantalla Ajustes > PC/Windows o el primer envío de un
     // comando del Hub lo arrancan; MainActivity.onDestroy / este onCleared
@@ -506,11 +499,15 @@ class AudioEngineViewModel(
 
         // Work mode (v1.8): silently reload the persisted active mode so the
         // app starts where it left off — the SAME catalog the Windows app and
-        // the VST load from the C core. Only the profile is re-applied here;
-        // anything the user changes afterwards lives in the session state.
+        // the VST load from the C core.
+        // v1.9: and THEN re-apply the user's last saved custom settings over
+        // it (the Android mirror of the Windows loadActiveMode: the catalog
+        // is the base, the saved settings are the personalization — the
+        // overlay only happens when a mode was active, as in Windows).
         val persistedModeId = profileStore?.loadActiveModeId()
         if (!persistedModeId.isNullOrEmpty() && _uiState.value.activeModeId != persistedModeId) {
             setWorkMode(persistedModeId)
+            profileStore?.loadCustomSettings()?.let { applyCustomSettings(it) }
         }
     }
 
@@ -691,6 +688,8 @@ class AudioEngineViewModel(
                 }
             )
         }
+        // v1.9: spatial position is part of the custom-settings snapshot
+        persistCustomSettings()
     }
 
     // === Work modes (v1.8): the six startup profiles of the shared catalog ===
@@ -772,6 +771,93 @@ class AudioEngineViewModel(
         _uiState.update { it.copy(activeModeId = id) }
         profileStore?.saveActiveModeId(id)
         publishLocalConfigToSync()
+        // v1.9: the mode application is also a "saved settings" update (same
+        // as the Windows applyModeProfile() → saveSettings()): the next
+        // startup re-applies this very state over the mode, so a mode with
+        // no further changes comes back exactly as it left.
+        persistCustomSettings()
+    }
+
+    // === Custom settings over the mode (v1.9) ===
+    // The Android mirror of the Windows "catalog is the base, settings.json
+    // the personalization" rule: a COMPLETE snapshot of everything the user
+    // can tune on top of a mode (engine config, the three dynamic EQs —
+    // including sweep direction and support bands — and the spatial
+    // position) is saved on every change and re-applied over the mode at
+    // startup, so every adjustment made inside a mode survives a restart.
+
+    /** Build the snapshot from the current state and persist it to disk. */
+    private fun persistCustomSettings() {
+        val st = _uiState.value
+        val s = CustomSettings(
+            maxGainDb = st.config.maxGainDb,
+            smoothingFactor = st.config.smoothingFactor,
+            noiseSubtractionEnabled = st.config.noiseSubtractionEnabled,
+            correctionEnabled = st.config.correctionEnabled,
+            targetSpl = st.config.targetSpl,
+            audioDelayMs = st.config.audioDelayMs,
+            eqs = st.dynamicEqs.map { eq ->
+                CustomSettings.EqSettings(
+                    enabled = eq.enabled,
+                    startFrom = eq.config.startFrom.ordinal,
+                    decisionIntervalMs = eq.config.decisionIntervalMs,
+                    maxGainDb = eq.config.maxGainDb,
+                    mixerLevel = eq.config.mixerLevel,
+                    speedMultiplier = eq.config.speedMultiplier,
+                    extraSweeps = eq.config.extraSweeps,
+                    support = eq.supportBands
+                )
+            },
+            spatialX = st.spatialPosition.x,
+            spatialY = st.spatialPosition.y,
+            spatialZ = st.spatialPosition.z,
+            spatialSize = st.spatialPosition.size
+        )
+        profileStore?.saveCustomSettings(s)
+    }
+
+    /** Re-apply a persisted snapshot over the current state (and the engine). */
+    private fun applyCustomSettings(s: CustomSettings) {
+        val c = _uiState.value.config
+        updateConfig {
+            it.copy(
+                targetSpl = s.targetSpl,
+                maxGainDb = s.maxGainDb,
+                smoothingFactor = s.smoothingFactor,
+                correctionEnabled = s.correctionEnabled,
+                noiseSubtractionEnabled = s.noiseSubtractionEnabled,
+                audioDelayMs = s.audioDelayMs
+            )
+        }
+        s.eqs.forEachIndexed { i, se ->
+            if (i !in 0..2) return@forEachIndexed
+            setDynamicEqConfig(i) {
+                it.copy(
+                    startFrom = SweepDirection.values()[se.startFrom.coerceIn(0, 2)],
+                    decisionIntervalMs = se.decisionIntervalMs,
+                    maxGainDb = se.maxGainDb,
+                    mixerLevel = se.mixerLevel,
+                    speedMultiplier = se.speedMultiplier,
+                    extraSweeps = se.extraSweeps
+                )
+            }
+            val cur = _uiState.value.dynamicEqs.getOrNull(i) ?: return@forEachIndexed
+            if (cur.enabled != se.enabled) setDynamicEqEnabled(i, se.enabled)
+            if (se.support.isNotEmpty() && se.support != cur.supportBands) {
+                _uiState.update { st ->
+                    st.copy(dynamicEqs = st.dynamicEqs.mapIndexed { k, eq ->
+                        if (k == i) eq.copy(supportBands = se.support) else eq
+                    })
+                }
+                engine?.setSupportBands(i, se.support)
+            }
+        }
+        val pos = _uiState.value.spatialPosition
+        if (pos.x != s.spatialX || pos.y != s.spatialY ||
+            pos.z != s.spatialZ || pos.size != s.spatialSize
+        ) {
+            updateSpatialPosition(SpatialPosition(s.spatialX, s.spatialY, s.spatialZ, s.spatialSize))
+        }
     }
 
     // === Auto-Check ===
@@ -800,7 +886,6 @@ class AudioEngineViewModel(
                 val interval = _uiState.value.workConfig.autoCheck.intervalMs
                 delay(interval)
                 if (!_uiState.value.isRunning) continue
-                if (_uiState.value.agentMode != AgentMode.OFF) refreshAgentAdvices()
                 // The fast two-band correction is driven by the engine itself;
                 // this loop keeps the input states fresh at the probe cadence
                 updateInputs()
@@ -912,6 +997,8 @@ class AudioEngineViewModel(
         } else {
             engine?.setDynamicEqEnabled(index, enabled && _uiState.value.isRunning)
         }
+        // v1.9: EQ enable state is part of the custom-settings snapshot
+        persistCustomSettings()
     }
 
     /** Change one dynamic EQ's parameters (interval, gain, speed, extra sweeps…). */
@@ -932,6 +1019,8 @@ class AudioEngineViewModel(
         }
         engine?.setDynamicEqConfig(index, newConfig)
         publishLocalConfigToSync()
+        // v1.9: EQ changes are part of the custom-settings snapshot
+        persistCustomSettings()
     }
 
     /** Quick mixer trim for one dynamic EQ (kept in its config). */
@@ -962,6 +1051,8 @@ class AudioEngineViewModel(
         _uiState.value.dynamicEqs.getOrNull(eqIndex)?.let {
             engine?.setSupportBands(eqIndex, it.supportBands)
         }
+        // v1.9: the support-band bank is part of the custom-settings snapshot
+        persistCustomSettings()
     }
 
     // === Internal app-audio capture (one of the simultaneous inputs) ===
@@ -1122,12 +1213,9 @@ class AudioEngineViewModel(
     fun toggleOutputMute(id: String) {
         val output = _uiState.value.outputs.find { it.id == id } ?: return
         if (output.isMuted) {
-            // Pre-flight: the agent verifies the output will actually sound
-            val advice = engineerAgent.preFlightUnmute(output)
-            if (advice != null) {
-                _uiState.update { it.copy(agentAdvices = (listOf(advice) + it.agentAdvices).take(6)) }
-                if (advice.severity == AgentSeverity.BLOCK) return
-            }
+            // Pre-volo (v1.9, agente retirado): una salida no local cuyo
+            // dispositivo está desconectado no va a sonar — no se desmutea.
+            if (!output.isLocalDevice && output.connectionState == DeviceState.DISCONNECTED) return
         } else if (id in _uiState.value.testingOutputIds) {
             // Silencing an output stops its test signal immediately
             stopTestSignal(id)
@@ -1239,40 +1327,6 @@ class AudioEngineViewModel(
     private fun stopMusicianTracking() {
         musicianTrackingJob?.cancel()
         musicianTrackingJob = null
-    }
-
-    // === Engineer Agent ===
-
-    fun setAgentMode(mode: AgentMode) {
-        _uiState.update { it.copy(agentMode = mode) }
-        if (mode == AgentMode.OFF) {
-            _uiState.update { it.copy(agentAdvices = emptyList()) }
-        } else {
-            refreshAgentAdvices()
-        }
-    }
-
-    fun consultAgent() = refreshAgentAdvices()
-
-    fun clearAgentAdvices() {
-        _uiState.update { it.copy(agentAdvices = emptyList()) }
-    }
-
-    private fun refreshAgentAdvices() {
-        val s = _uiState.value
-        val snapshot = EngineerAgent.Snapshot(
-            isRunning = s.isRunning,
-            currentSpl = s.currentSpl,
-            safeSplLimit = s.musicianState.safeSplLimit,
-            targetSpl = s.config.targetSpl,
-            rt60Ms = s.rt60Ms,
-            outputs = s.outputs,
-            currentDelayMs = s.config.audioDelayMs,
-            recommendedDelayMs = s.distanceMeasure.delayMs ?: s.geoInfo.recommendedDelayMs,
-            panIsCentered = s.panMatrix.isCentered
-        )
-        val advices = engineerAgent.advise(snapshot, s.agentMode)
-        _uiState.update { it.copy(agentAdvices = advices) }
     }
 
     // === Sweep Modifiers (afectan a todas las acciones) ===
@@ -1389,7 +1443,6 @@ class AudioEngineViewModel(
                 }
             )
         }
-        if (_uiState.value.agentMode != AgentMode.OFF) refreshAgentAdvices()
     }
 
     // === Output Master Controls (Centro de Control) ===
@@ -1410,35 +1463,24 @@ class AudioEngineViewModel(
     }
 
     /**
-     * Unmute all outputs — the agent pre-checks each one:
-     * anything that would not sound (disconnected) stays muted and reports why.
+     * Unmute all outputs — the pre-check keeps muted whatever would not
+     * sound: a non-local output with a disconnected device (v1.9: the
+     * "engineer agent" that reported this was removed; the guard stays).
      */
     fun unmuteAllOutputs() {
-        val current = _uiState.value.outputs
-        val blockedIds = current.filter { o ->
-            val advice = engineerAgent.preFlightUnmute(o)
-            advice != null && advice.severity == AgentSeverity.BLOCK
-        }.map { it.id }.toSet()
+        val blockedIds = _uiState.value.outputs
+            .filter { !it.isLocalDevice && it.connectionState == DeviceState.DISCONNECTED }
+            .map { it.id }.toSet()
         _uiState.update { state ->
             state.copy(outputs = state.outputs.map { o ->
                 if (o.id !in blockedIds) o.copy(isMuted = false) else o
             })
         }
-        if (_uiState.value.agentMode != AgentMode.OFF || blockedIds.isNotEmpty()) refreshAgentAdvices()
     }
 
     fun setOutputGainDb(id: String, gainDb: Float) {
         val maxGain = _uiState.value.config.maxGainDb
         val clamped = gainDb.coerceIn(-maxGain, maxGain)
-        val output = _uiState.value.outputs.find { it.id == id }
-        if (output != null && _uiState.value.agentMode != AgentMode.OFF) {
-            val advice = engineerAgent.preFlightGainChange(
-                output, clamped, _uiState.value.currentSpl, _uiState.value.musicianState.safeSplLimit
-            )
-            if (advice != null) {
-                _uiState.update { it.copy(agentAdvices = (listOf(advice) + it.agentAdvices).take(6)) }
-            }
-        }
         _uiState.update { state ->
             state.copy(outputs = state.outputs.map { if (it.id == id) it.copy(gainDb = clamped) else it })
         }
@@ -1469,18 +1511,9 @@ class AudioEngineViewModel(
     fun playTestSignal(outputId: String, type: TestSignalType) {
         val output = _uiState.value.outputs.find { it.id == outputId } ?: return
         if (output.isMuted) {
-            _uiState.update {
-                it.copy(
-                    agentAdvices = listOf(
-                        AgentAdvice(
-                            severity = AgentSeverity.WARN,
-                            title = "Salida silenciada",
-                            message = "${output.name} está en mute: no sonará hasta que la actives.",
-                            suggestion = "Actívala primero y vuelve a comprobar."
-                        )
-                    ) + it.agentAdvices.take(5)
-                )
-            }
+            // A muted output will not sound; the output sheet shows the mute
+            // state, so no test signal is started (v1.9: the agent advice
+            // that used to explain this was removed with the agent).
             return
         }
         if (output.isLocalDevice || output.connectionState == DeviceState.CONNECTED) {
@@ -1588,15 +1621,8 @@ class AudioEngineViewModel(
         if (active) {
             val started = wm.start()
             _uiState.update { it.copy(walkieActive = started) }
-            if (!started) {
-                val advice = AgentAdvice(
-                    severity = AgentSeverity.WARN,
-                    title = "Walkie sin micrófono",
-                    message = "No se puede hablar sin permiso de micrófono.",
-                    suggestion = "Concede el permiso desde el banner de permisos pendientes."
-                )
-                _uiState.update { it.copy(agentAdvices = (listOf(advice) + it.agentAdvices).take(6)) }
-            }
+            // If start failed (no mic permission) walkieActive stays false;
+            // the pending-permission banner is where the user acts on it.
         } else {
             wm.stop()
             _uiState.update { it.copy(walkieActive = false) }
@@ -1712,6 +1738,8 @@ class AudioEngineViewModel(
         }
         syncBandsFromEngine()
         publishLocalConfigToSync()
+        // v1.9: config changes are part of the custom-settings snapshot
+        persistCustomSettings()
     }
 
     /**
@@ -1751,6 +1779,9 @@ class AudioEngineViewModel(
                         put("mixerLevel", eq.config.mixerLevel.toDouble())
                         put("speedMultiplier", eq.config.speedMultiplier.toDouble())
                         put("extraSweeps", eq.config.extraSweeps.toDouble())
+                        // v1.9: the sweep direction (SweepDirection ordinal)
+                        // so the PC can mirror it if it ever gains the control.
+                        put("startFrom", eq.config.startFrom.ordinal.toDouble())
                     }
                 }
             }
@@ -1805,8 +1836,12 @@ class AudioEngineViewModel(
             val dm = (eq["mixerLevel"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
             val ds = (eq["speedMultiplier"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
             val de = (eq["extraSweeps"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toIntOrNull()
-            if (di != null || dg != null || dm != null || ds != null || de != null) {
+            // v1.9: the sweep direction travels too (Android can change it;
+            // the PC keeps the value its mode catalog set — same field).
+            val df = (eq["startFrom"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toIntOrNull()
+            if (di != null || dg != null || dm != null || ds != null || de != null || df != null) {
                 val merged = cur.config.copy(
+                    startFrom = if (df != null) SweepDirection.values()[df.coerceIn(0, 2)] else cur.config.startFrom,
                     decisionIntervalMs = di ?: cur.config.decisionIntervalMs,
                     maxGainDb = dg ?: cur.config.maxGainDb,
                     mixerLevel = dm ?: cur.config.mixerLevel,

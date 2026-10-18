@@ -42,7 +42,7 @@ class ModeProfilesTest {
     // --- Common invariants (the six all start the same way) -----------------
 
     @Test
-    fun `every mode starts with max gain 50 dB, 124 bands, FFT 2048, 25 ms, smoothing 0.05`() {
+    fun `every mode starts with max gain 50 dB, 124 bands, FFT 2048, 25 ms, smoothing 0,05`() {
         ModeProfiles.ALL.forEach { m ->
             assertTrue(m.id, nearF(m.maxGainDb, 50f))
             assertEquals(m.id, 4, m.bandCountIndex)  // = BandCount.BANDS_124
@@ -85,23 +85,23 @@ class ModeProfilesTest {
     // --- The six agreed values -----------------------------------------------
 
     @Test
-    fun `the six SPLs and their correction/noise-subtraction flags`() {
+    fun `the six SPLs and their correction y noise-subtraction flags`() {
         // id -> (targetSpl, correction, noiseSubtraction, z, size)
         val expect = mapOf(
-            "carro-normal" to listOf(78f, 1, 1, 0.2f, 0.3f),
-            "carro-aire-libre" to listOf(97f, 0, 1, 0.5f, 0.5f),
-            "estudio-esc1" to listOf(89f, 1, 1, 0.5f, 0.5f),
-            "escenario2" to listOf(91f, 0, 0, 0.5f, 0.5f),
-            "escenario3" to listOf(93f, 1, 1, 0.9f, 0.9f),
-            "pas" to listOf(103f, 1, 1, 0.2f, 0.3f)
+            "carro-normal" to listOf(78f, 1f, 1f, 0.2f, 0.3f),
+            "carro-aire-libre" to listOf(97f, 0f, 1f, 0.5f, 0.5f),
+            "estudio-esc1" to listOf(89f, 1f, 1f, 0.5f, 0.5f),
+            "escenario2" to listOf(91f, 0f, 0f, 0.5f, 0.5f),
+            "escenario3" to listOf(93f, 1f, 1f, 0.9f, 0.9f),
+            "pas" to listOf(103f, 1f, 1f, 0.2f, 0.3f)
         )
         expect.forEach { (id, v) ->
             val m = ModeProfiles.byId(id)
             assertNotNull("missing $id", m)
             if (m == null) return@forEach
             assertTrue(id, nearF(m.targetSpl, v[0]))
-            assertEquals("$id correction", v[1] == 1, m.correctionEnabled)
-            assertEquals("$id noiseSub", v[2] == 1, m.noiseSubtractionEnabled)
+            assertEquals("$id correction", v[1] == 1f, m.correctionEnabled)
+            assertEquals("$id noiseSub", v[2] == 1f, m.noiseSubtractionEnabled)
             assertTrue("$id spatial", nearF(m.spatial.z, v[3]) && nearF(m.spatial.size, v[4]))
             // PAs (103) requires the unified 30-110 SPL range in all versions.
             assertTrue("$id SPL in 30-110", m.targetSpl >= 30f && m.targetSpl <= 110f)

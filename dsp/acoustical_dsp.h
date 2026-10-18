@@ -234,7 +234,7 @@ void acoustical_spatial_compensate(float x, float y, float z, float size,
 /* =========================================================================
  * Work modes (catalog of startup profiles)
  *
- * The five work modes (Coche Normal / Coche Aire libre / Estudio-Escenario
+ * The six work modes (Coche Normal / Coche Aire libre / Estudio-Escenario
  * 1 / Escenario 2 / Escenario 3 / PAs) and their FULL startup settings:
  * motor (SPL, gain limit, bands, FFT, analysis, smoothing, correction,
  * noise subtraction, delay), the three dynamic EQs (on/off, interval,

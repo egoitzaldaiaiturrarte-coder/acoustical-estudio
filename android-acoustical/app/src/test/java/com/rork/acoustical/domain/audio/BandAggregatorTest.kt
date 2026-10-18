@@ -36,12 +36,12 @@ class BandAggregatorTest {
     }
 
     private fun floatArray(key: String): FloatArray =
-        root[key]!!.jsonArray.map { it.jsonPrimitive.float }.toFloatArray()
+        root[key]!!.jsonArray.map { it.jsonPrimitive.content.toFloat() }.toFloatArray()
 
     private val bandFrequencies: FloatArray by lazy { floatArray("bandFrequencies") }
     private val magnitudesDb: FloatArray by lazy { floatArray("magnitudesDb") }
     private val binFrequencies: FloatArray by lazy { floatArray("binFrequencies") }
-    private val noiseFloorDb: Float by lazy { root["noiseFloorDb"]!!.jsonPrimitive.float }
+    private val noiseFloorDb: Float by lazy { root["noiseFloorDb"]!!.jsonPrimitive.content.toFloat() }
     private val expected: FloatArray by lazy { floatArray("expectedLevelsDb") }
 
     @Test
@@ -96,7 +96,7 @@ class BandAggregatorTest {
     }
 
     @Test
-    fun `ratio switches between 1/12 and 1/6 octave by band count`() {
+    fun `ratio switches between twelfth-octave and sixth-octave windows by band count`() {
         // Dos bins a 500 Hz de distancia alrededor de 8 kHz (7500 y 8500).
         // Con ratio 1/6 de octava (10 bandas) ambos caen en la banda 8000;
         // con ratio 1/12 de octava (124 bandas, ultra) se reparten en varias

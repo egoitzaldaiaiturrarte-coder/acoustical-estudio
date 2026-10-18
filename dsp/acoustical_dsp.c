@@ -520,8 +520,20 @@ static acoustical_eq_profile makeEq(int enabled, int startFrom,
     return e;
 }
 
-static const acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT] = {
-    {
+static acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT];
+
+/* v1.9: la tabla se rellena en runtime (primera consulta) en vez de con un
+ * initializer estático: en C estricto no se permiten llamadas a funciones
+ * (makeEq/bandHz) dentro de un initializer de objeto estático — la forma
+ * anterior (v1.8, `= { ... }`) solo compilaba cuando el .c se trataba como
+ * C++ (así compila el gate), y el NDK de Android (clang, C puro) la
+ * rechazaba. Mismos valores, mismo orden: el fichero compila igual como C
+ * que como C++. */
+static void ensureModeProfiles(void) {
+    static int ready = 0;
+    if (ready) return;
+
+    kModeProfiles[0] = (acoustical_mode_profile){
         "carro-normal", "Coche · Normal",
         78.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
@@ -530,8 +542,9 @@ static const acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT] = {
           makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.2f, 0.3f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
-    },
-    {
+    };
+
+    kModeProfiles[1] = (acoustical_mode_profile){
         "carro-aire-libre", "Coche · Aire libre",
         97.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 0, 1, 0.0f,
@@ -540,8 +553,9 @@ static const acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT] = {
           makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.5f, 0.5f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
-    },
-    {
+    };
+
+    kModeProfiles[2] = (acoustical_mode_profile){
         "estudio-esc1", "Estudio · Escenario 1",
         89.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
@@ -550,8 +564,9 @@ static const acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT] = {
           makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.5f, 0.5f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
-    },
-    {
+    };
+
+    kModeProfiles[3] = (acoustical_mode_profile){
         "escenario2", "Escenario 2",
         91.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 0, 0, 0.0f,
@@ -560,8 +575,9 @@ static const acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT] = {
           makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.5f, 0.5f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
-    },
-    {
+    };
+
+    kModeProfiles[4] = (acoustical_mode_profile){
         "escenario3", "Escenario 3",
         93.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
@@ -570,8 +586,9 @@ static const acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT] = {
           makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.9f, 0.9f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
-    },
-    {
+    };
+
+    kModeProfiles[5] = (acoustical_mode_profile){
         "pas", "PAs",
         103.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
@@ -580,14 +597,18 @@ static const acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT] = {
           makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.2f, 0.3f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
-    },
-};
+    };
+
+    ready = 1;
+}
 
 const acoustical_mode_profile *acoustical_mode_profiles(void) {
+    ensureModeProfiles();
     return kModeProfiles;
 }
 
 const acoustical_mode_profile *acoustical_mode_by_id(const char *id) {
+    ensureModeProfiles();
     if (!id) return NULL;
     for (int i = 0; i < ACOUSTICAL_MODE_COUNT; ++i)
         if (strcmp(kModeProfiles[i].id, id) == 0) return &kModeProfiles[i];

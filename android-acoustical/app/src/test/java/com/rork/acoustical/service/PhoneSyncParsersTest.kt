@@ -19,13 +19,13 @@ class PhoneSyncParsersTest {
     // --- isNewerVersion ---------------------------------------------------
 
     @Test
-    fun `version decimal - 1.10 es mayor que 1.9 (no comparacion alfabetica)`() {
+    fun `version decimal - comparacion por componentes, no alfabetica`() {
         assertTrue(isNewerVersion("1.10", "1.9"))
         assertFalse(isNewerVersion("1.9", "1.10"))
     }
 
     @Test
-    fun `version igual - no es nueva (incluido el relleno con ceros)`() {
+    fun `version igual - no es nueva, incluido el relleno con ceros`() {
         assertFalse(isNewerVersion("1.2.3", "1.2.3"))
         assertFalse(isNewerVersion("1.2.3", "1.2.3.0"))
         assertFalse(isNewerVersion("1.2", "1.2"))
@@ -47,14 +47,14 @@ class PhoneSyncParsersTest {
     // --- githubRepoOf ------------------------------------------------------
 
     @Test
-    fun `githubRepoOf - urls github.com con y sin sufijo .git`() {
+    fun `githubRepoOf - urls github con y sin sufijo git`() {
         assertEquals("usuario/repo", githubRepoOf("https://github.com/usuario/repo"))
         assertEquals("usuario/repo", githubRepoOf("github.com/usuario/repo.git"))
         assertEquals("usuario/repo", githubRepoOf("github.com/usuario/repo"))
     }
 
     @Test
-    fun `githubRepoOf - formato corto usuario/repo`() {
+    fun `githubRepoOf - formato corto, usuario-repo`() {
         assertEquals("acoustical/estudio", githubRepoOf("acoustical/estudio"))
     }
 
@@ -76,7 +76,7 @@ class PhoneSyncParsersTest {
     }
 
     @Test
-    fun `acked sin sendToPc - es la confirmacion del PC (no hay config pendiente)`() {
+    fun `acked sin sendToPc - es la confirmacion del PC, no hay config pendiente`() {
         val d = SyncPayloadDecision.evaluate(
             """{"type":"sync","ok":true,"acked":true,"config":{"maxGainDb":6}}"""
         )
@@ -86,7 +86,7 @@ class PhoneSyncParsersTest {
     }
 
     @Test
-    fun `acked junto a sendToPc - no es una confirmacion (es estado telefono->PC)`() {
+    fun `acked junto a sendToPc - no es una confirmacion, es estado telefono a PC`() {
         val d = SyncPayloadDecision.evaluate("""{"acked":true,"sendToPc":true,"config":{}}""")
         assertNotNull(d)
         assertFalse(d!!.isAck)
@@ -99,6 +99,6 @@ class PhoneSyncParsersTest {
         assertFalse(d!!.isAck)
         val cfg = d.pendingConfig
         assertNotNull(cfg)
-        assertEquals(6.0, cfg!!["maxGainDb"]!!.jsonPrimitive.double)
+        assertEquals(6.0, cfg!!["maxGainDb"]!!.jsonPrimitive.content.toDouble(), 1e-9)
     }
 }

@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include "plugin_genmap.h"
+
 #include <cmath>
 
 using juce::String;
@@ -76,9 +78,16 @@ AcousticalAudioProcessor::createParameterLayout() {
         juce::StringArray{"512", "1024", "2048", "4096", "8192"}, 2));
 
     // --- Generador de referencia (señal conocida para capturar la referencia) ---
+    // v1.9: el menú unificado de las tres versiones (dsp/plugin_genmap.h,
+    // testeado por el gate DSP): "Silencio" es la PRIMERA opción y la única
+    // que nunca suena (ceros en la salida); "Apagado" es el passthrough
+    // propio del VST (la entrada pasa tal cual). El estado guardado con el
+    // menú antiguo de 5 opciones (v1.8) se migra en setStateInformation
+    // (marcador "genSourceMenu"), de modo que cada proyecto sigue sonando
+    // exactamente lo que sonaba.
     layout.add(std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID{"genSource", 1}, "Generador",
-        juce::StringArray{utf8("Apagado"), utf8("Ruido rosa"),
+        juce::StringArray{utf8("Silencio"), utf8("Apagado"), utf8("Ruido rosa"),
                           utf8("Ruido blanco"), "Barrido", "Seno"},
         0));
     layout.add(std::make_unique<juce::AudioParameterFloat>(
@@ -344,42 +353,55 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     }
 
     // 1. Generador de referencia: sustituye el contenido del canal con una
-    //    señal conocida (ruido rosa/blanco, barrido o seno). "Apagado" (0)
-    //    deja el input pasar tal cual: la referencia se captura del anillo
-    //    pre-EQ (paso 3), así que el generador no debe dejar huella en él.
-    const int genSource = static_cast<int>(l("genSource"));
-    if (genSource > 0) {
-        // Mapeo menú->Waveform EXPLÍCITO: el enum
-        // {Sine, BandSine, LogSweep, PinkNoise, WhiteNoise, Silence} no sigue
-        // el orden del menú. El `genSource - 1` antiguo sonaba "Ruido rosa"
-        // como seno, "Ruido blanco" como seno por banda y "Seno" como ruido
-        // rosa, y dejaba a "Apagado" sin efecto una vez se salía de él (el
-        // bloque se saltaba pero la última forma de onda seguía rellenando el
-        // canal: imposible de apagar desde el menú).
-        const auto wave =
-            genSource == 1 ? acoustical::SignalGenerator::Waveform::PinkNoise
-          : genSource == 2 ? acoustical::SignalGenerator::Waveform::WhiteNoise
-          : genSource == 3 ? acoustical::SignalGenerator::Waveform::LogSweep
-                           : acoustical::SignalGenerator::Waveform::Sine;
-        if (wave != genWaveform_) {
-            genWaveform_ = wave;
-            generator_.setWaveform(wave);
-            generator_.setSweepRange(20.0f, 20000.0f, 5.0f);
+    //    señal conocida. El anillo pre-EQ del paso 3 se alimenta de este
+    //    buffer, así que lo que la referencia captura es EXACTAMENTE lo que
+    //    hay en el menú:
+    //      - "Silencio" (la primera opción del menú unificado de las tres
+    //        versiones): CEROS — la única que nunca suena; la referencia
+    //        capturaría silencio (no deja huella).
+    //      - "Apagado" (passthrough, propio del VST): la entrada pasa tal
+    //        cual; la referencia se captura de la fuente real.
+    //      - Rosa/Blanco/Barrido/Seno: la señal conocida, para capturar una
+    //        referencia de laboratorio sin depender de la fuente.
+    //
+    //    Mapeo menú->forma de onda EXPLÍCITO (dsp/plugin_genmap.h, testeado
+    //    por el gate DSP): el valor crudo del parámetro choice es 0..1
+    //    (índice/(nº-1)), así que se convierte de vuelta a ÍNDICE con
+    //    redondeo — la truncación directa al int que hacía el código anterior
+    //    (`static_cast<int>(raw)`) colapsaba las cuatro primeras opciones del
+    //    menú a "1 kHz de seno" (crudo 0..0.75 → 0) y dejaba a "Seno"
+    //    (crudo 1.0 → 1) sonando "Ruido rosa": el bug que esta versión corrige.
+    const int genSource =
+        juce::jlimit(0, acoustical::genmenu::kMenuCount - 1,
+                      static_cast<int>(std::lround(
+                          l("genSource") * static_cast<float>(
+                              acoustical::genmenu::kMenuCount - 1))));
+    if (genSource != 1) {   // 1 = "Apagado": passthrough (el input pasa tal cual)
+        const int wave = acoustical::genmenu::waveformForMenuIndex(genSource);
+        if (wave >= 0) {
+            // 0 = Silencio (el core rellena con ceros) y 2..5 = rosa/blanco/
+            // barrido/seno (valores canónicos ACOUSTICAL_WAVE_*).
+            const auto wf = acoustical::SignalGenerator::fromCanonical(wave);
+            if (wf != genWaveform_) {
+                genWaveform_ = wf;
+                generator_.setWaveform(wf);
+                generator_.setSweepRange(20.0f, 20000.0f, 5.0f);
+            }
+            const float freq = l("genFreq");
+            const float level = l("genLevel");
+            if (std::abs(freq - genFrequency_) > 0.01f) {
+                genFrequency_ = freq;
+                generator_.setFrequency(freq);
+            }
+            if (std::abs(level - genLevelDb_) > 0.01f) {
+                genLevelDb_ = level;
+                generator_.setLevelDb(level);
+            }
+            if (genBuf_.size() < static_cast<size_t>(numSamples)) genBuf_.resize(numSamples);
+            generator_.fill(genBuf_.data(), numSamples, sr);
+            for (int ch = 0; ch < numOut; ++ch)
+                buffer.copyFrom(ch, 0, genBuf_.data(), numSamples);
         }
-        const float freq = l("genFreq");
-        const float level = l("genLevel");
-        if (std::abs(freq - genFrequency_) > 0.01f) {
-            genFrequency_ = freq;
-            generator_.setFrequency(freq);
-        }
-        if (std::abs(level - genLevelDb_) > 0.01f) {
-            genLevelDb_ = level;
-            generator_.setLevelDb(level);
-        }
-        if (genBuf_.size() < static_cast<size_t>(numSamples)) genBuf_.resize(numSamples);
-        generator_.fill(genBuf_.data(), numSamples, sr);
-        for (int ch = 0; ch < numOut; ++ch)
-            buffer.copyFrom(ch, 0, genBuf_.data(), numSamples);
     }
 
     // 2. Retardo global (pasos de 0,01 ms) con latencia reportada al host (PDC).
@@ -497,14 +519,40 @@ juce::AudioProcessorEditor* AcousticalAudioProcessor::createEditor() {
 }
 
 void AcousticalAudioProcessor::getStateInformation(juce::MemoryBlock& destData) {
-    if (const auto xml = apvts.copyState().createXml())
+    // v1.9: el marcador "genSourceMenu" dice que este estado es del menú
+    // generador de 6 opciones. Se escribe en CADA guardado, así el primer
+    // save tras la migración cierra el bucle: la migración (abajo) es
+    // one-shot por proyecto.
+    juce::Var state = apvts.copyState();
+    if (state.getProperty("genSourceMenu").toString().trim() != "6")
+        state.setProperty("genSourceMenu", "6", false);
+    if (const auto xml = state.createXml())
         copyXmlToBinary(*xml, destData);
 }
 
 void AcousticalAudioProcessor::setStateInformation(const void* data, int sizeInBytes) {
     if (const auto xml = getXmlFromBinary(data, sizeInBytes)) {
         if (xml->hasTagName(apvts.state.getType())) {
-            apvts.replaceState(juce::ValueTree::fromXml(*xml));
+            juce::ValueTree tree = juce::ValueTree::fromXml(*xml);
+            // Migración one-shot del menú antiguo (v1.8, 5 opciones, ver
+            // dsp/plugin_genmap.h): solo se toca un estado SIN marcador (de
+            // antes del menú nuevo) y desplaza cada crudo k/4 a su posición
+            // (k+1)/5 en el menú nuevo: Apagado→Apagado, Rosa→Rosa,
+            // Blanco→Blanco, Barrido→Barrido, Seno→Seno (1.0 en ambos). El
+            // proyecto sigue sonando exactamente lo que sonaba.
+            if (tree.getProperty("genSourceMenu").toString().trim() != "6") {
+                for (const auto& child : tree) {
+                    if (child.getProperty("id").toString() == "genSource") {
+                        const float raw =
+                            static_cast<float>(child.getProperty("value").toDouble());
+                        const float migrated = acoustical::genmenu::migrateRawValue(raw);
+                        if (migrated != raw) child.setProperty("value", migrated, false);
+                        break;
+                    }
+                }
+            }
+            tree.setProperty("genSourceMenu", "6", false);
+            apvts.replaceState(tree);
             applyParameters();
         }
     }

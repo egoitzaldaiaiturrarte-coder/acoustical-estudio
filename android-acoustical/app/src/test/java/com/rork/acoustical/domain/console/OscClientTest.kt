@@ -33,7 +33,7 @@ class OscClientTest {
      * its correct block (proof the parser did not desynchronize).
      */
     @Test
-    fun `string lengths 0 to 5 and 16/17 - exact round trip, following float intact`() {
+    fun `string lengths 0 to 5 and 16 o 17 - exact round trip, following float intact`() {
         for (n in listOf(0, 1, 2, 3, 4, 5, 16, 17)) {
             val s = "x".repeat(n)
             val msg = roundTrip("/len/$n", OscArgument.StringArg(s), OscArgument.FloatArg(1.5f))
@@ -68,7 +68,7 @@ class OscClientTest {
     }
 
     @Test
-    fun `NUL embebido a mitad de la string - el parseo sobrevive (truncado por spec)`() {
+    fun `NUL embebido a mitad de la string - el parseo sobrevive, truncado por spec`() {
         // OSC 1.0 is NUL-terminated, so an embedded 0x00 is ambiguous: the
         // string is truncated at the FIRST zero. What must NOT happen is the
         // parser dying or running off the rails: the message decodes, the

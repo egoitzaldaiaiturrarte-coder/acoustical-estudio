@@ -228,6 +228,16 @@ jobs:
             dsp/test_modes.cpp dsp/acoustical_dsp.c -o /tmp/test_modes -lm
           /tmp/test_modes
 
+      # Menú "Generador" del plugin (v1.9): mapeo índice→forma de onda
+      # canónica (Silencio primero, la única que nunca suena; Apagado =
+      # passthrough) y la migración one-shot del estado del menú antiguo de
+      # 5 opciones (v1.8). El plugin compila este mismo header (genmap).
+      - name: Compilar y testear el menú generador del plugin (genmap)
+        run: |
+          g++ -std=c++17 -O2 -Idsp \
+            dsp/test_genmap.cpp -o /tmp/test_genmap -lm
+          /tmp/test_genmap
+
       # El camino #ifdef _WIN32 del puente ASIO solo compila en MSVC: se
       # valida aquí contra un windows.h con las firmas reales de las API
       # (pilla typos como UnmapViewOfSection antes del job de Windows).

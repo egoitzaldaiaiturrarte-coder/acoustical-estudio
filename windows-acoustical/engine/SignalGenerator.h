@@ -86,6 +86,22 @@ public:
         return ACOUSTICAL_WAVE_SILENCE;
     }
 
+    // Inverso de canonicalWaveform(): de un valor canónico del core
+    // (ACOUSTICAL_WAVE_*; el mapeo del menú del plugin, dsp/plugin_genmap.h,
+    // devuelve estos) al enum local. Valores no canónicos → Silence: la rama
+    // más segura nunca emite una señal equivocada.
+    static Waveform fromCanonical(int canonical) {
+        switch (canonical) {
+            case ACOUSTICAL_WAVE_SILENCE:   return Waveform::Silence;
+            case ACOUSTICAL_WAVE_SINE:      return Waveform::Sine;
+            case ACOUSTICAL_WAVE_BAND_SINE: return Waveform::BandSine;
+            case ACOUSTICAL_WAVE_LOG_SWEEP: return Waveform::LogSweep;
+            case ACOUSTICAL_WAVE_PINK:      return Waveform::PinkNoise;
+            case ACOUSTICAL_WAVE_WHITE:     return Waveform::WhiteNoise;
+        }
+        return Waveform::Silence;
+    }
+
     // === Audio (hilo de audio) ===
 
     // Rellena un canal mono con la señal. Toma un snapshot de los

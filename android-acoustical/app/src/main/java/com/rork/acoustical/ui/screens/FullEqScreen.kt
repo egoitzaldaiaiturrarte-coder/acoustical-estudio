@@ -1,6 +1,7 @@
 package com.rork.acoustical.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -208,18 +209,47 @@ fun FullEqScreen(
         )
         Spacer(modifier = Modifier.height(6.dp))
         state.dynamicEqs.forEachIndexed { i, eq ->
-            DynamicEqCanvas(
-                index = i,
-                title = "Ecu dinámico ${i + 1} — ${directionLabel(eq.config.startFrom)}",
-                active = eq.enabled && state.isRunning,
-                status = eq.status,
-                gainsL = eq.gainsL,
-                gainsR = eq.gainsR,
-                linked = state.eqLinked,
-                showRight = state.eqChannel == EqChannel.RIGHT,
-                maxGain = eq.config.maxGainDb,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                DynamicEqCanvas(
+                    index = i,
+                    title = "Ecu dinámico ${i + 1} — ${directionLabel(eq.config.startFrom)}",
+                    active = eq.enabled && state.isRunning,
+                    status = eq.status,
+                    gainsL = eq.gainsL,
+                    gainsR = eq.gainsR,
+                    linked = state.eqLinked,
+                    showRight = state.eqChannel == EqChannel.RIGHT,
+                    maxGain = eq.config.maxGainDb,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                // v1.9: the sweep direction is adjustable here too (and
+                // persisted over the work mode, as in Ajustes).
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SweepDirection.entries.forEach { dir ->
+                        val selected = eq.config.startFrom == dir
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selected) CyanPrimary.copy(alpha = 0.2f) else AbyssBlack)
+                                .clickable {
+                                    viewModel.setDynamicEqConfig(i) { c -> c.copy(startFrom = dir) }
+                                }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                when (dir) {
+                                    SweepDirection.NEED_BASED -> "Donde haga falta"
+                                    SweepDirection.BOTTOM_UP -> "Graves → agudos"
+                                    SweepDirection.TOP_DOWN -> "Agudos → graves"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (selected) CyanGlow else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
             Spacer(modifier = Modifier.height(8.dp))
         }
 
