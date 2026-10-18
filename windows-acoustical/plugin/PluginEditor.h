@@ -442,12 +442,14 @@ private:
             const float size = P.getRawParameterValue("spatialSize")->load();
             float g = 0.0f, d = 0.0f;
             acoustical_spatial_compensate(x, y, z, size, &g, &d);
+            // JUCE 7: el constructor String(valor, places, padWithZeros) de
+            // la v6 desapareció; (valor, decimales) pinta lo mismo aquí.
             const juce::String meters =
-                juce::String(z * 15.0f, 1, true) + utf8(" m");
+                juce::String(z * 15.0f, 1) + utf8(" m");
             spatialReadout_.setText(
                 (g != 0.0f || d > 0.0f)
-                    ? utf8("Espacio: ") + juce::String(g, 1, true) + utf8(" dB de ganancia · ")
-                      + juce::String(d, 1, true) + utf8(" ms de retardo · ") + meters
+                    ? utf8("Espacio: ") + juce::String(g, 1) + utf8(" dB de ganancia · ")
+                      + juce::String(d, 1) + utf8(" ms de retardo · ") + meters
                       + utf8(" de distancia")
                     : utf8("Espacio: posición neutra (0 dB · 0 ms) — el elemento está a ")
                       + meters + utf8(" con tamaño medio"),

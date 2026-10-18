@@ -429,8 +429,14 @@ private:
             if (isActive) label = juce::String::fromUTF8("● ") + label;
             auto* b = addButton(label, [this, m] { if (onApplyMode_) onApplyMode_(m); });
             b->setBounds(16 + (i % 2) * 446, y_ + (i / 2) * 34, 430, 30);
-            // El activo se distingue también por color de texto
-            if (isActive) b->setColour(juce::TextButton::textColourId, theme::primary);
+            // El activo se distingue también por color de texto. JUCE 7: el
+            // textColourId único de la v6 se partió en on/off (sin estado
+            // "on" un TextButton es siempre off, pero se pintan ambos por
+            // si el LookAndFeel lo conmuta).
+            if (isActive) {
+                b->setColour(juce::TextButton::textColourOnId, theme::primary);
+                b->setColour(juce::TextButton::textColourOffId, theme::primary);
+            }
         }
         // 3 filas (2 columnas): reserva el alto del bloque
         for (int r = 0; r < 3; ++r) endRow();
@@ -485,10 +491,14 @@ private:
         // "cerca, medio, lejos" en metros; la compensación se aplica en la
         // cadena de salida (ganancia + retardo) por la consola.
         const float meters = spatialZ_.load(std::memory_order_relaxed) * 15.0f;
-        spatialReadout_->setText(juce::String::fromUTF8(
-            juce::String(gainDb, 1, true) + juce::String::fromUTF8(" dB de ganancia  ·  ")
-            + juce::String(delayMs, 1, true) + juce::String::fromUTF8(" ms de retardo  ·  ")
-            + juce::String(meters, 1, true) + juce::String::fromUTF8(" m de distancia (0 m = sin compensación)")),
+        // JUCE 7: el constructor String(valor, places, padWithZeros) de la
+        // v6 desapareció; (valor, decimales) pinta lo mismo para estos
+        // rangos (0..15). Y fromUTF8 ya no tiene overload de String (solo
+        // const char*): la suma ya es un String, no hace falta envolverla.
+        spatialReadout_->setText(
+            juce::String(gainDb, 1) + juce::String::fromUTF8(" dB de ganancia  ·  ")
+            + juce::String(delayMs, 1) + juce::String::fromUTF8(" ms de retardo  ·  ")
+            + juce::String(meters, 1) + juce::String::fromUTF8(" m de distancia (0 m = sin compensación)"),
             juce::dontSendNotification);
     }
 

@@ -523,15 +523,20 @@ void AcousticalAudioProcessor::getStateInformation(juce::MemoryBlock& destData) 
     // generador de 6 opciones. Se escribe en CADA guardado, así el primer
     // save tras la migración cierra el bucle: la migración (abajo) es
     // one-shot por proyecto.
-    juce::Var state = apvts.copyState();
+    //
+    // JUCE 7: la copa se maneja directamente como ValueTree. La versión
+    // original pasaba por juce::Var, que JUCE 7 ya no conecta con
+    // ValueTree (la conversión y el setProperty con bool skip-undo
+    // desaparecieron: ahora se pasa UndoManager*, nullptr si no interesa).
+    auto state = apvts.copyState();
     if (state.getProperty("genSourceMenu").toString().trim() != "6")
-        state.setProperty("genSourceMenu", "6", false);
-    if (const auto xml = state.createXml())
+        state.setProperty("genSourceMenu", "6", nullptr);
+    if (auto xml = state.createXml())
         copyXmlToBinary(*xml, destData);
 }
 
 void AcousticalAudioProcessor::setStateInformation(const void* data, int sizeInBytes) {
-    if (const auto xml = getXmlFromBinary(data, sizeInBytes)) {
+    if (auto xml = getXmlFromBinary(data, sizeInBytes)) {
         if (xml->hasTagName(apvts.state.getType())) {
             juce::ValueTree tree = juce::ValueTree::fromXml(*xml);
             // Migración one-shot del menú antiguo (v1.8, 5 opciones, ver
@@ -541,17 +546,21 @@ void AcousticalAudioProcessor::setStateInformation(const void* data, int sizeInB
             // Blanco→Blanco, Barrido→Barrido, Seno→Seno (1.0 en ambos). El
             // proyecto sigue sonando exactamente lo que sonaba.
             if (tree.getProperty("genSourceMenu").toString().trim() != "6") {
-                for (const auto& child : tree) {
+                for (auto child : tree) {
                     if (child.getProperty("id").toString() == "genSource") {
+                        // JUCE 7: el var ya no tiene toDouble(); la
+                        // conversión numérica va por sus operadores
+                        // de conversión implicitos.
                         const float raw =
-                            static_cast<float>(child.getProperty("value").toDouble());
+                            static_cast<float>(child.getProperty("value"));
                         const float migrated = acoustical::genmenu::migrateRawValue(raw);
-                        if (migrated != raw) child.setProperty("value", migrated, false);
+                        if (migrated != raw)
+                            child.setProperty("value", migrated, nullptr);
                         break;
                     }
                 }
             }
-            tree.setProperty("genSourceMenu", "6", false);
+            tree.setProperty("genSourceMenu", "6", nullptr);
             apvts.replaceState(tree);
             applyParameters();
         }
