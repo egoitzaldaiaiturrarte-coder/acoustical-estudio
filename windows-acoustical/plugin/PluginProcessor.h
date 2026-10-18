@@ -196,5 +196,12 @@ private:
     // su default interno (amplitud 0.5 = -6 dB) en vez de los -12 pedidos.
     float genLevelDb_ = -999.0f;
 
+    // Modo de trabajo del catálogo C (v1.8): el último valor de la opción
+    // "mode" ya APLICADO (0 = "Actual", sin modo). applyParameters() reescribe
+    // el resto de parámetros cuando cambia la opción: sin esta guarda, cada
+    // callback async desencadenado por la propia escritura re-aplicaría el
+    // modo en bucle.
+    int appliedMode_ = 0;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcousticalAudioProcessor)
 };

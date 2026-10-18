@@ -203,6 +203,18 @@ private:
 
 class AcousticalEditor : public juce::AudioProcessorEditor, private juce::Timer {
 public:
+    // Opciones del combo "Modo de trabajo" (v1.8): 0 = sin modo (ajustes
+    // libres), 1..6 = los perfiles del catálogo del core C compartido — el
+    // MISMO orden que la app de Windows y que el test del gate (test_modes).
+    static juce::StringArray modeItems() {
+        juce::StringArray names;
+        names.add(utf8("Actual (sin modo)"));
+        const auto* profiles = acoustical_mode_profiles();
+        for (int i = 0; i < ACOUSTICAL_MODE_COUNT; ++i)
+            names.add(utf8(profiles[i].name));
+        return names;
+    }
+
     explicit AcousticalEditor(AcousticalAudioProcessor& p)
         : AudioProcessorEditor(p), processor_(p),
           correccion_(p.parameters(), "correction", utf8("Corrección")),
@@ -212,6 +224,8 @@ public:
           suavizado_(p.parameters(), "smoothing", "Suavizado"),
           splObjetivo_(p.parameters(), "targetSpl", utf8("SPL objet.")),
           retardo_(p.parameters(), "delayMs", utf8("Retardo ms")),
+          nivelGen_(p.parameters(), "genLevel", utf8("Nivel dB")),
+          freqGen_(p.parameters(), "genFreq", utf8("Seno Hz")),
           intervaloAnalisis_(p.parameters(), "analysisInterval", utf8("Análisis"),
                              {"25 ms", "50 ms", "100 ms", "200 ms", "500 ms"}),
           bandas_(p.parameters(), "bandCount", "Bandas",
@@ -221,8 +235,11 @@ public:
           generador_(p.parameters(), "genSource", "Generador",
                      {utf8("Apagado"), utf8("Ruido rosa"), utf8("Ruido blanco"),
                       "Barrido", "Seno"}),
-          nivelGen_(p.parameters(), "genLevel", utf8("Nivel dB")),
-          freqGen_(p.parameters(), "genFreq", utf8("Seno Hz")) {
+          modo_(p.parameters(), "mode", utf8("Modo de trabajo"), modeItems()),
+          espX_(p.parameters(), "spatialX", utf8("Esp. X")),
+          espY_(p.parameters(), "spatialY", utf8("Esp. Y")),
+          espZ_(p.parameters(), "spatialZ", utf8("Esp. Z")),
+          espSize_(p.parameters(), "spatialSize", utf8("Tamaño")) {
         theme::apply(*this);
 
         addAndMakeVisible(correccion_);
@@ -261,6 +278,16 @@ public:
         for (auto* combo : { &intervaloAnalisis_, &bandas_, &fft_, &generador_ })
             addAndMakeVisible(*combo);
 
+        // v1.8: modo de trabajo (catálogo del core C) + fila de posición
+        // espacial con la compensación resultante (misma ley que app/móvil).
+        modo_.setLabelWidth(110);
+        for (auto* row : { &espX_, &espY_, &espZ_, &espSize_ })
+            addAndMakeVisible(*row);
+        spatialReadout_.setFont(juce::Font(11.0f));
+        spatialReadout_.setColour(juce::Label::textColourId, theme::textDim);
+        spatialReadout_.setJustificationType(juce::Justification::centredLeft);
+        addAndMakeVisible(spatialReadout_);
+
         eqCanvas_ = std::make_unique<EqCanvas>([this](int band, float gain) {
             processor_.engine().setBandGain(band, gain);
         });
@@ -292,7 +319,7 @@ public:
     void resized() override {
         auto bounds = getLocalBounds();
 
-        auto top = bounds.removeFromTop(106).reduced(8, 3);
+        auto top = bounds.removeFromTop(154).reduced(8, 3);
         auto rowA = top.removeFromTop(26);
         correccion_.setBounds(rowA.removeFromLeft(104));
         link_.setBounds(rowA.removeFromLeft(84));
@@ -319,6 +346,17 @@ public:
 
         auto rowD = top.removeFromTop(24);
         estado_.setBounds(rowD);
+
+        // v1.8: modo de trabajo (catálogo) + posición espacial (la ganancia y
+        // el retardo resultantes los lee la lectura de abajo; el audio los
+        // aplica en processBlock con la misma ley que la app y el móvil).
+        auto rowE = top.removeFromTop(24);
+        modo_.setBounds(rowE.removeFromLeft(230));
+        for (auto* row : { &espX_, &espY_, &espZ_, &espSize_ })
+            row->setBounds(rowE.removeFromLeft(218).reduced(2, 0));
+
+        auto rowF = top.removeFromTop(24);
+        spatialReadout_.setBounds(rowF.reduced(0, 2));
 
         // Fila inferior: tarjeta + panel de controles por ecu dinámico.
         auto bottom = bounds.removeFromBottom(376);
@@ -392,12 +430,39 @@ private:
         else if (processor_.engine().hasNoiseProfile())
             estado << utf8("  |  Perfil de ruido activo");
         estado_.setText(estado, juce::dontSendNotification);
+
+        // Lectura de la compensación espacial (v1.8), en vivo desde los
+        // parámetros del APVTS (misma ley del core C que la app y el móvil):
+        // ganancia + retardo de propagación que se aplican a la salida.
+        {
+            const auto& P = processor_.parameters();
+            const float x = P.getRawParameterValue("spatialX")->load();
+            const float y = P.getRawParameterValue("spatialY")->load();
+            const float z = P.getRawParameterValue("spatialZ")->load();
+            const float size = P.getRawParameterValue("spatialSize")->load();
+            float g = 0.0f, d = 0.0f;
+            acoustical_spatial_compensate(x, y, z, size, &g, &d);
+            const juce::String meters =
+                juce::String(z * 15.0f, 1, true) + utf8(" m");
+            spatialReadout_.setText(
+                (g != 0.0f || d > 0.0f)
+                    ? utf8("Espacio: ") + juce::String(g, 1, true) + utf8(" dB de ganancia · ")
+                      + juce::String(d, 1, true) + utf8(" ms de retardo · ") + meters
+                      + utf8(" de distancia")
+                    : utf8("Espacio: posición neutra (0 dB · 0 ms) — el elemento está a ")
+                      + meters + utf8(" con tamaño medio"),
+                juce::dontSendNotification);
+        }
     }
 
     AcousticalAudioProcessor& processor_;
     ParamToggle correccion_, link_, ruido_;
     ParamRow maxGain_, suavizado_, splObjetivo_, retardo_, nivelGen_, freqGen_;
     ParamCombo intervaloAnalisis_, bandas_, fft_, generador_;
+    // v1.8: modo de trabajo del catálogo + fila de posición espacial.
+    ParamCombo modo_;
+    ParamRow espX_, espY_, espZ_, espSize_;
+    juce::Label spatialReadout_;
     juce::TextButton referencia_, borrarRef_, capturarRuido_, cancelarRuido_, borrarRuido_;
     juce::Label estado_{"estado", juce::String()};
     std::unique_ptr<EqCanvas> eqCanvas_;

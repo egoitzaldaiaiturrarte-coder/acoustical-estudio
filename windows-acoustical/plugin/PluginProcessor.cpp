@@ -28,10 +28,43 @@ AcousticalAudioProcessor::createParameterLayout() {
         juce::ParameterID{"link", 1}, "Canales L/R enlazados", true));
     layout.add(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID{"targetSpl", 1}, utf8("SPL objetivo (dB)"),
-        juce::NormalisableRange<float>(40.0f, 100.0f, 0.5f), 75.0f));
+        juce::NormalisableRange<float>(30.0f, 110.0f, 0.5f), 75.0f));
     layout.add(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID{"delayMs", 1}, utf8("Retardo global (ms)"),
         juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 0.0f));
+
+    // --- Espacio (v1.8): posición del elemento que se escucha ---
+    // Ganancia (20·log10 distancia + tamaño + off-axis) y retardo de
+    // propagación según la posición: la MISMA ley que la app Windows y la app
+    // móvil (core C, acoustical_spatial_compensate), aplicada a la salida del
+    // plugin (ganancia post-EQ + el retardo suma a la línea global).
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"spatialX", 1}, utf8("Espacio X (izquierda↔derecha)"),
+        juce::NormalisableRange<float>(-1.0f, 1.0f, 0.05f), 0.0f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"spatialY", 1}, utf8("Espacio Y (frente↔detrás)"),
+        juce::NormalisableRange<float>(-1.0f, 1.0f, 0.05f), 0.0f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"spatialZ", 1}, utf8("Espacio Z (cerca↔lejos)"),
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.05f), 0.5f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"spatialSize", 1}, utf8("Tamaño del elemento"),
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.05f), 0.5f));
+
+    // --- Modo de trabajo (v1.8): perfil completo del catálogo compartido ---
+    // 0 = "Actual" (ajustes libres, sin modo); 1..6 = los perfiles del core
+    // C (Coche Normal / Aire libre, Estudio-Esc 1, Escenarios 2/3, PAs):
+    // elegir uno reescribe el resto de parámetros (applyParameters), y al
+    // arrancar el plugin el estado guardado se restaura por el APVTS.
+    {
+        juce::StringArray names;
+        names.add(utf8("Actual (sin modo)"));
+        const auto* profiles = acoustical_mode_profiles();
+        for (int i = 0; i < ACOUSTICAL_MODE_COUNT; ++i)
+            names.add(utf8(profiles[i].name));
+        layout.add(std::make_unique<juce::AudioParameterChoice>(
+            juce::ParameterID{"mode", 1}, utf8("Modo de trabajo"), names, 0));
+    }
     layout.add(std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID{"analysisInterval", 1}, utf8("Intervalo de análisis"),
         juce::StringArray{"25 ms", "50 ms", "100 ms", "200 ms", "500 ms"}, 1));
@@ -182,6 +215,62 @@ void AcousticalAudioProcessor::applyParameters() {
         }
         engine_.setSupportBands(i, support);
     }
+
+    // === Modo de trabajo (v1.8) ===
+    // El catálogo (core C: la MISMA tabla que la app Windows y el móvil) elige
+    // la opción "mode"; cuando cambia, aquí se REESCRIBEN el resto de
+    // parámetros con el perfil completo del modo (motor + 3 ecuas con sus
+    // bandas de apoyo + posición espacial). La opción 0 ("Actual") no escribe
+    // nada: los parámetros quedan libres. appliedMode_ guarda el último modo
+    // aplicado: sin esa guarda, la escritura de cada parámetro dispararía su
+    // propio callback async y el modo se re-aplicaría en bucle.
+    const int modeSel = static_cast<int>(l("mode"));
+    if (modeSel != appliedMode_) {
+        appliedMode_ = modeSel;
+        if (modeSel >= 1 && modeSel <= ACOUSTICAL_MODE_COUNT) {
+            const auto* m = &acoustical_mode_profiles()[modeSel - 1];
+            auto setRaw = [this](const String& id, float v) {
+                if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(v);
+            };
+            // choice del APVTS en JUCE 7: valor crudo = índice 0-based
+            auto setChoice = [this](const String& id, int index, int count) {
+                if (auto* p = apvts.getParameter(id))
+                    p->setValueNotifyingHost(
+                        juce::NormalisableRange<float>(0.0f,
+                            static_cast<float>(count - 1))
+                            .convertTo0to1(static_cast<float>(index)));
+            };
+            setRaw("targetSpl", m->targetSpl);
+            setRaw("maxGain", m->maxGainDb);
+            setRaw("smoothing", m->smoothingFactor);
+            setRaw("noiseSub", m->noiseSubtractionEnabled ? 1.0f : 0.0f);
+            setRaw("correction", m->correctionEnabled ? 1.0f : 0.0f);
+            setChoice("analysisInterval", m->analysisIntervalIndex, 5);
+            setChoice("bandCount", m->bandCountIndex, 5);
+            setChoice("fftSize", m->fftSizeIndex, 5);
+            for (int i = 0; i < 3; ++i) {
+                const String n(i + 1);
+                const auto& e = m->eqs[i];
+                setRaw("eq" + n + "Enabled", e.enabled ? 1.0f : 0.0f);
+                setRaw("eq" + n + "Interval", static_cast<float>(e.intervalMs));
+                setRaw("eq" + n + "Gain", e.maxGainDb);
+                setRaw("eq" + n + "Mixer", e.mixerLevel);
+                setRaw("eq" + n + "Speed", e.speedMultiplier);
+                setRaw("eq" + n + "Extras", static_cast<float>(e.extraSweeps));
+                setChoice("eq" + n + "Start", e.startFrom, 3);
+                for (int k = 1; k <= 4; ++k) {
+                    const String s(k);
+                    setRaw("eq" + n + "Sb" + s + "Freq", e.support[k - 1].frequencyHz);
+                    setRaw("eq" + n + "Sb" + s + "Gain", e.support[k - 1].gainDb);
+                    setRaw("eq" + n + "Sb" + s + "Q", e.support[k - 1].q);
+                }
+            }
+            setRaw("spatialX", m->spatialX);
+            setRaw("spatialY", m->spatialY);
+            setRaw("spatialZ", m->spatialZ);
+            setRaw("spatialSize", m->spatialSize);
+        }
+    }
 }
 
 void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/) {
@@ -293,9 +382,21 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             buffer.copyFrom(ch, 0, genBuf_.data(), numSamples);
     }
 
-    // 2. Retardo global (pasos de 0,01 ms) con latencia reportada al host (PDC)
+    // 2. Retardo global (pasos de 0,01 ms) con latencia reportada al host (PDC).
+    //    El retardo de propagación espacial (v1.8, paso siguiente) se SUMA a la
+    //    línea: la posición lejana se alínea con la cercana con la MISMA ley
+    //    del core C que usan la app y el móvil, y el host (Cubase) compensa el
+    //    total vía PDC.
+    const float sx = l("spatialX");
+    const float sy = l("spatialY");
+    const float sz = l("spatialZ");
+    const float ss = l("spatialSize");
+    float spatialGainDb = 0.0f, spatialDelayMs = 0.0f;
+    acoustical_spatial_compensate(sx, sy, sz, ss, &spatialGainDb, &spatialDelayMs);
+    const float spatialGain = (spatialGainDb != 0.0f)
+        ? std::pow(10.0f, spatialGainDb / 20.0f) : 1.0f;
     const int wantDelay =
-        static_cast<int>(std::lround(l("delayMs") * sr / 1000.0f));
+        static_cast<int>(std::lround((l("delayMs") + spatialDelayMs) * sr / 1000.0f));
     const int minRing = wantDelay + numSamples + 2;
     if (static_cast<int>(delayRing_[0].size()) < minRing) {
         const int newSize = minRing + 512;
@@ -360,6 +461,8 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     // 5. El espectro DESPUÉS (lo que sale hacia los altavoces) alimenta el
     //    motor: los cuatro procesos lo empujan hacia la referencia capturada.
+    //    Se toma ANTES de la ganancia espacial (paso 6): la compensación es
+    //    intencional y el bucle de corrección no debe tratarla de errar.
     if (monoBuf_.size() < static_cast<size_t>(numSamples)) monoBuf_.resize(numSamples);
     std::fill_n(mono, numSamples, 0.0f);
     for (int ch = 0; ch < juce::jmin(2, numOut); ++ch) {
@@ -367,6 +470,17 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         for (int s = 0; s < numSamples; ++s) mono[s] += src[s];
     }
     engine_.pushSamples(mono, numSamples, static_cast<int>(sr));
+
+    // 6. Ganancia espacial (v1.8): la mitad de la compensación (la ganancia;
+    //    el retardo ya viajó por la línea del paso 2) se aplica a la salida
+    //    final, post-EQ: "lejos y grande" llega con el mismo nivel que
+    //    "cerca y pequeño" en cualquier fuente (generador incluido).
+    if (spatialGain != 1.0f) {
+        for (int ch = 0; ch < juce::jmin(2, numOut); ++ch) {
+            float* data = buffer.getWritePointer(ch);
+            for (int s = 0; s < numSamples; ++s) data[s] *= spatialGain;
+        }
+    }
 }
 
 void AcousticalAudioProcessor::captureReferenceFromInput() {
