@@ -64,20 +64,22 @@ enum class BandCount(val count: Int, val label: String) {
 data class AudioConfig(
     // 96 kHz is fixed by design — sampling is no longer a manual control
     val sampleRate: SampleRate = SampleRate.SR_96000,
-    val fftSize: FftSize = FftSize.SIZE_2048,
-    val analysisInterval: AnalysisInterval = AnalysisInterval.NORMAL,
+    // v1.10.0 startup values (the six-mode catalog in the C core carries the
+    // same ones): FFT 8K, 25 ms analysis, 50 dB max gain, 0.05 smoothing.
+    val fftSize: FftSize = FftSize.SIZE_8192,
+    val analysisInterval: AnalysisInterval = AnalysisInterval.FAST,
     val bandCount: BandCount = BandCount.BANDS_10,
     val correctionEnabled: Boolean = true,
-    val maxGainDb: Float = 12f,
+    val maxGainDb: Float = 50f,
     val targetSpl: Float = 75f,
-    val smoothingFactor: Float = 0.3f,
+    val smoothingFactor: Float = 0.05f,
     // Cadence of the two-band correction sweep (ms). Default 500 ms = 2 Hz.
     val correctionPeriodMs: Long = 500L,
-    // Noise threshold fixed by design (120 dB reference) — no manual control
-    val noiseFloorDb: Float = -120f,
+    // Noise threshold fixed by design (v1.10.0: -140 dB reference) — no
+    // manual control
+    val noiseFloorDb: Float = -140f,
     val noiseSubtractionEnabled: Boolean = true,
     val audioDelayMs: Float = 25f,
-    val geoAutoAdjust: Boolean = false,
     val scenarioPreset: String = "CUSTOM"
 ) {
     /**
@@ -238,7 +240,5 @@ data class EngineState(
     val correctionActive: Float = 0f,
     val cpuLoadPercent: Float = 0f,
     val framesAnalyzed: Long = 0L,
-    val rt60Ms: Float = 0f,
-    val geoLocationLabel: String = "",
-    val geoAdjustmentApplied: Float = 0f
+    val rt60Ms: Float = 0f
 )

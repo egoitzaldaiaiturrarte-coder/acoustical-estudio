@@ -67,6 +67,9 @@ AcousticalAudioProcessor::createParameterLayout() {
         layout.add(std::make_unique<juce::AudioParameterChoice>(
             juce::ParameterID{"mode", 1}, utf8("Modo de trabajo"), names, 0));
     }
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"calib", 1}, utf8("Calibración SPL (dB)"),
+        juce::NormalisableRange<float>(-20.0f, 20.0f, 0.5f), 0.0f));
     layout.add(std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID{"analysisInterval", 1}, utf8("Intervalo de análisis"),
         juce::StringArray{"25 ms", "50 ms", "100 ms", "200 ms", "500 ms"}, 1));
@@ -139,7 +142,10 @@ AcousticalAudioProcessor::createParameterLayout() {
             layout.add(std::make_unique<juce::AudioParameterFloat>(
                 juce::ParameterID{"eq" + n + "Sb" + s + "Q", 1},
                 utf8("Ecu ") + n + utf8(" apoyo ") + s + " Q",
-                juce::NormalisableRange<float>(0.5f, 8.0f, 0.1f), 2.0f));
+                // v1.10.0: rango ampliado a 0,1 (mínimo) para que las bandas de
+                // apoyo del catálogo (Q 0,1, "lo más estrecha posible") no se
+                // recorten; antes 0,5-8 dejaba el valor en 0,5 al aplicar el modo.
+                juce::NormalisableRange<float>(0.1f, 10.0f, 0.1f), 2.0f));
         }
     }
     return layout;
@@ -197,6 +203,11 @@ void AcousticalAudioProcessor::applyParameters() {
     c.bandCount = static_cast<acoustical::BandCount>(static_cast<int>(l("bandCount")));
     c.fftSize = static_cast<acoustical::FftSize>(static_cast<int>(l("fftSize")));
     engine_.configure(c);
+
+    // v1.10.0: calibración SPL (misma propiedad del motor que el slider
+    // "Calibración SPL (dB)" de la app Windows y el móvil; no la pisa
+    // configure(), que solo gestiona los campos de la config).
+    engine_.setSplCalibrationOffset(static_cast<float>(l("calib")));
 
     engine_.setEqChannelLinked(l("link") > 0.5f);
     for (int i = 0; i < 3; ++i) {

@@ -136,8 +136,9 @@ void PhoneLink::pollDevices() {
         if (!endpointHost_.isEmpty()) state_.store(State::Connected);
     }
 
-    // Sondeo periódico de sincronización: trae los comandos del Hub que el
-    // móvil haya encolado (viajan en la respuesta "sync")
+    // Sondeo periódico de sincronización: trae la config que el móvil
+    // publique (v1.10.0: ya no viajan comandos del Hub — el hub se
+    // retiró —; el payload "sync" solo lleva la config del motor).
     if (state_.load() == State::Connected && ++syncPollCounter_ >= 3) {
         syncPollCounter_ = 0;
         requestSync();

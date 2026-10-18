@@ -12,8 +12,8 @@
 #include "SpectrumView.h"
 #include "RoutingMatrix.h"
 #include "SettingsPanel.h"
-#include "RouteHub.h"
-#include "HubPanel.h"
+// v1.10.0: el hub del PC (RouteHub.h / HubPanel.h) se retiró; la pestaña
+// "Ruteos" (RoutingMatrix) sigue siendo la de entradas/salidas.
 #include "PhoneLink.h"
 #include "RemoteAudioLink.h"
 #include "AsioBridgeClient.h"
@@ -122,8 +122,9 @@ public:
         syncButton_.setButtonText("Sincronizar");
         syncButton_.setTooltip(juce::String::fromUTF8("Sincronizar con el móvil (Wi-Fi / USB)"));
         // "Sincronizar" = el PC envía su configuración completa al móvil y
-        // procesa la respuesta (config del móvil en vivo + comandos de Hub)
-        // en el mismo intercambio.
+        // procesa la respuesta (la config del móvil en vivo) en el mismo
+        // intercambio. (v1.10.0: ya no hay comandos de Hub en la respuesta;
+        // el hub se retiró.)
         syncButton_.onClick = [this] {
             if (!phoneLink_) return;
             auto* pl = new juce::DynamicObject();
@@ -138,14 +139,14 @@ public:
         phoneLabel_.setColour(juce::Label::textColourId, theme::textDim);
 
         // === Selector de vista (los mismos nombres que las pestañas) ===
+        // v1.10.0: la pestaña "Hub" se retiró; renumerado 1-6.
         addAndMakeVisible(viewBox_);
         viewBox_.addItem(juce::String::fromUTF8("1 · EQ"), 1);
         viewBox_.addItem(juce::String::fromUTF8("2 · Ecuas dinámicos"), 2);
-        viewBox_.addItem(juce::String::fromUTF8("3 · Hub"), 3);
-        viewBox_.addItem(juce::String::fromUTF8("4 · Ruteos"), 4);
-        viewBox_.addItem(juce::String::fromUTF8("5 · Ajustes"), 5);
-        viewBox_.addItem(juce::String::fromUTF8("6 · Análisis"), 6);
-        viewBox_.addItem(juce::String::fromUTF8("7 · Audio"), 7);
+        viewBox_.addItem(juce::String::fromUTF8("3 · Ruteos"), 3);
+        viewBox_.addItem(juce::String::fromUTF8("4 · Ajustes"), 4);
+        viewBox_.addItem(juce::String::fromUTF8("5 · Análisis"), 5);
+        viewBox_.addItem(juce::String::fromUTF8("6 · Audio"), 6);
         viewBox_.setSelectedId(1, juce::dontSendNotification);
         viewBox_.onChange = [this] {
             tabs_->setCurrentTabIndex(viewBox_.getSelectedId() - 1, true);
@@ -213,8 +214,9 @@ public:
         phoneLink_->onSync = [this](const juce::var& payload) { applyPhoneSync(payload); };
         startuplog::log(juce::String::fromUTF8("consola: enlace del móvil listo"));
         // Puente de audio Wi-Fi (M2/M3): descubre los móviles por baliza; su
-        // micrófono pasa a ser una entrada del PC y las rutas del Hub pueden
-        // mandar audio a sus altavoces.
+        // micrófono pasa a ser una entrada del PC (fila en la pestaña Ruteos).
+        // (v1.10.0: la otra dirección del puente, PC → altavoces del móvil,
+        // la llamaba la ruta de red del Hub, que se retiró.)
         remoteAudio_ = std::make_unique<RemoteAudioLink>();
         remoteAudio_->setCodeProvider([pl = phoneLink_.get()] { return pl->pairCode(); });
         phoneLink_->onBeacon = [ra = remoteAudio_.get()](const juce::String& ip, const juce::var& info) {
@@ -260,13 +262,10 @@ public:
                 phoneLink_->setStatus(juce::String::fromUTF8("Ajustes recibidos del móvil"));
             }
         };
-        hub_ = std::make_unique<RouteHub>(deviceManager_);
-        hubPanel_ = std::make_unique<HubPanel>(*hub_, *remoteAudio_);
-        startuplog::log(juce::String::fromUTF8("consola: hub listo"));
+        // v1.10.0: sin hub del PC (tarjeta y pestaña retiradas).
         tabs_ = std::make_unique<juce::TabbedComponent>(juce::TabbedButtonBar::TabsAtTop);
         tabs_->addTab("EQ", theme::surface, eqCanvas_.get(), false);
         tabs_->addTab(juce::String::fromUTF8("Ecuas dinámicos"), theme::surface, &eqCardsPanel_, false);
-        tabs_->addTab("Hub", theme::surface, hubPanel_.get(), false);
         tabs_->addTab("Ruteos", theme::surface, routingMatrix_.get(), false);
         tabs_->addTab("Ajustes", theme::surface, settingsPanel_.get(), false);
         tabs_->addTab(juce::String::fromUTF8("Análisis"), theme::surface, spectrumView_.get(), false);
@@ -334,9 +333,9 @@ public:
             if (kc == 'Z') { mods.isShiftDown() ? redo() : undo(); return true; }
             if (kc == 'Y') { redo(); return true; }
         }
-        // Teclas 1-7: saltar directo a cada vista
+        // Teclas 1-6: saltar directo a cada vista
         const auto ch = key.getTextCharacter();
-        if (ch >= '1' && ch <= '7') {
+        if (ch >= '1' && ch <= '6') {
             tabs_->setCurrentTabIndex(ch - '1', true);
             return true;
         }
@@ -606,10 +605,8 @@ private:
             engine_.eqDspR().process(right.data(), numSamples);
         }
 
-        // Hub del sistema: la ruta principal aplica su fase/retardo/ganancia y
-        // las rutas auxiliares reciben la señal post-EQ (multiruta simultánea)
-        hub_->setStreamInfo(lastSampleRate_);
-        hub_->processMaster(left.data(), right.data(), numSamples, mono.data());
+        // v1.10.0: sin hub (la salida post-EQ va directa a la tarjeta; la
+        // ganancia global de la pestaña Ruteos sigue aplicándose debajo).
 
         // Volumen general (pestaña Ruteos): escala solo la salida a la tarjeta
         const float outGain = routingMatrix_->gain();
@@ -624,7 +621,7 @@ private:
         // (x lateral, y frente/detrás, z distancia 0–15 m, size del elemento)
         // se aplica ganancia (20·log10 distancia + tamaño + off-axis) y el
         // retardo de propagación d/343·1000 al final de la cadena (post-EQ +
-        // hub + nivel): "lejos y grande" llega al oído con el mismo nivel y
+        // nivel): "lejos y grande" llega al oído con el mismo nivel y
         // timing que "cerca y pequeño". Solo si hay compensación (el neutro
         // z=0.5/size=0.5/x=0 da 0 dB/0 ms y no toca la señal).
         {
@@ -897,21 +894,9 @@ private:
                 applyModeProfile(m);
         }
 
-        // Comando del Hub enviado desde la app móvil (por USB)
-        const auto hubCmd = obj->getProperty("hubCmd");
-        auto* hc = hubCmd.getDynamicObject();
-        if (hc != nullptr) {
-            const int route = static_cast<int>(static_cast<double>(hc->getProperty("route")));
-            const auto cmd = hc->getProperty("cmd").toString();
-            const double value = static_cast<double>(hc->getProperty("value"));
-            if (route >= 0 && route < RouteHub::NUM_ROUTES) {
-                if (cmd == "mute") hub_->setRouteMute(route, value > 0.5);
-                else if (cmd == "enable") hub_->setRouteEnabled(route, value > 0.5);
-                else if (cmd == "invert") hub_->setPhaseInvert(route, value > 0.5);
-                else if (cmd == "gain") hub_->setRouteGainDb(route, static_cast<float>(value));
-                else if (cmd == "delay") hub_->setDelayMs(route, static_cast<float>(value));
-            }
-        }
+        // v1.10.0: los comandos de hub que en su día venían de la app móvil
+        // ya no se procesan (el hub se retiró); el resto del handler de
+        // sincronización es el de siempre.
     }
 
     void refreshPresets() {
@@ -1048,16 +1033,14 @@ private:
     std::array<std::unique_ptr<DynamicEqCard>, 3> cards_;
     juce::Component eqCardsPanel_;
     std::unique_ptr<SpectrumView> spectrumView_;
-    // Puente de audio Wi-Fi (M2/M3). Declarado ANTES que routingMatrix_,
-    // hub_ y hubPanel_ (los usan por referencia) y que phoneLink_ (su
-    // proveedor de código la apunta): se destruye después de todos.
+    // Puente de audio Wi-Fi (M2/M3). Declarado ANTES que routingMatrix_
+    // (la usa por referencia) y que phoneLink_ (su proveedor de código la
+    // apunta): se destruye después de todos.
     std::unique_ptr<RemoteAudioLink> remoteAudio_;
     std::unique_ptr<RoutingMatrix> routingMatrix_;
     std::unique_ptr<SettingsPanel> settingsPanel_;
     std::unique_ptr<juce::AudioDeviceSelectorComponent> audioPanel_;
     std::unique_ptr<AudioTab> audioTab_;
-    std::unique_ptr<RouteHub> hub_;          // antes que hubPanel_ (orden de destrucción)
-    std::unique_ptr<HubPanel> hubPanel_;
 
     std::unique_ptr<PhoneLink> phoneLink_;
 

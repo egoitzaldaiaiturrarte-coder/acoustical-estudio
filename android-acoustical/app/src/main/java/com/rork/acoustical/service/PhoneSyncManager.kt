@@ -531,51 +531,6 @@ class PhoneSyncManager private constructor(context: Context) {
         out.flush()
     }
 
-    // === Hub del PC: comandos que viajan con la próxima sincronización ===
-
-    /** Encola un comando para el Hub de Windows (ruta 0 = principal, 1..4 auxiliares).
-     *  El primer envío arranca el servidor bajo demanda (idempotente): el
-     *  comando viaja en el próximo sondeo del PC y sin servidor no llegaría. */
-    fun sendHubCommand(route: Int, cmd: String, value: Double) {
-        start()
-        val json = buildJsonObject {
-            put("route", route)
-            put("cmd", cmd)
-            put("value", value)
-        }
-        synchronized(hubLock) {
-            pendingHubCommands.addLast(json)
-            // Evita colas infinitas si el PC está desconectado
-            while (pendingHubCommands.size > 8) pendingHubCommands.removeFirst()
-        }
-        _status.value = "Comando del Hub en cola: ruta ${route + 1} · $cmd"
-    }
-
-    private fun takePendingHubCommand(): JsonObject? =
-        synchronized(hubLock) { pendingHubCommands.removeFirstOrNull() }
-
-    private val hubLock = Any()
-    private val pendingHubCommands = ArrayDeque<JsonObject>()
-
-    /** Botón "Enviar mis ajustes al PC": deja los ajustes actuales encolados en
-     *  el estado pendiente. El PC, en su próximo sondeo (cada pocos segundos),
-     *  los aplica y lo confirma con un push "acked", con lo que se borra. */
-    fun pushMyConfigToPc() {
-        // Mismo motivo que en sendHubCommand: sin servidor corriendo el push
-        // no lo vería el PC en su próximo sondeo.
-        start()
-        val cfgText = localConfigJson
-        if (cfgText.isBlank()) {
-            _status.value = "Aún no hay ajustes que enviar al PC"
-            return
-        }
-        // localConfigJson es un objeto JSON válido (el ViewModel lo genera con
-        // buildJsonObject), así que basta con incrustarlo; el estado resultante
-        // es {"config":{...},"sendToPc":true}, que currentSyncJson() ya sabe leer.
-        val staged = """{"config":$cfgText,"sendToPc":true}"""
-        prefs.edit().putString(KEY_SYNC_STATE, staged).apply()
-        _status.value = "Enviando ajustes al PC… (se aplican en unos segundos)"
-    }
 
     // === Estado sincronizado ===
 
@@ -588,7 +543,6 @@ class PhoneSyncManager private constructor(context: Context) {
         // Sobrescribe el eco de la última config que el PC haya enviado.
         runCatching { Json.parseToJsonElement(localConfigJson).jsonObject }
             .onSuccess { out["config"] = it }
-        takePendingHubCommand()?.let { out["hubCmd"] = it }
         return "{\"type\":\"sync\",\"ok\":true,\"payload\":${JsonObject(out)}}"
     }
 

@@ -11,8 +11,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- v1.10.0: ACCESS_COARSE/FINE_LOCATION retirados junto con la
+         geolocalización (ya no hay ajuste de SPL/retardo ni de distancias
+         por GPS). -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- BLUETOOTH_SCAN con neverForLocation: la app solo lista/empareja
          dispositivos de audio y no usa el scan para derivar ubicación

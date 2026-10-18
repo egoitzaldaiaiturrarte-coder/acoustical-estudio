@@ -99,8 +99,8 @@ private:
     // referencia al pulsar "Capturar referencia".
     //
     // Anillo FIJO preasignado (array de capacidad máxima + head/tail
-    // atómicos), mismo patrón que RouteHub::Ring / RemoteAudioLink::Ring en
-    // app/: el std::deque + std::mutex anterior hacía reallocs en cada push
+    // atómicos), mismo patrón que RemoteAudioLink::Ring en app/: el
+    // std::deque + std::mutex anterior hacía reallocs en cada push
     // (malloc en el path RT) y un lock por bloque.
     //
     // Propiedad del anillo (SPSC, sin lock en el path de audio):

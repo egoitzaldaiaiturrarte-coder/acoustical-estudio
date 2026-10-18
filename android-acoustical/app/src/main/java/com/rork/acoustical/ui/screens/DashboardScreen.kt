@@ -337,67 +337,6 @@ fun DashboardScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Geo info card
-        if (state.geoInfo.hasFix) {
-            GlassCard(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Filled.LocationOn,
-                                contentDescription = null,
-                                tint = if (state.geoAutoAdjust) LimeActive else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = state.geoInfo.label,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                        if (state.geoAutoAdjust) {
-                            StatusPill(text = "Auto", color = LimeActive)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Altitud: %.0f m".format(state.geoInfo.altitude),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "v_sonido: %.0f m/s".format(state.geoInfo.speedOfSound),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = if (state.geoInfo.isOutdoor) "Exterior" else "Interior",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (state.geoInfo.isOutdoor) AmberAccent else CyanGlow
-                        )
-                    }
-                    if (state.geoAdjustmentApplied != 0f) {
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Corrección por altitud: %+.1f dB".format(state.geoAdjustmentApplied),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = AmberAccent
-                        )
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-
         // Noise profile card
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.fillMaxWidth()) {

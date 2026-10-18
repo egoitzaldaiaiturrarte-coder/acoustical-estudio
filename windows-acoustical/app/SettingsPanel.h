@@ -664,17 +664,23 @@ private:
 
         // Bandas de apoyo de frecuencia libre (4 por ecu, igual que en el móvil).
         // El valor inicial es la banda que el motor YA tiene: un modo del catálogo
-        // asigna frecuencias distintas por ecu (2.5k–20k / 63–4k / 20–83 Hz) y el
-        // panel las refleja al redibujarse; sin modo activo, la serie geométrica
+        // asigna frecuencias distintas por ecu (2.5k–20k / 63–4k / 20–83 Hz) y
+        // el panel las refleja al redibujarse; sin modo activo, la serie geométrica
         // de siempre (250/1k/4k/16k).
+        // v1.10.0: la Q también es editable (como en el móvil, 0,1–10): el
+        // catálogo arranca las bandas a la Q más estrecha (0,1) y tocar un
+        // slider de frecuencia/ganancia ya no las reponía a 2,0 de siempre.
         const auto currentBands = engine_.supportBands(index);
         for (int b = 0; b < 4; ++b) {
             const float defFreq = 250.0f * std::pow(4.0f, b);
             const float defGain = 0.0f;
+            const float defQ = 2.0f;
             const float initFreq = b < static_cast<int>(currentBands.size()) ? currentBands[b].frequencyHz : defFreq;
             const float initGain = b < static_cast<int>(currentBands.size()) ? currentBands[b].gainDb : defGain;
+            const float initQ = b < static_cast<int>(currentBands.size()) ? currentBands[b].q : defQ;
             supportFreq_[index][b] = initFreq;
             supportGain_[index][b] = initGain;
+            supportQ_[index][b] = initQ;
             addSlider("Apoyo " + juce::String(b + 1) + juce::String::fromUTF8(" · frecuencia"), 20, 20000, 1,
                       initFreq, [this, index, b](double v) {
                           supportFreq_[index][b] = static_cast<float>(v);
@@ -687,13 +693,19 @@ private:
                           pushSupportBands(index);
                       }, 1.0, 2);
             endRow();
+            addSlider("Apoyo " + juce::String(b + 1) + juce::String::fromUTF8(" · Q"), 0.1, 10, 0.1, initQ,
+                      [this, index, b](double v) {
+                          supportQ_[index][b] = static_cast<float>(v);
+                          pushSupportBands(index);
+                      }, 1.0, 1);
+            endRow();
         }
     }
 
     void pushSupportBands(int index) {
         std::vector<acoustical::SupportBand> bands;
         for (int b = 0; b < 4; ++b)
-            bands.push_back({supportFreq_[index][b], supportGain_[index][b], 2.0f});
+            bands.push_back({supportFreq_[index][b], supportGain_[index][b], supportQ_[index][b]});
         engine_.setSupportBands(index, bands);
     }
 
@@ -725,6 +737,7 @@ private:
     float supportFreq_[3][4] = {{250, 1000, 4000, 12000}, {250, 1000, 4000, 12000},
                                 {250, 1000, 4000, 12000}};
     float supportGain_[3][4] = {};
+    float supportQ_[3][4] = {{2, 2, 2, 2}, {2, 2, 2, 2}, {2, 2, 2, 2}};
 
     acoustical::AcousticalEngine& engine_;
     PhoneLink* phone_ = nullptr;

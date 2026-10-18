@@ -86,12 +86,16 @@ data class ModeProfile(
  * The six startup work modes, in the SAME order and with the SAME values
  * as the C table `kModeProfiles` (see the KDoc of [ModeProfile]).
  *
- * Agreed invariants (mirrored by `dsp/test_modes.cpp`):
- *  - all start with max gain 50 dB, 124 bands, FFT 2048, 25 ms analysis,
+ * Agreed invariants (mirrored by `dsp/test_modes.cpp`, v1.10.0 values):
+ *  - all start with max gain 50 dB, 124 bands, FFT 8192, 25 ms analysis,
  *    smoothing 0.05 and the three dynamic EQs active;
+ *  - the three EQs share decision interval 100 ms, 80 % mixer and 6 extra
+ *    sweeps per decision; per-EQ max gain 12/6/3 dB and smoothing speed
+ *    ×4/×2/×0.5;
  *  - one shared support-band bank per EQ across all six modes:
  *    EQ 1 trebles 2.5k/5k/10k/20k, EQ 2 mids 63/250/1k/4k,
- *    EQ 3 sub-bass 20/41/62/83 Hz, all at 0 dB with Q 2;
+ *    EQ 3 sub-bass 20/41/62/83 Hz, all at 0 dB with the narrowest possible Q
+ *    (0.1, the slider minimum);
  *  - target SPLs 78/97/89/91/93/103 dB (PAs needs the unified 30–110 range);
  *  - the phone's engine is analysis-only, so the generator part of the C
  *    table (Silence) has no target here: test signals are on-demand.
@@ -99,7 +103,8 @@ data class ModeProfile(
 object ModeProfiles {
     const val COUNT = 6
 
-    private fun band(hz: Float): SupportBand = SupportBand(frequencyHz = hz, gainDb = 0f, q = 2f)
+    private fun band(hz: Float): SupportBand =
+        SupportBand(frequencyHz = hz, gainDb = 0f, q = 0.1f)
 
     /** The three-EQ bank, identical in the six modes (zones: trebles / mids / sub). */
     private val bank: List<List<SupportBand>> = listOf(
@@ -108,21 +113,26 @@ object ModeProfiles {
         listOf(band(20f), band(41f), band(62f), band(83f))
     )
 
-    private fun eq(startFrom: Int, zone: Int): ModeEqProfile = ModeEqProfile(
+    /**
+     * One entry of the three-EQ bank (v1.10.0): shared interval 100 ms,
+     * 6 extra sweeps, 0.8 mixer; per-EQ max gain and smoothing speed.
+     */
+    private fun eq(startFrom: Int, maxGainDb: Float, speedMultiplier: Float,
+                   zone: Int): ModeEqProfile = ModeEqProfile(
         enabled = true,
         startFrom = startFrom,
-        intervalMs = 800,
-        maxGainDb = 12f,
+        intervalMs = 100,
+        maxGainDb = maxGainDb,
         mixerLevel = 0.8f,
-        speedMultiplier = 1.0f,
-        extraSweeps = 1,
+        speedMultiplier = speedMultiplier,
+        extraSweeps = 6,
         support = bank[zone]
     )
 
     private val commonEqs: List<ModeEqProfile> = listOf(
-        eq(startFrom = 0, zone = 0),  // EQ 1: where needed, treble bank
-        eq(startFrom = 1, zone = 1),  // EQ 2: bottom-up, mid bank
-        eq(startFrom = 2, zone = 2)   // EQ 3: top-down, sub bank
+        eq(startFrom = 0, maxGainDb = 12f, speedMultiplier = 4f, zone = 0),   // EQ 1: where needed, treble bank
+        eq(startFrom = 1, maxGainDb = 6f,  speedMultiplier = 2f, zone = 1),   // EQ 2: bottom-up, mid bank
+        eq(startFrom = 2, maxGainDb = 3f,  speedMultiplier = 0.5f, zone = 2) // EQ 3: top-down, sub bank
     )
 
     val ALL: List<ModeProfile> = listOf(
@@ -130,7 +140,7 @@ object ModeProfiles {
             id = "carro-normal",
             name = "Coche · Normal",
             targetSpl = 78f, maxGainDb = 50f,
-            bandCountIndex = 4, fftSizeIndex = 2, analysisIntervalIndex = 0,
+            bandCountIndex = 4, fftSizeIndex = 4, analysisIntervalIndex = 0,
             smoothingFactor = 0.05f,
             correctionEnabled = true, noiseSubtractionEnabled = true,
             audioDelayMs = 0f,
@@ -141,7 +151,7 @@ object ModeProfiles {
             id = "carro-aire-libre",
             name = "Coche · Aire libre",
             targetSpl = 97f, maxGainDb = 50f,
-            bandCountIndex = 4, fftSizeIndex = 2, analysisIntervalIndex = 0,
+            bandCountIndex = 4, fftSizeIndex = 4, analysisIntervalIndex = 0,
             smoothingFactor = 0.05f,
             correctionEnabled = false, noiseSubtractionEnabled = true,
             audioDelayMs = 0f,
@@ -152,7 +162,7 @@ object ModeProfiles {
             id = "estudio-esc1",
             name = "Estudio · Escenario 1",
             targetSpl = 89f, maxGainDb = 50f,
-            bandCountIndex = 4, fftSizeIndex = 2, analysisIntervalIndex = 0,
+            bandCountIndex = 4, fftSizeIndex = 4, analysisIntervalIndex = 0,
             smoothingFactor = 0.05f,
             correctionEnabled = true, noiseSubtractionEnabled = true,
             audioDelayMs = 0f,
@@ -163,7 +173,7 @@ object ModeProfiles {
             id = "escenario2",
             name = "Escenario 2",
             targetSpl = 91f, maxGainDb = 50f,
-            bandCountIndex = 4, fftSizeIndex = 2, analysisIntervalIndex = 0,
+            bandCountIndex = 4, fftSizeIndex = 4, analysisIntervalIndex = 0,
             smoothingFactor = 0.05f,
             correctionEnabled = false, noiseSubtractionEnabled = false,
             audioDelayMs = 0f,
@@ -174,7 +184,7 @@ object ModeProfiles {
             id = "escenario3",
             name = "Escenario 3",
             targetSpl = 93f, maxGainDb = 50f,
-            bandCountIndex = 4, fftSizeIndex = 2, analysisIntervalIndex = 0,
+            bandCountIndex = 4, fftSizeIndex = 4, analysisIntervalIndex = 0,
             smoothingFactor = 0.05f,
             correctionEnabled = true, noiseSubtractionEnabled = true,
             audioDelayMs = 0f,
@@ -185,7 +195,7 @@ object ModeProfiles {
             id = "pas",
             name = "PAs",
             targetSpl = 103f, maxGainDb = 50f,
-            bandCountIndex = 4, fftSizeIndex = 2, analysisIntervalIndex = 0,
+            bandCountIndex = 4, fftSizeIndex = 4, analysisIntervalIndex = 0,
             smoothingFactor = 0.05f,
             correctionEnabled = true, noiseSubtractionEnabled = true,
             audioDelayMs = 0f,

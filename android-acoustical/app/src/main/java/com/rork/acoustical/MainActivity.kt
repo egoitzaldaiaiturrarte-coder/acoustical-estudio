@@ -46,17 +46,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Permissions required for the full workflow: measuring, GPS tracking,
-     * Bluetooth output control, notifications and — on Android 14+ — local
-     * Wi-Fi access. Bluetooth runtime permissions only exist on Android 12+,
-     * NEARBY_WIFI_DEVICES on Android 13+.
+     * Permissions required for the full workflow: audio, Bluetooth output
+     * control, notifications and — on Android 14+ — local Wi-Fi access.
+     * Bluetooth runtime permissions only exist on Android 12+,
+     * NEARBY_WIFI_DEVICES on Android 13+. (v1.10.0: la localización se
+     * retiró con la geolocalización; ya no se pide ACCESS_*_LOCATION.)
      */
     private val requiredPermissions: Array<String>
         get() = buildList {
             add(Manifest.permission.RECORD_AUDIO)
             add(Manifest.permission.POST_NOTIFICATIONS)
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
-            add(Manifest.permission.ACCESS_COARSE_LOCATION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 add(Manifest.permission.BLUETOOTH_CONNECT)
                 add(Manifest.permission.BLUETOOTH_SCAN)

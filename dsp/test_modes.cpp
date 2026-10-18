@@ -1,9 +1,11 @@
 // test_modes.cpp — el catálogo de modos del núcleo compartido (los 6 perfiles
 // de arranque: Coche Normal / Coche Aire libre / Estudio-Esc 1 / Esc 2 /
-// Esc 3 / PAs). Fija los valores acordados para que las tres versiones (el
-// catálogo C que leen Windows y el VST, y la copia Kotlin de Android) no
-// puedan divergir: si alguien cambia una frecuencia, un SPL o una banda del
-// banco, este test obliga a actualizar también el fixture espejo.
+// Esc 3 / PAs). Fija los valores acordados de v1.10.0 (motor: 50 dB, 124
+// bandas, FFT 8192, análisis 25 ms, suavizado 0.05; ecuas: 100 ms, 12/6/3 dB,
+// ×4/×2/×0.5, 6 barridos extra, mezclador 80 %, Q 0.1) para que las tres
+// versiones (el catálogo C que leen Windows y el VST, y la copia Kotlin de
+// Android) no puedan divergir: si alguien cambia una frecuencia, un SPL o una
+// banda del banco, este test obliga a actualizar también el fixture espejo.
 #include "acoustical_dsp.h"
 
 #include <cmath>
@@ -30,9 +32,11 @@ int main() {
     CHECK(all != nullptr, "el catálogo existe");
     if (!all) return 1;
 
-    // Invariantes comunes a los SEIS modos (acordado: todos arrancan con
-    // ganancia máx 50 dB, 124 bandas · 2048 FFT · análisis 25 ms, suavizado
-    // 0.05, generador en Silencio y los 3 ecuas activos).
+    // Invariantes comunes a los SEIS modos (v1.10.0: todos arrancan con
+    // ganancia máx 50 dB, 124 bandas · 8192 FFT · análisis 25 ms, suavizado
+    // 0.05, generador en Silencio, los 3 ecuas activos, intervalo de
+    // decisión 100 ms, 6 barridos extra, mezclador 80 % y bandas de apoyo a
+    // la Q más estrecha (0.1); ganancias 12/6/3 y velocidad ×4/×2/×0.5).
     for (int i = 0; i < ACOUSTICAL_MODE_COUNT; ++i) {
         const auto& m = all[i];
         std::printf("  %-16s  SPL %.0f  corr=%d sub=%d  z=%.1f size=%.1f\n",
@@ -41,18 +45,26 @@ int main() {
         CHECK(m.id != nullptr && m.name != nullptr, "id/name presentes");
         CHECK(nearF(m.maxGainDb, 50.0f), "ganancia máx 50 dB");
         CHECK(m.bandCountIndex == 4, "124 bandas (Ultra)");
-        CHECK(m.fftSizeIndex == 2, "FFT 2048");
+        CHECK(m.fftSizeIndex == 4, "FFT 8192");
         CHECK(m.analysisIntervalIndex == 0, "análisis 25 ms");
         CHECK(nearF(m.smoothingFactor, 0.05f), "suavizado 0.05");
         CHECK(m.generatorWaveform == ACOUSTICAL_WAVE_SILENCE, "generador en Silencio");
+        const float expectGain[3] = {12.0f, 6.0f, 3.0f};
+        const float expectSpeed[3] = {4.0f, 2.0f, 0.5f};
         for (int e = 0; e < 3; ++e) {
             CHECK(m.eqs[e].enabled == 1, "los 3 ecuas dinámicos activos");
-            CHECK(m.eqs[e].intervalMs > 0 && m.eqs[e].intervalMs <= 2000, "intervalo en rango");
+            CHECK(m.eqs[e].intervalMs == 100, "intervalo de decisión 100 ms");
+            CHECK(nearF(m.eqs[e].maxGainDb, expectGain[e]),
+                 "ganancia máx por ecu 12/6/3 dB");
+            CHECK(nearF(m.eqs[e].speedMultiplier, expectSpeed[e]),
+                 "velocidad de suavizado ×4/×2/×0.5");
+            CHECK(nearF(m.eqs[e].mixerLevel, 0.8f), "mezclador 80 %");
+            CHECK(m.eqs[e].extraSweeps == 6, "6 barridos extra por decisión");
             for (int k = 0; k < 4; ++k) {
                 const auto& b = m.eqs[e].support[k];
                 CHECK(b.frequencyHz > 0.0f && b.frequencyHz <= 20000.0f, "banda de apoyo en rango");
                 CHECK(b.gainDb == 0.0f, "banda de apoyo neutra (0 dB) al arrancar");
-                CHECK(nearF(b.q, 2.0f), "Q 2 en las bandas de apoyo");
+                CHECK(nearF(b.q, 0.1f, 0.005f), "Q 0.1 (banda lo más estrecha posible)");
             }
         }
         CHECK(m.spatialX >= -1.0f && m.spatialX <= 1.0f, "x en [-1,1]");

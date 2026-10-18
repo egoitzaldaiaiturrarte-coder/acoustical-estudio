@@ -104,17 +104,20 @@ struct DynamicEqConfig {
 
 struct AudioConfig {
     SampleRate sampleRate = SampleRate::Hz96000;
-    FftSize fftSize = FftSize::S2048;
-    AnalysisInterval analysisInterval = AnalysisInterval::Normal50;
+    // v1.10.0 startup values (same as the six-mode catalog in the C core
+    // dsp/acoustical_dsp.c): FFT 8K, 25 ms analysis, 50 dB max gain,
+    // 0.05 smoothing.
+    FftSize fftSize = FftSize::S8192;
+    AnalysisInterval analysisInterval = AnalysisInterval::Fast25;
     BandCount bandCount = BandCount::B10;
     bool correctionEnabled = true;
-    float maxGainDb = 12.0f;
+    float maxGainDb = 50.0f;
     float targetSpl = 75.0f;
-    float smoothingFactor = 0.3f;
-    float noiseFloorDb = -120.0f;
+    float smoothingFactor = 0.05f;
+    // Noise threshold fixed by design (v1.10.0: -140 dB reference).
+    float noiseFloorDb = -140.0f;
     bool noiseSubtractionEnabled = true;
     float audioDelayMs = 25.0f;
-    bool geoAutoAdjust = false;
     std::string scenarioPreset = "CUSTOM";
     // Cadencia de la corrección rápida (ms). A menor valor, más rápido se
     // recorre el espectro de bandas; 500 ms es el valor original.

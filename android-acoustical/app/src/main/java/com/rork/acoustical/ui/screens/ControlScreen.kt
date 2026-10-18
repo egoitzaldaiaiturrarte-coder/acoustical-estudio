@@ -58,7 +58,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.rork.acoustical.domain.model.BitDepth
-import com.rork.acoustical.domain.model.DistanceStep
 import com.rork.acoustical.domain.model.PanZone
 import com.rork.acoustical.domain.model.ProbeQuality
 import com.rork.acoustical.domain.model.SpatialPosition
@@ -91,7 +90,6 @@ fun ControlScreen(
     val compensation = state.splCompensation
 
     var showAutoCheck by remember { mutableStateOf(false) }
-    var showDistanceTool by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     Box(
@@ -281,58 +279,6 @@ fun ControlScreen(
             }
 
             Spacer(modifier = Modifier.height(10.dp))
-
-            // Distance measurement card
-            val dm = state.distanceMeasure
-            GlassCard(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                "Distancia emisor → receptor",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = when {
-                                    dm.effectiveDistanceM != null ->
-                                        "%.2f m · delay %.1f ms · %+.1f dB".format(
-                                            dm.effectiveDistanceM!!, dm.delayMs ?: 0f, dm.gainCompensationDb ?: 0f
-                                        )
-                                    else -> "Mide con GPS para automatizar delay y ganancia"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (dm.effectiveDistanceM != null) CyanGlow else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        if (dm.step == DistanceStep.DONE) {
-                            StatusPill(text = "OK", color = LimeActive)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = { showDistanceTool = true },
-                        modifier = Modifier.fillMaxWidth().height(44.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = CyanPrimary.copy(alpha = 0.2f),
-                            contentColor = CyanGlow
-                        )
-                    ) {
-                        Icon(Icons.Filled.Straighten, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Medir distancias", fontWeight = FontWeight.SemiBold)
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
             // Walkie-talkie card
             WalkieCard(
                 peers = state.meshPeers,
@@ -471,33 +417,6 @@ fun ControlScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Navigation to output mix and musician mode
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { navController.navigate("output_mix") },
-                    modifier = Modifier.weight(1f).height(44.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(Icons.Filled.Speaker, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Salidas")
-                }
-                OutlinedButton(
-                    onClick = { navController.navigate("musician") },
-                    modifier = Modifier.weight(1f).height(44.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Músico")
-                }
-            }
-
             Spacer(modifier = Modifier.height(24.dp))
         }
 
@@ -518,22 +437,6 @@ fun ControlScreen(
             }
         }
 
-        // Distance measurement bottom sheet
-        if (showDistanceTool) {
-            ModalBottomSheet(
-                onDismissRequest = { showDistanceTool = false },
-                sheetState = sheetState,
-                containerColor = MaterialTheme.colorScheme.surface
-            ) {
-                DistanceMeasurePanel(
-                    measure = state.distanceMeasure,
-                    onCapture = { viewModel.captureDistancePoint() },
-                    onAdjust = { coarse, up -> viewModel.adjustMeasuredDistance(coarse, up) },
-                    onApply = { viewModel.applyDistanceAutomation() },
-                    onReset = { viewModel.resetDistanceMeasure() }
-                )
-            }
-        }
     }
 }
 
@@ -742,202 +645,6 @@ private fun WalkieCard(
     }
 }
 
-@Composable
-private fun DistanceMeasurePanel(
-    measure: com.rork.acoustical.domain.model.DistanceMeasurement,
-    onCapture: () -> Unit,
-    onAdjust: (coarse: Boolean, up: Boolean) -> Unit,
-    onApply: () -> Unit,
-    onReset: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 16.dp)
-    ) {
-        Text(
-            "Medición emisor → receptor",
-            style = MaterialTheme.typography.titleMedium,
-            color = CyanGlow,
-            fontWeight = FontWeight.SemiBold
-        )
-        Text(
-            "Un toque en el emisor, otro en el punto de chequeo. El GPS propone el sitio exacto.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Step indicator
-        Text(
-            text = when (measure.step) {
-                DistanceStep.EMITTER -> "1 · Toca para capturar el EMISOR"
-                DistanceStep.RECEIVER -> "2 · Toca para capturar el RECEPTOR"
-                DistanceStep.DONE -> "3 · Ajusta y aplica la automatización"
-            },
-            style = MaterialTheme.typography.labelMedium,
-            color = AmberAccent,
-            fontWeight = FontWeight.SemiBold
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Button(
-            onClick = onCapture,
-            modifier = Modifier.fillMaxWidth().height(48.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = CyanPrimary,
-                contentColor = Color.Black
-            )
-        ) {
-            Text(
-                when (measure.step) {
-                    DistanceStep.EMITTER -> "Capturar emisor (GPS)"
-                    DistanceStep.RECEIVER -> "Capturar receptor (GPS)"
-                    DistanceStep.DONE -> "Nueva medición"
-                },
-                fontWeight = FontWeight.SemiBold
-            )
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Captured points
-        measure.emitter?.let { e ->
-            Text(
-                "Emisor: %.5f, %.5f · %.1fm".format(e.latitude, e.longitude, e.altitude),
-                style = MaterialTheme.typography.labelSmall,
-                color = CyanGlow
-            )
-        }
-        measure.receiver?.let { r ->
-            Text(
-                "Receptor: %.5f, %.5f · %.1fm".format(r.latitude, r.longitude, r.altitude),
-                style = MaterialTheme.typography.labelSmall,
-                color = CyanGlow
-            )
-        }
-
-        val distance = measure.effectiveDistanceM
-        if (distance != null) {
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Results with decimals
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                GlassCard(modifier = Modifier.weight(1f)) {
-                    Column {
-                        Text("Distancia", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            "%.2f m".format(distance),
-                            style = MaterialTheme.typography.titleLarge,
-                            color = CyanGlow,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-                GlassCard(modifier = Modifier.weight(1f)) {
-                    Column {
-                        Text("Delay", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            "%.1f ms".format(measure.delayMs ?: 0f),
-                            style = MaterialTheme.typography.titleLarge,
-                            color = AmberAccent,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-                GlassCard(modifier = Modifier.weight(1f)) {
-                    Column {
-                        Text("Ganancia", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            "%+.1f dB".format(measure.gainCompensationDb ?: 0f),
-                            style = MaterialTheme.typography.titleLarge,
-                            color = LimeActive,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Scale button: held = coarse, released = fine
-            var coarseHeld by remember { mutableStateOf(false) }
-            Text(
-                "Escala: " + if (coarseHeld) "GRANDE (0.5 m por toque)" else "FINA (0.01 m por toque)",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (coarseHeld) AmberAccent else CyanGlow,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (coarseHeld) AmberAccent else SurfaceElevated)
-                        .pointerInput(Unit) {
-                            detectTapGestures(
-                                onPress = {
-                                    coarseHeld = true
-                                    try {
-                                        awaitRelease()
-                                    } finally {
-                                        coarseHeld = false
-                                    }
-                                }
-                            )
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "ESCALA",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (coarseHeld) Color.Black else CyanGlow,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                MiniAdjustButton(icon = Icons.Filled.Remove) { onAdjust(coarseHeld, false) }
-                MiniAdjustButton(icon = Icons.Filled.Add) { onAdjust(coarseHeld, true) }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Button(
-                onClick = onApply,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = CyanPrimary,
-                    contentColor = Color.Black
-                )
-            ) {
-                Text("Aplicar automatización", fontWeight = FontWeight.SemiBold)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        androidx.compose.material3.TextButton(
-            onClick = onReset,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Reiniciar medición", color = CoralAlert)
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-    }
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

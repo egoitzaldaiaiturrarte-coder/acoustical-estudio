@@ -2,7 +2,8 @@
 // del móvil editable desde la propia ventana (automatizable vía APVTS).
 //  - Barra maestra: corrección, link, ruido, captura de referencia (pre-EQ),
 //    gestión del perfil de ruido, ganancia máx, suavizado, SPL objetivo,
-//    retardo global, análisis/bandas/FFT y generador de referencia.
+//    retardo global, calibración SPL (v1.10.0), análisis/bandas/FFT y
+//    generador de referencia.
 //  - EQ grande con las bandas y los highlights de los tres barridos.
 //  - Por ecu dinámico: tarjeta en vivo + panel (activo, arranque, intervalo,
 //    ganancia, mezclador, velocidad, extras y 4 bandas de apoyo).
@@ -224,6 +225,7 @@ public:
           suavizado_(p.parameters(), "smoothing", "Suavizado"),
           splObjetivo_(p.parameters(), "targetSpl", utf8("SPL objet.")),
           retardo_(p.parameters(), "delayMs", utf8("Retardo ms")),
+          calib_(p.parameters(), "calib", utf8("Calibración dB")),
           nivelGen_(p.parameters(), "genLevel", utf8("Nivel dB")),
           freqGen_(p.parameters(), "genFreq", utf8("Seno Hz")),
           intervaloAnalisis_(p.parameters(), "analysisInterval", utf8("Análisis"),
@@ -273,7 +275,7 @@ public:
         addAndMakeVisible(estado_);
 
         for (auto* row : { &maxGain_, &suavizado_, &splObjetivo_, &retardo_,
-                           &nivelGen_, &freqGen_ })
+                           &calib_, &nivelGen_, &freqGen_ })
             addAndMakeVisible(*row);
         for (auto* combo : { &intervaloAnalisis_, &bandas_, &fft_, &generador_ })
             addAndMakeVisible(*combo);
@@ -331,10 +333,13 @@ public:
         borrarRuido_.setBounds(rowA.removeFromLeft(96).reduced(0, 2));
 
         auto rowB = top.removeFromTop(26);
-        maxGain_.setBounds(rowB.removeFromLeft(250));
-        suavizado_.setBounds(rowB.removeFromLeft(250));
-        splObjetivo_.setBounds(rowB.removeFromLeft(250));
-        retardo_.setBounds(rowB.removeFromLeft(250));
+        // v1.10.0: quinta fila para la calibración SPL (misma que el slider
+        // de la app Windows y del móvil); las cinco caben en la fila (220 px).
+        maxGain_.setBounds(rowB.removeFromLeft(220));
+        suavizado_.setBounds(rowB.removeFromLeft(220));
+        splObjetivo_.setBounds(rowB.removeFromLeft(220));
+        retardo_.setBounds(rowB.removeFromLeft(220));
+        calib_.setBounds(rowB.removeFromLeft(220));
 
         auto rowC = top.removeFromTop(26);
         intervaloAnalisis_.setBounds(rowC.removeFromLeft(180));
@@ -459,7 +464,7 @@ private:
 
     AcousticalAudioProcessor& processor_;
     ParamToggle correccion_, link_, ruido_;
-    ParamRow maxGain_, suavizado_, splObjetivo_, retardo_, nivelGen_, freqGen_;
+    ParamRow maxGain_, suavizado_, splObjetivo_, retardo_, calib_, nivelGen_, freqGen_;
     ParamCombo intervaloAnalisis_, bandas_, fft_, generador_;
     // v1.8: modo de trabajo del catálogo + fila de posición espacial.
     ParamCombo modo_;

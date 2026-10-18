@@ -363,7 +363,8 @@ void RemoteAudioLink::sendControl(const juce::String& ip, const juce::String& js
 }
 
 // ============================================================
-// M3: audio a los altavoces del móvil (lo llama la ruta de red del Hub)
+// M3: audio a los altavoces del móvil (v1.10.0: el llamador, la
+// ruta de red del Hub, se retiró; el envío queda en el enlace)
 // ============================================================
 
 void RemoteAudioLink::sendToPhone(const juce::String& ip, const float* L,

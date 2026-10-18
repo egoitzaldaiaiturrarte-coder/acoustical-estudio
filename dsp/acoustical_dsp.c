@@ -469,13 +469,17 @@ void acoustical_spatial_compensate(float x, float y, float z, float size,
  * =========================================================================
  *
  * Los SEIS perfiles de arranque del sistema de modos, con los
- * valores acordados (todos: ganancia máx 50 dB, 124 bandas · FFT 2048 ·
- * análisis 25 ms, suavizado 0.05, generador en Silencio y el banco de
- * bandas de apoyo por ecu asignado por zonas de frecuencia):
+ * valores acordados (v1.10.0; todos: ganancia máx 50 dB, 124 bandas ·
+ * FFT 8192 · análisis 25 ms, suavizado 0.05, generador en Silencio y el
+ * banco de bandas de apoyo por ecu asignado por zonas de frecuencia):
  *
  *   eq1 (donde más se necesita): 2.5k · 5k · 10k · 20 kHz
  *   eq2 (empieza por los graves): 63 · 250 · 1k · 4 kHz
  *   eq3 (empieza por los agudos): 20 · 41 · 62 · 83 Hz
+ *
+ *   Por ecu (v1.10.0): intervalo de decisión 100 ms · mezclador 80 % ·
+ *   barridos extra 6 · banda de apoyo a la Q más estrecha (0.1):
+ *   eq1 ganancia máx 12 dB, velocidad ×4 · eq2 6 dB, ×2 · eq3 3 dB, ×0.5
  *
  *   id                SPL   corr  sub  espacio (z, size)
  *   carro-normal      78    ON    ON   cerca, pequeño (0.2, 0.3)
@@ -490,28 +494,38 @@ void acoustical_spatial_compensate(float x, float y, float z, float size,
  */
 
 #define ACOUSTICAL_B124 4
-#define ACOUSTICAL_FFT_2048 2
+#define ACOUSTICAL_FFT_8192 4
 #define ACOUSTICAL_AN_25MS 0
 #define ACOUSTICAL_GAIN50 50.0f
 #define ACOUSTICAL_SMOOTH 0.05f
+/* v1.10.0: valores comunes a los tres ecuas dinámicos del catálogo:
+ * intervalo de decisión 100 ms, 6 barridos extra por decisión y la Q de
+ * las bandas de apoyo a lo más estrecho posible (0.1, mínimo del slider
+ * de las tres versiones). */
+#define ACOUSTICAL_EQ_INTERVAL 100
+#define ACOUSTICAL_EQ_SWEEPS 6
+#define ACOUSTICAL_EQ_Q 0.1f
 
 static acoustical_support_band bandHz(float hz) {
     acoustical_support_band b;
     b.frequencyHz = hz;
     b.gainDb = 0.0f;
-    b.q = 2.0f;
+    b.q = ACOUSTICAL_EQ_Q;
     return b;
 }
 
+/* v1.10.0: cada ecu lleva su ganancia máxima y su velocidad de suavizado
+ * (los tres comparten intervalo, mezclador 0.8 y barridos extra). */
 static acoustical_eq_profile makeEq(int enabled, int startFrom,
+                                     float maxGainDb, float speedMultiplier,
                                      float f0, float f1, float f2, float f3) {
     acoustical_eq_profile e;
     e.enabled = enabled;
-    e.intervalMs = 800;
-    e.maxGainDb = 12.0f;
+    e.intervalMs = ACOUSTICAL_EQ_INTERVAL;
+    e.maxGainDb = maxGainDb;
     e.mixerLevel = 0.8f;
-    e.speedMultiplier = 1.0f;
-    e.extraSweeps = 1;
+    e.speedMultiplier = speedMultiplier;
+    e.extraSweeps = ACOUSTICAL_EQ_SWEEPS;
     e.startFrom = startFrom;
     /* Banco por zona (las 4 frecuencias se pasan por valor: sin compound
      * literals, que el .c se compila también como C++ en el gate). */
@@ -535,66 +549,66 @@ static void ensureModeProfiles(void) {
 
     kModeProfiles[0] = (acoustical_mode_profile){
         "carro-normal", "Coche · Normal",
-        78.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
+        78.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
-        { makeEq(1, 0, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
+        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
+          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
+          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.2f, 0.3f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
     };
 
     kModeProfiles[1] = (acoustical_mode_profile){
         "carro-aire-libre", "Coche · Aire libre",
-        97.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
+        97.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 0, 1, 0.0f,
-        { makeEq(1, 0, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
+        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
+          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
+          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.5f, 0.5f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
     };
 
     kModeProfiles[2] = (acoustical_mode_profile){
         "estudio-esc1", "Estudio · Escenario 1",
-        89.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
+        89.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
-        { makeEq(1, 0, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
+        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
+          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
+          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.5f, 0.5f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
     };
 
     kModeProfiles[3] = (acoustical_mode_profile){
         "escenario2", "Escenario 2",
-        91.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
+        91.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 0, 0, 0.0f,
-        { makeEq(1, 0, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
+        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
+          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
+          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.5f, 0.5f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
     };
 
     kModeProfiles[4] = (acoustical_mode_profile){
         "escenario3", "Escenario 3",
-        93.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
+        93.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
-        { makeEq(1, 0, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
+        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
+          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
+          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.9f, 0.9f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
     };
 
     kModeProfiles[5] = (acoustical_mode_profile){
         "pas", "PAs",
-        103.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_2048,
+        103.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
         ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
-        { makeEq(1, 0, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 20.0f, 41.0f, 62.0f, 83.0f) },
+        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
+          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
+          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
         0.0f, 0.0f, 0.2f, 0.3f,
         ACOUSTICAL_WAVE_SILENCE, -12.0f
     };

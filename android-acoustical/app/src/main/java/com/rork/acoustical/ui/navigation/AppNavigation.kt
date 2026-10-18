@@ -5,7 +5,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Gamepad
 import androidx.compose.material.icons.filled.Hub
-import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
@@ -33,10 +32,7 @@ import com.rork.acoustical.ui.screens.CalibrationScreen
 import com.rork.acoustical.ui.screens.ControlScreen
 import com.rork.acoustical.ui.screens.FullEqScreen
 import com.rork.acoustical.ui.screens.ModesScreen
-import com.rork.acoustical.ui.screens.MusicianScreen
-import com.rork.acoustical.ui.screens.OutputMixScreen
 import com.rork.acoustical.ui.screens.RoutingMapScreen
-import com.rork.acoustical.ui.screens.SessionScreen
 import com.rork.acoustical.ui.screens.SettingsScreen
 import com.rork.acoustical.ui.theme.CyanGlow
 import com.rork.acoustical.ui.theme.CyanPrimary
@@ -67,7 +63,6 @@ fun AppNavigation(
     }
 
     val items = listOf(
-        BottomNavItem("session", "Sesión", Icons.Filled.CastConnected),
         BottomNavItem("control", "Control", Icons.Filled.Gamepad),
         BottomNavItem("routing", "Ruteos", Icons.Filled.Hub),
         BottomNavItem("eq", "EQ", Icons.Filled.Equalizer),
@@ -116,12 +111,11 @@ fun AppNavigation(
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = "session",
+            // v1.10.0: la pantalla de Sesión se retiró; la app arranca
+            // directa en el centro de control.
+            startDestination = "control",
             modifier = Modifier.padding(innerPadding)
         ) {
-            composable("session") {
-                SessionScreen(navController = navController, viewModel = viewModel)
-            }
             composable("add_device") {
                 AddDeviceScreen(navController = navController, viewModel = viewModel)
             }
@@ -136,12 +130,6 @@ fun AppNavigation(
             }
             composable("full_eq") {
                 FullEqScreen(navController = navController, viewModel = viewModel)
-            }
-            composable("output_mix") {
-                OutputMixScreen(navController = navController, viewModel = viewModel)
-            }
-            composable("musician") {
-                MusicianScreen(navController = navController, viewModel = viewModel)
             }
             composable("calibration") {
                 CalibrationScreen(navController = navController, viewModel = viewModel)

@@ -8,10 +8,10 @@
 //     por dispositivo y el callback de audio las mezcla como una entrada más
 //     (con su ganancia propia, Ruteos > Entradas > Móviles).
 //
-//  M3 (PC → altavoces del móvil): la ruta de red del Hub llama a sendToPhone()
-//     cada 10 ms con la señal ya procesada (fase/retardo/ganancia); el PC la
-//     envía por UDP al puerto 41043 del móvil, que la reproduce por sus
-//     altavoces (jitter buffer + resampleo a su tasa en el móvil).
+//  M3 (PC → altavoces del móvil): sendToPhone() la envía por UDP al puerto
+//     41043 del móvil, que la reproduce por sus altavoces (jitter buffer +
+//     resampleo a su tasa en el móvil). (v1.10.0: el llamador era la ruta
+//     de red del Hub, que se retiró; el método se conserva en el enlace.)
 //
 // Trama de audio (ambos sentidos): cabecera de 8 bytes BIG-ENDIAN +
 // PCM16 LITTLE-ENDIAN intercalado:
@@ -103,7 +103,7 @@ public:
 
     // === M3: audio del PC a los altavoces del móvil ===
 
-    /** Envía n muestras estéreo (-1…1) a los altavoces del móvil (ruta de red del Hub).
+    /** Envía n muestras estéreo (-1…1) a los altavoces del móvil.
      *  No hace nada si el móvil es desconocido. */
     void sendToPhone(const juce::String& ip, const float* L, const float* R, int n, double rate);
 
@@ -188,7 +188,7 @@ private:
     std::function<juce::String()> codeProvider_;
 
     // Socket de envío compartido (el oyente tiene el suyo propio en el hilo).
-    // Lo usan: hilo de red (pong) y las rutas de red del Hub (sendToPhone).
+    // Lo usan: hilo de red (pong) y sendToPhone (M3).
     juce::DatagramSocket sendSock_;
     std::mutex sendLock_;
 

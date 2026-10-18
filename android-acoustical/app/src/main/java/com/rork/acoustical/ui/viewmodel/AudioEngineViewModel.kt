@@ -14,7 +14,6 @@ import com.rork.acoustical.domain.audio.AudioEngine
 import com.rork.acoustical.domain.audio.DynamicEqConfig
 import com.rork.acoustical.domain.audio.SweepDirection
 import com.rork.acoustical.domain.audio.SweepProcess
-import com.rork.acoustical.domain.audio.LocationProvider
 import com.rork.acoustical.domain.audio.AudioOutputInfo
 import com.rork.acoustical.domain.audio.BluetoothAudioManager
 import com.rork.acoustical.domain.audio.FocusModeManager
@@ -41,7 +40,6 @@ import com.rork.acoustical.domain.model.AutoCheckConfig
 import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.BitDepth
 import com.rork.acoustical.domain.model.EqBand
-import com.rork.acoustical.domain.model.MusicianState
 import com.rork.acoustical.domain.model.ModeProfiles
 import com.rork.acoustical.domain.model.OutputTarget
 import com.rork.acoustical.domain.model.PanMatrix
@@ -68,9 +66,6 @@ import com.rork.acoustical.domain.model.DeviceConnection
 import com.rork.acoustical.domain.model.DeviceRole
 import com.rork.acoustical.domain.model.DeviceState
 import com.rork.acoustical.domain.model.DeviceType
-import com.rork.acoustical.domain.model.DistanceMeasurement
-import com.rork.acoustical.domain.model.DistanceStep
-import com.rork.acoustical.domain.model.GpsPoint
 import com.rork.acoustical.service.AudioAnalysisService
 import com.rork.acoustical.service.InternalCaptureService
 import com.rork.acoustical.service.PhoneSyncManager
@@ -136,11 +131,8 @@ class AudioEngineViewModel(
         val meshIsRunning: Boolean = false,
         val meshIsMaster: Boolean = false,
         val meshPeers: List<MeshPeer> = emptyList(),
-        // Audio delay & geo
+        // Audio delay
         val audioDelayMs: Float = 25f,
-        val geoAutoAdjust: Boolean = false,
-        val geoInfo: LocationProvider.GeoAcousticInfo = LocationProvider.GeoAcousticInfo(),
-        val geoAdjustmentApplied: Float = 0f,
         val rt60Ms: Float = 0f,
         val scenarioPreset: String = "CUSTOM",
         // Controller state
@@ -159,7 +151,6 @@ class AudioEngineViewModel(
         val isBluetoothEnabled: Boolean = false,
         val isBluetoothAvailable: Boolean = false,
         val audioOutputDevices: List<AudioOutputInfo> = emptyList(),
-        val musicianState: MusicianState = MusicianState(),
         val splHistoryMeasured: List<Float> = emptyList(),
         val splHistoryCorrected: List<Float> = emptyList(),
         // Sweep modifiers affecting every action
@@ -167,8 +158,6 @@ class AudioEngineViewModel(
         val isFineSweep: Boolean = false,
         // Linked pan matrix L/Mid/R/Lados
         val panMatrix: PanMatrix = PanMatrix.Centered,
-        // Emitter→receiver distance measurement
-        val distanceMeasure: DistanceMeasurement = DistanceMeasurement(),
         // Focus (concert) mode & walkie-talkie
         val focusModeActive: Boolean = false,
         val walkieActive: Boolean = false,
@@ -233,24 +222,22 @@ class AudioEngineViewModel(
     private var consoleManager: ConsoleManager? = null
     private var meshManager: MeshNetworkManager? = null
     private var usbAudioSource: UsbAudioSource? = null
-    private var locationProvider: LocationProvider? = null
     /**
      * Volatile: lo escribe el hilo de análisis (reconstrucción al cambiar el
      * nº de bandas del config) y lo anula el hilo principal en onCleared.
      */
     @Volatile
     private var rt60Estimator: Rt60Estimator? = null
-    private var geoJob: Job? = null
     private var autoCheckJob: Job? = null
     private var btAudioManager: BluetoothAudioManager? = null
-    private var musicianTrackingJob: Job? = null
     /** Feed de niveles de la captura de apps (ver startCaptureFeed): solo
      *  vive mientras la captura está activa. */
     private var captureFeedJob: Job? = null
-    // Servidor de sync con el PC (singleton de la app). Arranque bajo
-    // demanda: la pantalla Ajustes > PC/Windows o el primer envío de un
-    // comando del Hub lo arrancan; MainActivity.onDestroy / este onCleared
-    // lo detienen.
+    // Servidor de sync con el PC (singleton de la app). v1.10.0: con la
+    // tarjeta PC/Windows fuera de Ajustes, el arranque pasa a ser al
+    // arrancar la app (en el init de abajo) para que el PC siga
+    // encontrando al móvil y la sincronización siga funcionando;
+    // MainActivity.onDestroy / este onCleared lo detienen.
     private val phoneSync by lazy { PhoneSyncManager.get(getApplication()) }
     private var focusModeManager: FocusModeManager? = null
     private var walkieManager: WalkieTalkieManager? = null
@@ -267,6 +254,9 @@ class AudioEngineViewModel(
         // Publica los ajustes iniciales al servidor de sync (el PC siempre ve la
         // config actual del móvil) y recoge la que el PC envíe ("Sincronizar").
         publishLocalConfigToSync()
+        // v1.10.0: el servidor arranca con la app (antes lo hacía solo al ver
+        // la tarjeta PC/Windows, retirada).
+        phoneSync.start()
         viewModelScope.launch {
             phoneSync.remoteConfig.collect { pair ->
                 pair?.let { (_, cfg) -> applyRemoteConfig(cfg) }
@@ -334,9 +324,6 @@ class AudioEngineViewModel(
                         noiseSpectrum = result.noiseSpectrum,
                         hasNoiseProfile = result.noiseSpectrum != null,
                         rt60Ms = rt60?.currentRt60Ms ?: 0f,
-                        musicianState = state.musicianState.copy(
-                            isOverLimit = result.spl >= state.musicianState.safeSplLimit
-                        ),
                         splHistoryMeasured = (state.splHistoryMeasured + result.spl).takeLast(maxHistorySize),
                         splHistoryCorrected = (state.splHistoryCorrected + correctedSpl).takeLast(maxHistorySize)
                     )
@@ -427,9 +414,6 @@ class AudioEngineViewModel(
         // Initialize USB audio source
         usbAudioSource = UsbAudioSource(application)
         refreshUsbDevices()
-
-        // Initialize location provider
-        locationProvider = LocationProvider(application)
 
         // Initialize RT60 estimator with the ACTIVE config's band count
         // (10/16/31/124): with the old hard-coded 8 it interpreted the
@@ -1254,81 +1238,6 @@ class AudioEngineViewModel(
         _uiState.update { it.copy(audioOutputDevices = outputs) }
     }
 
-    // === Musician Mode ===
-
-    fun setMusicianMode(enabled: Boolean) {
-        _uiState.update { it.copy(musicianState = it.musicianState.copy(isActive = enabled)) }
-        if (enabled) {
-            setAppMode(AppMode.MUSICIAN)
-            startMusicianTracking()
-        } else {
-            setAppMode(AppMode.CONTROLLER)
-            stopMusicianTracking()
-        }
-    }
-
-    fun moreMe() {
-        _uiState.update { state ->
-            val newVol = (state.musicianState.personalVolume + 0.05f).coerceIn(0f, 1f)
-            val newGain = state.musicianState.personalGainDb + 1.5f
-            state.copy(musicianState = state.musicianState.copy(
-                personalVolume = newVol,
-                personalGainDb = newGain
-            ))
-        }
-        btAudioManager?.setStreamVolume(_uiState.value.musicianState.personalVolume)
-    }
-
-    fun lessMe() {
-        _uiState.update { state ->
-            val newVol = (state.musicianState.personalVolume - 0.05f).coerceIn(0f, 1f)
-            val newGain = state.musicianState.personalGainDb - 1.5f
-            state.copy(musicianState = state.musicianState.copy(
-                personalVolume = newVol,
-                personalGainDb = newGain
-            ))
-        }
-        btAudioManager?.setStreamVolume(_uiState.value.musicianState.personalVolume)
-    }
-
-    fun setPersonalVolume(volume: Float) {
-        val vol = volume.coerceIn(0f, 1f)
-        _uiState.update { it.copy(musicianState = it.musicianState.copy(personalVolume = vol)) }
-        btAudioManager?.setStreamVolume(vol)
-    }
-
-    fun startMusicianTracking() {
-        musicianTrackingJob?.cancel()
-        musicianTrackingJob = viewModelScope.launch(Dispatchers.IO) {
-            while (isActive) {
-                delay(5000)
-                val info = locationProvider?.getCurrentLocation() ?: continue
-                val distance = 5f
-                val recommendedDelay = (distance / info.speedOfSound) * 1000f
-                val isOverLimit = _uiState.value.currentSpl > _uiState.value.musicianState.safeSplLimit
-                _uiState.update {
-                    it.copy(
-                        musicianState = it.musicianState.copy(
-                            latitude = info.latitude,
-                            longitude = info.longitude,
-                            altitude = info.altitude,
-                            locationLabel = info.label,
-                            hasGpsFix = info.hasFix,
-                            distanceToPaM = distance,
-                            recommendedDelayMs = recommendedDelay,
-                            isOverLimit = isOverLimit
-                        )
-                    )
-                }
-            }
-        }
-    }
-
-    private fun stopMusicianTracking() {
-        musicianTrackingJob?.cancel()
-        musicianTrackingJob = null
-    }
-
     // === Sweep Modifiers (afectan a todas las acciones) ===
 
     fun setFastSweep(active: Boolean) {
@@ -1365,84 +1274,6 @@ class AudioEngineViewModel(
 
     fun resetPan() {
         _uiState.update { it.copy(panMatrix = PanMatrix.Centered) }
-    }
-
-    // === Distance Measurement (emisor → receptor con GPS) ===
-
-    /**
-     * Capture the current GPS point: first tap = emitter,
-     * second tap = receiver / check point.
-     */
-    fun captureDistancePoint() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val info = locationProvider?.getCurrentLocation() ?: return@launch
-            if (!info.hasFix) return@launch
-            val point = GpsPoint(info.latitude, info.longitude, info.altitude, info.label)
-            _uiState.update { state ->
-                val dm = state.distanceMeasure
-                when (dm.step) {
-                    DistanceStep.EMITTER -> state.copy(
-                        distanceMeasure = dm.copy(emitter = point, step = DistanceStep.RECEIVER)
-                    )
-                    DistanceStep.RECEIVER -> state.copy(
-                        distanceMeasure = dm.copy(
-                            receiver = point,
-                            step = DistanceStep.DONE,
-                            speedOfSound = info.speedOfSound
-                        )
-                    )
-                    DistanceStep.DONE -> state.copy(
-                        distanceMeasure = DistanceMeasurement(
-                            emitter = point,
-                            step = DistanceStep.EMITTER,
-                            speedOfSound = info.speedOfSound
-                        )
-                    )
-                }
-            }
-        }
-    }
-
-    fun resetDistanceMeasure() {
-        _uiState.update { it.copy(distanceMeasure = DistanceMeasurement()) }
-    }
-
-    /**
-     * Adjust the measured distance with decimal precision.
-     * Coarse (scale button held) moves 0.5 m; fine moves 0.01 m.
-     */
-    fun adjustMeasuredDistance(coarse: Boolean, up: Boolean) {
-        val step = if (coarse) 0.5f else 0.01f
-        _uiState.update { s ->
-            val base = s.distanceMeasure.effectiveDistanceM ?: 0f
-            val adjusted = (base + if (up) step else -step).coerceAtLeast(0f)
-            s.copy(distanceMeasure = s.distanceMeasure.copy(manualDistanceM = adjusted))
-        }
-    }
-
-    /**
-     * Apply GPS-derived automation: delay (d / speedOfSound) and gain
-     * compensation with decimals across PA / console / BT outputs.
-     */
-    fun applyDistanceAutomation() {
-        val dm = _uiState.value.distanceMeasure
-        val delay = dm.delayMs ?: return
-        updateConfig { it.copy(audioDelayMs = delay) }
-        _uiState.update { state ->
-            state.copy(
-                audioDelayMs = delay,
-                splCompensation = state.splCompensation.copy(
-                    delayAdjustMs = delay,
-                    gainAdjustDb = state.splCompensation.gainAdjustDb + (dm.gainCompensationDb ?: 0f)
-                ),
-                outputs = state.outputs.map { o ->
-                    if (o.deviceType == DeviceType.PA_SYSTEM ||
-                        o.deviceType == DeviceType.CONSOLE ||
-                        o.deviceType == DeviceType.BLUETOOTH_SPEAKER
-                    ) o.copy(delayMs = delay) else o
-                }
-            )
-        }
     }
 
     // === Output Master Controls (Centro de Control) ===
@@ -1965,40 +1796,6 @@ class AudioEngineViewModel(
         )
     }
 
-    // === Geolocation Auto-Adjust ===
-
-    fun setGeoAutoAdjust(enabled: Boolean) {
-        _uiState.update { it.copy(geoAutoAdjust = enabled) }
-        updateConfig { it.copy(geoAutoAdjust = enabled) }
-        if (enabled) {
-            refreshGeoLocation()
-        }
-    }
-
-    fun refreshGeoLocation() {
-        geoJob?.cancel()
-        geoJob = viewModelScope.launch(Dispatchers.IO) {
-            val info = locationProvider?.getCurrentLocation() ?: return@launch
-            _uiState.update {
-                it.copy(
-                    geoInfo = info,
-                    geoAdjustmentApplied = info.altitudeCorrectionDb
-                )
-            }
-            if (_uiState.value.geoAutoAdjust) {
-                updateConfig { cfg ->
-                    cfg.copy(
-                        targetSpl = info.recommendedSpl,
-                        audioDelayMs = info.recommendedDelayMs
-                    )
-                }
-                _uiState.update {
-                    it.copy(audioDelayMs = info.recommendedDelayMs)
-                }
-            }
-        }
-    }
-
     // === Reference & EQ ===
 
     fun captureReference() {
@@ -2396,9 +2193,7 @@ class AudioEngineViewModel(
         meshManager = null
         usbAudioSource?.disconnect()
         usbAudioSource = null
-        geoJob?.cancel()
         autoCheckJob?.cancel()
-        musicianTrackingJob?.cancel()
         // El feed de la captura de apps es el único job no atado al scope que
         // no se cancelaba antes (el bucle de 50 ms era anónimo): si el
         // usuario sale con la captura activa, el servicio seguiría escribiendo
@@ -2414,7 +2209,6 @@ class AudioEngineViewModel(
         focusModeManager = null
         btAudioManager?.cleanup()
         btAudioManager = null
-        locationProvider = null
         rt60Estimator = null
     }
 }

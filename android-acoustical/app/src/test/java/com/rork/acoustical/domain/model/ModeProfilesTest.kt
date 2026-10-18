@@ -42,17 +42,35 @@ class ModeProfilesTest {
     // --- Common invariants (the six all start the same way) -----------------
 
     @Test
-    fun `every mode starts with max gain 50 dB, 124 bands, FFT 2048, 25 ms, smoothing 0,05`() {
+    fun `every mode starts with max gain 50 dB, 124 bands, FFT 8192, 25 ms, smoothing 0,05`() {
         ModeProfiles.ALL.forEach { m ->
             assertTrue(m.id, nearF(m.maxGainDb, 50f))
             assertEquals(m.id, 4, m.bandCountIndex)  // = BandCount.BANDS_124
-            assertEquals(m.id, 2, m.fftSizeIndex)    // = FftSize.SIZE_2048
+            assertEquals(m.id, 4, m.fftSizeIndex)    // = FftSize.SIZE_8192 (v1.10.0)
             assertEquals(m.id, 0, m.analysisIntervalIndex) // = AnalysisInterval.FAST (25 ms)
             assertTrue(m.id, nearF(m.smoothingFactor, 0.05f))
             // The indices must map onto the domain enums with the same ordinal.
             assertEquals(m.id, BandCount.BANDS_124, m.bandCount)
-            assertEquals(m.id, FftSize.SIZE_2048, m.fftSize)
+            assertEquals(m.id, FftSize.SIZE_8192, m.fftSize)
             assertEquals(m.id, AnalysisInterval.FAST, m.analysisInterval)
+        }
+    }
+
+    @Test
+    fun `v1-10-0 per-EQ values (interval 100 ms, gains 12-6-3, speed x4-x2-x0,5, 6 sweeps, Q 0,1)`() {
+        val expectGains = listOf(12f, 6f, 3f)
+        val expectSpeeds = listOf(4f, 2f, 0.5f)
+        ModeProfiles.ALL.forEach { m ->
+            m.eqs.forEachIndexed { e, eq ->
+                assertEquals("$m EQ${e + 1} interval", 100, eq.intervalMs)
+                assertTrue("$m EQ${e + 1} gain", nearF(eq.maxGainDb, expectGains[e]))
+                assertTrue("$m EQ${e + 1} speed", nearF(eq.speedMultiplier, expectSpeeds[e]))
+                assertTrue("$m EQ${e + 1} mixer", nearF(eq.mixerLevel, 0.8f))
+                assertEquals("$m EQ${e + 1} sweeps", 6, eq.extraSweeps)
+                eq.support.forEach { band ->
+                    assertTrue("$m EQ${e + 1} Q 0.1 (narrowest band)", nearF(band.q, 0.1f, 0.005f))
+                }
+            }
         }
     }
 
@@ -74,7 +92,7 @@ class ModeProfilesTest {
                     assertTrue("$m EQ${e + 1} band ${k + 1} in range",
                         band.frequencyHz > 0f && band.frequencyHz <= 20000f)
                     assertEquals("$m EQ${e + 1} band ${k + 1} at 0 dB", 0f, band.gainDb, 0.001f)
-                    assertTrue("$m EQ${e + 1} band ${k + 1} Q2", nearF(band.q, 2f))
+                    assertTrue("$m EQ${e + 1} band ${k + 1} Q 0.1 (v1.10.0)", nearF(band.q, 0.1f, 0.005f))
                     assertEquals("$m EQ${e + 1} band ${k + 1} frequency",
                         banks[e][k], band.frequencyHz, 0.5f)
                 }

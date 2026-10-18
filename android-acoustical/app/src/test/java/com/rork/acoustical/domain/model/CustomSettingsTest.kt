@@ -83,10 +83,11 @@ class CustomSettingsTest {
         assertEquals(103f, s.targetSpl)
         assertEquals(50f, s.maxGainDb)
         assertEquals(0.05f, s.smoothingFactor)
-        // The shared 800 ms decision interval and one extra sweep per EQ
+        // v1.10.0: the shared 100 ms decision interval and six extra sweeps
+        // per EQ (replaces the old 800 ms / one-sweep catalog values).
         s.eqs.forEach { se ->
-            assertEquals(800, se.decisionIntervalMs)
-            assertEquals(1, se.extraSweeps)
+            assertEquals(100, se.decisionIntervalMs)
+            assertEquals(6, se.extraSweeps)
             assertEquals(4, se.support.size)
         }
     }
