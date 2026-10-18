@@ -228,10 +228,28 @@ public:
         spectrumView_ = std::make_unique<SpectrumView>();
         routingMatrix_ = std::make_unique<RoutingMatrix>(deviceManager_, *remoteAudio_);
         loadSavedSettings();  // últimos valores funcionales
+        settingsPanel_ = std::make_unique<SettingsPanel>(engine_, phoneLink_.get(),
+            [this](bool active) {
+                // El combo "Señal" de Ajustes es el ÚNICO control del
+                // generador: cada forma de onda distinta de Silencio lo
+                // enciende (y suena al instante por la salida y el puente
+                // ASIO); "Silencio" lo apaga y la entrada pasa tal cual.
+                // (El antiguo toggle "Generador activo" se eliminó: era
+                // redundante con el menú y permitía estados en los que el
+                // combo decía una cosa y el audio hacía otra.)
+                generatorActive_.store(active);
+            },
+            spatialX_, spatialY_, spatialZ_, spatialSize_,
+            [this](const acoustical_mode_profile* m) { applyModeProfile(m); },
+            [this]() -> std::string { return activeModeId_; },
+            [this] {
+                // Modo rápido (no del catálogo): el modo activo deja de ser
+                // un perfil y la persistencia se actualiza (id vacío).
+                activeModeId_.clear();
+                saveSettings();
+            });
+        loadActiveMode();  // modo activo persistente (v1.8): catálogo + ajustes guardados
         startuplog::log(juce::String::fromUTF8("consola: ruteos y ajustes guardados listos"));
-        settingsPanel_ = std::make_unique<SettingsPanel>(engine_, phoneLink_.get(), [this](bool active) {
-            generatorActive_.store(active);
-        });
         settingsPanel_->onBeforeChange = [this] { pushUndo(); };
         settingsPanel_->onAfterChange = [this] { saveSettings(); };
         settingsPanel_->onReceiveFromPhone = [this] {
@@ -275,8 +293,25 @@ public:
             + juce::String::fromUTF8(")"));
     }
 
-    // Control del generador de señales (desde Ajustes)
+    // Control del generador de señales (desde Ajustes): el combo "Señal"
+    // es el único interruptor — "Silencio" apaga y el resto enciende al instante.
     std::atomic<bool> generatorActive_{false};
+
+    // === Posición espacial (v1.8) ===
+    // La UI escribe (Ajustes > Espacio, sync del móvil, modo activo) y el
+    // callback de audio lee: los MISMOS atómicos, sin copias que se queden
+    // viejas. Ley de compensación (ganancia + retardo) en el core C: la misma
+    // que el móvil y el plugin. z=0.5/size=0.5 es la posición neutra (0 dB/0 ms).
+    std::atomic<float> spatialX_{0.0f}, spatialY_{0.0f},
+        spatialZ_{0.5f}, spatialSize_{0.5f};
+    // Anillos de retardo de la salida (se asignan una vez si el retardo pide
+    // más; cero malloc en el camino de audio salvo ese cambio puntual).
+    std::vector<float> spatialRingL_, spatialRingR_;
+    int spatialWritePos_ = 0;
+
+    // Modo de trabajo activo (v1.8): "" = ajustes personalizados; si hay id
+    // válida se persiste en settings.json y se recarga en el arranque.
+    std::string activeModeId_;
 
     ~ConsoleComponent() override {
         phoneLink_->stopWatchdog();
@@ -393,6 +428,97 @@ private:
         c.targetSpl = static_cast<float>(num("targetSpl", c.targetSpl));
         c.audioDelayMs = static_cast<float>(num("audioDelayMs", c.audioDelayMs));
         engine_.configure(c);
+        // Modo de trabajo activo (v1.8): solo se GUARDA aquí; se APLICA en
+        // loadActiveMode() (el constructor, ya con el panel creado).
+        const auto modeVal = obj->getProperty("activeModeId");
+        if (!modeVal.isVoid() && !modeVal.toString().isEmpty())
+            activeModeId_ = modeVal.toString().toStdString();
+    }
+
+    // === Modos de trabajo (v1.8) ===
+    // Aplica el perfil del catálogo (core C: motor + 3 ecuas con sus bandas de
+    // apoyo + posición espacial + generador) al motor en vivo, persiste el id
+    // del modo y redibuja el panel. Desde la UI (botones de Ajustes), del
+    // móvil (sync) y del arranque (loadActiveMode). Todo lo aplicado sigue
+    // editable: cada control guarda por su cuenta al cambiar.
+    void applyModeProfile(const acoustical_mode_profile* m) {
+        if (!m) return;
+        pushUndo();  // un modo es deshacible como cualquier otro ajuste
+        auto c = engine_.config();
+        c.targetSpl = m->targetSpl;
+        c.maxGainDb = m->maxGainDb;
+        c.bandCount = static_cast<acoustical::BandCount>(m->bandCountIndex);
+        c.fftSize = static_cast<acoustical::FftSize>(m->fftSizeIndex);
+        c.analysisInterval = static_cast<acoustical::AnalysisInterval>(m->analysisIntervalIndex);
+        c.smoothingFactor = m->smoothingFactor;
+        c.correctionEnabled = m->correctionEnabled != 0;
+        c.noiseSubtractionEnabled = m->noiseSubtractionEnabled != 0;
+        c.audioDelayMs = m->audioDelayMs;
+        engine_.configure(c);
+
+        for (int i = 0; i < 3; ++i) {
+            const auto& e = m->eqs[i];
+            acoustical::DynamicEqConfig cfg;
+            cfg.startFrom = e.startFrom == 1 ? acoustical::SweepDirection::BOTTOM_UP
+                          : e.startFrom == 2 ? acoustical::SweepDirection::TOP_DOWN
+                                              : acoustical::SweepDirection::NEED_BASED;
+            cfg.decisionIntervalMs = e.intervalMs;
+            cfg.maxGainDb = e.maxGainDb;
+            cfg.mixerLevel = e.mixerLevel;
+            cfg.speedMultiplier = e.speedMultiplier;
+            cfg.extraSweeps = e.extraSweeps;
+            cfg.clamp();
+            engine_.setDynamicEqConfig(i, cfg);
+            engine_.setDynamicEqEnabled(i, e.enabled != 0);
+            dynamicEqEnabled_[i] = e.enabled != 0;
+            std::vector<acoustical::SupportBand> bands;
+            for (int k = 0; k < 4; ++k)
+                bands.push_back({e.support[k].frequencyHz, e.support[k].gainDb, e.support[k].q});
+            engine_.setSupportBands(i, bands);
+        }
+
+        // Espacio: atómicos (el callback de audio los lee por bloque)
+        spatialX_.store(m->spatialX, std::memory_order_relaxed);
+        spatialY_.store(m->spatialY, std::memory_order_relaxed);
+        spatialZ_.store(m->spatialZ, std::memory_order_relaxed);
+        spatialSize_.store(m->spatialSize, std::memory_order_relaxed);
+
+        // Generador de referencia (en el catálogo todos arrancan en Silencio)
+        using W = acoustical::SignalGenerator::Waveform;
+        const auto w = m->generatorWaveform == ACOUSTICAL_WAVE_SINE ? W::Sine
+                       : m->generatorWaveform == ACOUSTICAL_WAVE_BAND_SINE ? W::BandSine
+                       : m->generatorWaveform == ACOUSTICAL_WAVE_LOG_SWEEP ? W::LogSweep
+                       : m->generatorWaveform == ACOUSTICAL_WAVE_PINK ? W::PinkNoise
+                       : m->generatorWaveform == ACOUSTICAL_WAVE_WHITE ? W::WhiteNoise
+                       : W::Silence;
+        engine_.signalGenerator().setWaveform(w);
+        engine_.signalGenerator().setLevelDb(m->generatorLevelDb);
+        generatorActive_.store(w != W::Silence);
+
+        activeModeId_ = m->id;
+        saveSettings();
+        if (settingsPanel_) settingsPanel_->refresh();
+    }
+
+    // Arranque: si hay modo activo guardado, se aplica su perfil del catálogo
+    // y DESPUÉS los ajustes que el usuario guardó encima de ese modo (su
+    // último settings.json), para que los cambios hechos en el modo sobrevivan
+    // al reinicio: el catálogo da la base, el JSON la personalización.
+    void loadActiveMode() {
+        if (activeModeId_.empty()) return;
+        const auto* m = acoustical_mode_by_id(activeModeId_.c_str());
+        if (!m) {
+            activeModeId_.clear();
+            return;
+        }
+        applyModeProfile(m);
+        const auto f = settingsFile();
+        if (f.existsAsFile()) {
+            if (const auto v = juce::JSON::parse(f); v.getDynamicObject() != nullptr)
+                applyEngineConfigVar(v);
+        }
+        startuplog::log(juce::String::fromUTF8("consola: modo activo ")
+            + juce::String::fromUTF8(m->name) + juce::String::fromUTF8(" cargado"));
     }
 
     void audioDeviceIOCallbackWithContext(const float* const* input, int numInputs,
@@ -493,6 +619,46 @@ private:
                 right[s] *= outGain;
             }
 
+        // === Compensación espacial (v1.8) ===
+        // La MISMA ley del móvil y del plugin (core C): según la posición
+        // (x lateral, y frente/detrás, z distancia 0–15 m, size del elemento)
+        // se aplica ganancia (20·log10 distancia + tamaño + off-axis) y el
+        // retardo de propagación d/343·1000 al final de la cadena (post-EQ +
+        // hub + nivel): "lejos y grande" llega al oído con el mismo nivel y
+        // timing que "cerca y pequeño". Solo si hay compensación (el neutro
+        // z=0.5/size=0.5/x=0 da 0 dB/0 ms y no toca la señal).
+        {
+            const float sx = spatialX_.load(std::memory_order_relaxed);
+            const float sy = spatialY_.load(std::memory_order_relaxed);
+            const float sz = spatialZ_.load(std::memory_order_relaxed);
+            const float ss = spatialSize_.load(std::memory_order_relaxed);
+            float gainDb = 0.0f, delayMs = 0.0f;
+            acoustical_spatial_compensate(sx, sy, sz, ss, &gainDb, &delayMs);
+            if (gainDb != 0.0f || delayMs > 0.0f) {
+                const int need = static_cast<int>(delayMs * lastSampleRate_ / 1000.0f);
+                const int minRing = need + numSamples + 2;
+                if (static_cast<int>(spatialRingL_.size()) < minRing) {
+                    spatialRingL_.assign(static_cast<size_t>(minRing + 512), 0.0f);
+                    spatialRingR_.assign(spatialRingL_.size(), 0.0f);
+                    spatialWritePos_ = 0;
+                }
+                const int ringSize = static_cast<int>(spatialRingL_.size());
+                const int delay = juce::jlimit(0, ringSize - numSamples - 1, need);
+                const float g = (gainDb != 0.0f) ? std::pow(10.0f, gainDb / 20.0f) : 1.0f;
+                for (int ch = 0; ch < 2; ++ch) {
+                    auto& ring = (ch == 0 ? spatialRingL_ : spatialRingR_);
+                    auto& out = (ch == 0 ? left : right);
+                    for (int s = 0; s < numSamples; ++s) {
+                        const int w = (spatialWritePos_ + s) % ringSize;
+                        const int r = (w - delay + ringSize) % ringSize;
+                        ring[w] = out[s] * g;      // la ganancia entra en la línea…
+                        out[s] = ring[r];         // …y sale la muestra retardada ya ganada
+                    }
+                }
+                spatialWritePos_ = (spatialWritePos_ + numSamples) % ringSize;
+            }
+        }
+
         if (numOutputs > 0 && output[0])
             std::copy(left.begin(), left.end(), output[0]);
         if (numOutputs > 1 && output[1])
@@ -542,6 +708,9 @@ private:
     }
 
     void timerCallback() override {
+        // 0. Espacio (v1.8): la lectura de compensación del panel se recalcula
+        //     de los atómicos (misma ley que la cadena de salida de audio).
+        if (settingsPanel_) settingsPanel_->tickSpatialReadout();
         // 0a. Diagnóstico: primer bloque de audio recibido (una sola vez) y
         //     cualquier error del dispositivo pendiente de volcar al log.
         if (!audioLogged_ && audioBursts_.load(std::memory_order_relaxed) > 0) {
@@ -641,6 +810,9 @@ private:
         obj->setProperty("correctionEnabled", c.correctionEnabled);
         obj->setProperty("targetSpl", c.targetSpl);
         obj->setProperty("audioDelayMs", c.audioDelayMs);
+        // Modo de trabajo activo (v1.8): el id del perfil del catálogo; al
+        // arrancar la app se vuelve a aplicar (con los ajustes guardados).
+        obj->setProperty("activeModeId", juce::String::fromUTF8(activeModeId_.c_str()));
         // Curva del EQ manual (antes no se guardaba: el preset perdía lo
         // principal, M8)
         auto eqGains = new juce::DynamicObject();
@@ -659,6 +831,19 @@ private:
             eq->setProperty("mixerLevel", cfg.mixerLevel);
             eq->setProperty("speedMultiplier", cfg.speedMultiplier);
             eq->setProperty("extraSweeps", cfg.extraSweeps);
+            // Bandas de apoyo (v1.8): se persisten para que los cambios del
+            // usuario dentro del modo activo (y el banco del catálogo)
+            // sobrevivan al reinicio.
+            auto sup = new juce::DynamicObject();
+            const auto bands = engine_.supportBands(i);
+            for (int k = 0; k < static_cast<int>(bands.size()) && k < 4; ++k) {
+                auto b = new juce::DynamicObject();
+                b->setProperty("freq", bands[k].frequencyHz);
+                b->setProperty("gain", bands[k].gainDb);
+                b->setProperty("q", bands[k].q);
+                sup->setProperty("b" + juce::String(k + 1), b);
+            }
+            eq->setProperty("support", sup);
             eqs->setProperty("eq" + juce::String(i + 1), eq);
         }
         obj->setProperty("dynamicEqs", eqs);
@@ -687,6 +872,29 @@ private:
                 ack->setProperty("acked", true);
                 phoneLink_->pushSync(juce::var(ack), juce::String::fromUTF8("Ajustes del móvil aplicados"));
             }
+        }
+
+        // Posición espacial desde el móvil (v1.8): las 4 coordenadas
+        // normalizadas que la app del móvil envía con su config; el PC las
+        // aplica a su propia cadena de salida (misma ley que el móvil).
+        if (auto* sp = obj->getProperty("spatial").getDynamicObject()) {
+            auto num = [](const juce::DynamicObject* o, const char* key, double def) {
+                if (o == nullptr) return def;
+                const auto val = o->getProperty(key);
+                return val.isVoid() ? def : static_cast<double>(val);
+            };
+            spatialX_.store(static_cast<float>(num(sp, "x", spatialX_.load())), std::memory_order_relaxed);
+            spatialY_.store(static_cast<float>(num(sp, "y", spatialY_.load())), std::memory_order_relaxed);
+            spatialZ_.store(static_cast<float>(num(sp, "z", spatialZ_.load())), std::memory_order_relaxed);
+            spatialSize_.store(static_cast<float>(num(sp, "size", spatialSize_.load())), std::memory_order_relaxed);
+            if (settingsPanel_) settingsPanel_->refresh();  // los faders de Espacio se mueven
+        }
+
+        // Modo de trabajo enviado desde el móvil (id del catálogo)
+        const auto modeId = obj->getProperty("modeId").toString();
+        if (!modeId.isEmpty()) {
+            if (const auto* m = acoustical_mode_by_id(modeId.toRawUTF8()))
+                applyModeProfile(m);
         }
 
         // Comando del Hub enviado desde la app móvil (por USB)
@@ -775,6 +983,18 @@ private:
                     const bool enabled = flag(eq, "enabled", engine_.dynamicEqEnabled(i));
                     engine_.setDynamicEqEnabled(i, enabled);
                     dynamicEqEnabled_[i] = enabled;
+                    // Bandas de apoyo persistidas (v1.8)
+                    if (auto* sup = eq->getProperty("support").getDynamicObject()) {
+                        std::vector<acoustical::SupportBand> bands;
+                        for (int k = 1; k <= 4; ++k)
+                            if (auto* b = sup->getProperty("b" + juce::String(k)).getDynamicObject())
+                                bands.push_back({
+                                    static_cast<float>(b->getProperty("freq").isVoid() ? 1000.0 : static_cast<double>(b->getProperty("freq"))),
+                                    static_cast<float>(b->getProperty("gain").isVoid() ? 0.0 : static_cast<double>(b->getProperty("gain"))),
+                                    static_cast<float>(b->getProperty("q").isVoid() ? 2.0 : static_cast<double>(b->getProperty("q")))});
+                        if (!bands.empty())
+                            engine_.setSupportBands(i, bands);
+                    }
                 }
             }
         settingsPanel_->refresh();

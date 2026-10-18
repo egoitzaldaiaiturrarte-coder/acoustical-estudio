@@ -145,6 +145,9 @@ public:
     void setDynamicEqMixerLevel(int index, float level);
     void setEqChannelLinked(bool linked);   // enlazado: cada ecu corrige L+R juntos
     void setSupportBands(int index, const std::vector<SupportBand>& bands);
+    // Copia de las bandas de apoyo actuales de un ecu (under lock; la UI las
+    // lee para pintar el panel y para restaurar un modo guardado).
+    std::vector<SupportBand> supportBands(int index) const;
 
     // === DSP en tiempo real ===
     EqDsp& eqDspL() { return dspL_; }

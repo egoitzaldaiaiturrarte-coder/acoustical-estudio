@@ -19,6 +19,7 @@
 // transientes de nivel al volver a rosa).
 #pragma once
 
+#include <cmath>
 #include "AcousticalParameters.h"
 #include "acoustical_dsp.h"
 #include <atomic>
@@ -62,6 +63,13 @@ public:
     }
     Waveform waveform() const {
         return static_cast<Waveform>(waveform_.load(std::memory_order_acquire));
+    }
+    float frequency() const {
+        return frequency_.load(std::memory_order_acquire);
+    }
+    float levelDb() const {
+        const float a = amplitude_.load(std::memory_order_acquire);
+        return a > 0.0f ? static_cast<float>(20.0 * std::log10(a)) : -120.0f;
     }
 
     // Mapea el enum local al valor canónico del core C (compartido con

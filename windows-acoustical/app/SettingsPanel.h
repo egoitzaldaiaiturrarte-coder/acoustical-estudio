@@ -16,9 +16,24 @@ public:
     std::function<void()> onAfterChange;    // guardado automático
     std::function<void()> onReceiveFromPhone;  // "Recibir del móvil" (Ajustes del móvil)
 
+    // Los referenciados de la posición espacial (atómicos de la consola: la UI
+    // escribe, el callback de audio lee) y los callbacks de modos:
+    //  - onApplyMode: aplicar un perfil del catálogo (lo llama el grupo
+    //    "Modos de trabajo"; la consola configura motor + ecuas + espacio +
+    //    generador y persiste el modo activo).
+    //  - activeModeId: el id del modo activo (para resaltar el botón en el
+    //    rebuild) — "" = ajustes personalizados (no un modo del catálogo).
     SettingsPanel(acoustical::AcousticalEngine& engine, PhoneLink* phone,
-                  std::function<void(bool)> onGeneratorActive)
-        : engine_(engine), phone_(phone), onGeneratorActive_(std::move(onGeneratorActive)) {
+                  std::function<void(bool)> onGeneratorActive,
+                  std::atomic<float>& spatialX, std::atomic<float>& spatialY,
+                  std::atomic<float>& spatialZ, std::atomic<float>& spatialSize,
+                  std::function<void(const acoustical_mode_profile*)> onApplyMode,
+                  std::function<std::string()> activeModeId,
+                  std::function<void()> onModeCleared)
+        : engine_(engine), phone_(phone), onGeneratorActive_(std::move(onGeneratorActive)),
+          spatialX_(spatialX), spatialY_(spatialY), spatialZ_(spatialZ), spatialSize_(spatialSize),
+          onApplyMode_(std::move(onApplyMode)), activeModeId_(std::move(activeModeId)),
+          onModeCleared_(std::move(onModeCleared)) {
         scroller_.setViewedComponent(new juce::Component(), true);
         addAndMakeVisible(scroller_);
         rebuild();
@@ -36,6 +51,10 @@ public:
     }
 
     void refresh() { rebuild(); }
+
+    // El timer de la consola lo llama a 30 Hz: el texto de compensación se
+    // recalcula de los atómicos (misma ley que el audio).
+    void tickSpatialReadout() { updateSpatialReadout(); }
 
 private:
     // Cambio de configuración con deshacer y guardado automático integrados
@@ -140,13 +159,13 @@ private:
         rowLabels_.clear(false);
         boxes_.clear(false);
         groupOpen_ = false;
-        genToggle_ = nullptr;
         y_ = 8;
         content().removeAllChildren();
 
         const auto& cfg = engine_.config();
 
         addModoRow();
+        addWorkModesRow();
         addAyudaRow();
 
         // --- Motor de audio ---
@@ -214,7 +233,7 @@ private:
             mutate([v](auto& c) { c.audioDelayMs = static_cast<float>(v); });
         }, 1.0, 2);
         endRow();
-        addSlider("SPL objetivo", 40, 110, 0.1, cfg.targetSpl, [this](double v) {
+        addSlider("SPL objetivo", 30, 110, 0.1, cfg.targetSpl, [this](double v) {
             mutate([v](auto& c) { c.targetSpl = static_cast<float>(v); });
         }, 1.0, 1);
         endRow();
@@ -223,30 +242,63 @@ private:
         }, 1.0, 1);
         endRow();
 
-        // --- Generador de señales ---
-        addGroup(juce::String::fromUTF8("Generador de señales"));
-        addCombo(juce::String::fromUTF8("Señal"), {"Silencio", "Seno", "Seno por banda", "Barrido log",
-                           "Ruido rosa", "Ruido blanco"}, 0, [this](int i) {
-            auto& gen = engine_.signalGenerator();
-            gen.setWaveform(static_cast<acoustical::SignalGenerator::Waveform>(
-                i == 0 ? acoustical::SignalGenerator::Waveform::Silence
-              : i == 1 ? acoustical::SignalGenerator::Waveform::Sine
-              : i == 2 ? acoustical::SignalGenerator::Waveform::BandSine
-              : i == 3 ? acoustical::SignalGenerator::Waveform::LogSweep
-              : i == 4 ? acoustical::SignalGenerator::Waveform::PinkNoise
-                       : acoustical::SignalGenerator::Waveform::WhiteNoise));
+        // --- Espacio (posición del elemento + compensación) ---
+        addGroup(juce::String::fromUTF8("Espacio — posición del elemento y compensación"));
+        addSlider(juce::String::fromUTF8("Izquierda ↔ Derecha (x)"), -1, 1, 0.05, spatialX_.load(), [this](double v) {
+            spatialX_.store(static_cast<float>(v), std::memory_order_relaxed);
+            updateSpatialReadout();
         });
         endRow();
-        addSlider("Frecuencia", 20, 20000, 1, 1000, [this](double v) {
+        addSlider(juce::String::fromUTF8("Frente ↔ Detrás (y)"), -1, 1, 0.05, spatialY_.load(), [this](double v) {
+            spatialY_.store(static_cast<float>(v), std::memory_order_relaxed);
+            updateSpatialReadout();
+        });
+        endRow();
+        addSlider(juce::String::fromUTF8("Cerca ↔ Lejos (z, 0–15 m)"), 0, 1, 0.05, spatialZ_.load(), [this](double v) {
+            spatialZ_.store(static_cast<float>(v), std::memory_order_relaxed);
+            updateSpatialReadout();
+        });
+        endRow();
+        addSlider(juce::String::fromUTF8("Tamaño del elemento (0 pequeño – 1 grande)"), 0, 1, 0.05, spatialSize_.load(), [this](double v) {
+            spatialSize_.store(static_cast<float>(v), std::memory_order_relaxed);
+            updateSpatialReadout();
+        });
+        endRow();
+        spatialReadout_ = new juce::Label({}, juce::String());
+        spatialReadout_->setColour(juce::Label::textColourId, theme::textDim);
+        spatialReadout_->setBounds(16, y_, 870, 22);
+        updateSpatialReadout();
+        content().addAndMakeVisible(spatialReadout_);
+        endRow();
+
+        // --- Generador de señales ---
+        addGroup(juce::String::fromUTF8("Generador de señales"));
+        // La forma de onda actual se refleja (antes el combo siempre mostraba
+        // "Silencio" aunque el generador sonara). Con el combo se controla TODO:
+        // elegir otra cosa que Silencio enciende el generador (sale por el EQ y
+        // por el puente ASIO); "Silencio" lo apaga y la entrada pasa tal cual.
+        {
+            const auto w = engine_.signalGenerator().waveform();
+            const int selected = comboIndexForWaveform(w);
+            addCombo(juce::String::fromUTF8("Señal (Silencio = generador apagado)"),
+                     {juce::String::fromUTF8("Silencio"), juce::String::fromUTF8("Seno"),
+                      juce::String::fromUTF8("Seno por banda"), juce::String::fromUTF8("Barrido log"),
+                      juce::String::fromUTF8("Ruido rosa"), juce::String::fromUTF8("Ruido blanco")},
+                     selected, [this](int i) {
+                auto& gen = engine_.signalGenerator();
+                const auto w = waveformForComboIndex(i);
+                gen.setWaveform(w);
+                if (onGeneratorActive_) onGeneratorActive_(w != acoustical::SignalGenerator::Waveform::Silence);
+            });
+        }
+        endRow();
+        addSlider("Frecuencia", 20, 20000, 1, engine_.signalGenerator().frequency(), [this](double v) {
             engine_.signalGenerator().setFrequency(static_cast<float>(v));
         }, 0.25, 1);
         endRow();
-        addSlider("Nivel", -40, 0, 0.5, -12, [this](double v) {
+        addSlider("Nivel", -40, 0, 0.5, engine_.signalGenerator().levelDb(), [this](double v) {
             engine_.signalGenerator().setLevelDb(static_cast<float>(v));
         }, 1.0, 1);
-        endRow();
-        addToggle("Generador activo (sale por el EQ)", false,
-                  [this](bool on) { if (onGeneratorActive_) onGeneratorActive_(on); });
         endRow();
 
         endGroupIfOpen();
@@ -361,6 +413,85 @@ private:
         endRow();
     }
 
+    // === Modos de trabajo (los 6 perfiles de arranque del catálogo C) ===
+    // El catálogo vive en el núcleo compartido (dsp/acoustical_dsp.c): la
+    // app, el plugin VST y la app móvil (copia Kotlin espejo) arrancan con
+    // los MISMOS valores. Pulsa un modo y el panel entero se re-dibuja con
+    // su config; todo sigue editable y el modo activo se guarda solo.
+    void addWorkModesRow() {
+        addGroup(juce::String::fromUTF8("Modos de trabajo — config completa de arranque (SPL, ecuas, espacio)"));
+        const auto* profiles = acoustical_mode_profiles();
+        const std::string active = activeModeId_ ? activeModeId_() : std::string();
+        for (int i = 0; i < ACOUSTICAL_MODE_COUNT; ++i) {
+            const auto* m = &profiles[i];
+            const bool isActive = active == m->id;
+            juce::String label = juce::String::fromUTF8(m->name);
+            if (isActive) label = juce::String::fromUTF8("● ") + label;
+            auto* b = addButton(label, [this, m] { if (onApplyMode_) onApplyMode_(m); });
+            b->setBounds(16 + (i % 2) * 446, y_ + (i / 2) * 34, 430, 30);
+            // El activo se distingue también por color de texto
+            if (isActive) b->setColour(juce::TextButton::textColourId, theme::primary);
+        }
+        // 3 filas (2 columnas): reserva el alto del bloque
+        for (int r = 0; r < 3; ++r) endRow();
+        // Nota de ayuda bajo los botones
+        auto* note = new juce::Label({}, juce::String::fromUTF8(
+            "Cada modo fija motor (SPL, ganancia, bandas, suavizado), los 3 ecuas dinámicos con sus bandas de apoyo "
+            "y la posición espacial. El modo activo se guarda y se vuelve a cargar al arrancar."));
+        note->setFont(juce::Font(12.0f));
+        note->setColour(juce::Label::textColourId, theme::textDim);
+        note->setJustificationType(juce::Justification::centredLeft);
+        note->setBounds(24, y_, 852, 32);
+        rowLabels_.add(note);
+        content().addAndMakeVisible(note);
+        y_ += 44;
+    }
+
+    // Mapeo combo "Señal" <-> enum del generador (el orden del combo es el
+    // del menú de las 3 versiones: 0 = Silencio, primero, y el único que no
+    // suena).
+    static acoustical::SignalGenerator::Waveform waveformForComboIndex(int i) {
+        switch (i) {
+            case 0:  return acoustical::SignalGenerator::Waveform::Silence;
+            case 1:  return acoustical::SignalGenerator::Waveform::Sine;
+            case 2:  return acoustical::SignalGenerator::Waveform::BandSine;
+            case 3:  return acoustical::SignalGenerator::Waveform::LogSweep;
+            case 4:  return acoustical::SignalGenerator::Waveform::PinkNoise;
+            default: return acoustical::SignalGenerator::Waveform::WhiteNoise;
+        }
+    }
+    static int comboIndexForWaveform(acoustical::SignalGenerator::Waveform w) {
+        switch (w) {
+            case acoustical::SignalGenerator::Waveform::Silence:  return 0;
+            case acoustical::SignalGenerator::Waveform::Sine:     return 1;
+            case acoustical::SignalGenerator::Waveform::BandSine: return 2;
+            case acoustical::SignalGenerator::Waveform::LogSweep: return 3;
+            case acoustical::SignalGenerator::Waveform::PinkNoise:return 4;
+            case acoustical::SignalGenerator::Waveform::WhiteNoise:
+            default: return 5;
+        }
+    }
+
+    // === Espacio: lectura en vivo de la compensación (ley única del core C) ===
+
+    void updateSpatialReadout() {
+        if (!spatialReadout_) return;
+        float gainDb = 0.0f, delayMs = 0.0f;
+        acoustical_spatial_compensate(spatialX_.load(std::memory_order_relaxed),
+                                      spatialY_.load(std::memory_order_relaxed),
+                                      spatialZ_.load(std::memory_order_relaxed),
+                                      spatialSize_.load(std::memory_order_relaxed),
+                                      &gainDb, &delayMs);
+        // "cerca, medio, lejos" en metros; la compensación se aplica en la
+        // cadena de salida (ganancia + retardo) por la consola.
+        const float meters = spatialZ_.load(std::memory_order_relaxed) * 15.0f;
+        spatialReadout_->setText(juce::String::fromUTF8(
+            juce::String(gainDb, 1, true) + juce::String::fromUTF8(" dB de ganancia  ·  ")
+            + juce::String(delayMs, 1, true) + juce::String::fromUTF8(" ms de retardo  ·  ")
+            + juce::String(meters, 1, true) + juce::String::fromUTF8(" m de distancia (0 m = sin compensación)")),
+            juce::dontSendNotification);
+    }
+
     void applyMode(int m) {
         struct Modo {
             int bandCount, analysisInterval, fftSize;
@@ -383,6 +514,9 @@ private:
             c.noiseSubtractionEnabled = modo.noiseSubtraction;
             c.correctionEnabled = true;
         });
+        // Un modo rápido no es un modo del catálogo: si había uno activo, ya no
+        // lo es (des-marcarlo en el rebuild de abajo).
+        if (onModeCleared_) onModeCleared_();
         rebuild();  // los deslizadores muestran los valores nuevos
     }
 
@@ -435,6 +569,17 @@ private:
             "Cine: deja subir más los graves y reacciona más lento (18 dB, 200 ms).\n"
             "Estudio: máxima fidelidad, poca intervención (6 dB, 50 ms, FFT 8K).\n"
             "Después del modo, TODO es editable: los cambios se guardan solos.\n\n"
+            "MODOS DE TRABAJO (v1.8)\n"
+            "Seis perfiles completos de arranque (Coche Normal / Coche Aire libre /\n"
+            "Estudio-Escenario 1 / Escenarios 2 y 3 / PAs) con SPL objetivo, motor,\n"
+            "los 3 ecuas con sus bandas de apoyo y la posición espacial. Pulsa uno,\n"
+            "afina lo que quieras (sigue guardándose con ese modo) y al arrancar la\n"
+            "app se carga el último modo activo, con los cambios que hayas hecho.\n\n"
+            "ESPACIO (v1.8)\n"
+            "Posición del elemento que escuchas (x izquierda/derecha, y frente/detrás,\n"
+            "z distancia de 0 a 15 m, tamaño del elemento): la compensación de ganancia\n"
+            "y retardo de propagación se aplica a la salida real, igual que en el móvil\n"
+            "y en el plugin VST (misma ley en las tres versiones).\n\n"
             "VALORES EXACTOS\n"
             "Cada deslizador tiene su caja de texto a la derecha: haz clic y escribe el\n"
             "valor exacto (físico o con Teclado en pantalla). Precisión: retardos de\n"
@@ -474,7 +619,7 @@ private:
         auto& sweeper = engine_.sweeperFor(index);  // acceso directo a parámetros en vivo
 
         addGroup(juce::String::fromUTF8("Ecu dinámico ") + n);
-        addToggle("Activado", index == 0, [this, index](bool on) {
+        addToggle("Activado", engine_.dynamicEqEnabled(index), [this, index](bool on) {
             engine_.setDynamicEqEnabled(index, on);
         });
         endRow();
@@ -507,15 +652,26 @@ private:
                  });
         endRow();
 
-        // Bandas de apoyo de frecuencia libre (4 por ecu, igual que en el móvil)
+        // Bandas de apoyo de frecuencia libre (4 por ecu, igual que en el móvil).
+        // El valor inicial es la banda que el motor YA tiene: un modo del catálogo
+        // asigna frecuencias distintas por ecu (2.5k–20k / 63–4k / 20–83 Hz) y el
+        // panel las refleja al redibujarse; sin modo activo, la serie geométrica
+        // de siempre (250/1k/4k/16k).
+        const auto currentBands = engine_.supportBands(index);
         for (int b = 0; b < 4; ++b) {
+            const float defFreq = 250.0f * std::pow(4.0f, b);
+            const float defGain = 0.0f;
+            const float initFreq = b < static_cast<int>(currentBands.size()) ? currentBands[b].frequencyHz : defFreq;
+            const float initGain = b < static_cast<int>(currentBands.size()) ? currentBands[b].gainDb : defGain;
+            supportFreq_[index][b] = initFreq;
+            supportGain_[index][b] = initGain;
             addSlider("Apoyo " + juce::String(b + 1) + juce::String::fromUTF8(" · frecuencia"), 20, 20000, 1,
-                      250.0 * std::pow(4.0, b), [this, index, b](double v) {
+                      initFreq, [this, index, b](double v) {
                           supportFreq_[index][b] = static_cast<float>(v);
                           pushSupportBands(index);
                       }, 0.25, 1);
             endRow();
-            addSlider("Apoyo " + juce::String(b + 1) + juce::String::fromUTF8(" · ganancia (dB)"), -12, 12, 0.25, 0,
+            addSlider("Apoyo " + juce::String(b + 1) + juce::String::fromUTF8(" · ganancia (dB)"), -12, 12, 0.25, initGain,
                       [this, index, b](double v) {
                           supportGain_[index][b] = static_cast<float>(v);
                           pushSupportBands(index);
@@ -540,7 +696,21 @@ private:
     juce::OwnedArray<juce::Component> widgets_;
     juce::OwnedArray<juce::Label> rowLabels_;
     juce::OwnedArray<juce::GroupComponent> boxes_;
-    juce::ToggleButton* genToggle_ = nullptr;
+    juce::Label* spatialReadout_ = nullptr;  // creada en rebuild() de "Espacio"
+
+    // Referencias al estado espacial de la consola (la UI escribe, el callback
+    // de audio lee con load()): nunca se copian, el panel y el audio miran
+    // los MISMOS atómicos.
+    std::atomic<float>& spatialX_;
+    std::atomic<float>& spatialY_;
+    std::atomic<float>& spatialZ_;
+    std::atomic<float>& spatialSize_;
+    std::function<void(const acoustical_mode_profile*)> onApplyMode_;
+    std::function<std::string()> activeModeId_;
+    // Un modo rápido (Salón/Cine/Estudio) no es un perfil del catálogo: deja
+    // de "estar" un modo de trabajo activo (los botones se des-marcan y el
+    // arranque vuelve a la config genérica guardada).
+    std::function<void()> onModeCleared_;
 
     float supportFreq_[3][4] = {{250, 1000, 4000, 12000}, {250, 1000, 4000, 12000},
                                 {250, 1000, 4000, 12000}};

@@ -589,4 +589,10 @@ void AcousticalEngine::setSupportBands(int index, const std::vector<SupportBand>
     supportBandsByEq_[index] = bands;
 }
 
+std::vector<SupportBand> AcousticalEngine::supportBands(int index) const {
+    if (index < 0 || index >= kDynamicEqCount) return {};
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return supportBandsByEq_[index];
+}
+
 } // namespace acoustical
