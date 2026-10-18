@@ -918,7 +918,7 @@ private fun OutputDetailSheet(
             text = if (output.isMuted) {
                 "La salida está silenciada: actívala para comprobarla."
             } else {
-                "Reproduce 2 s por la salida respetando volumen, ganancia y delay. Varias salidas pueden sonar a la vez."
+                "Reproduce 2 s por la salida respetando volumen, ganancia y delay, y sumando la compensación de su posición espacial (ganancia + retardo de propagación). Varias salidas pueden sonar a la vez; 'Silencio' apaga la salida."
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant

@@ -285,8 +285,8 @@ fun SettingsScreen(
                             SupportBandRow(
                                 index = bandIndex,
                                 band = band,
-                                onChange = { freq, gain ->
-                                    viewModel.setDynamicEqSupportBand(index, bandIndex, freq, gain)
+                                onChange = { freq, gain, q ->
+                                    viewModel.setDynamicEqSupportBand(index, bandIndex, freq, gain, q)
                                 }
                             )
                         }

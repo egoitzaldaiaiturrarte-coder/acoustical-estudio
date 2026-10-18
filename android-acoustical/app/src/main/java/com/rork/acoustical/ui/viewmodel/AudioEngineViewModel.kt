@@ -45,6 +45,7 @@ import com.rork.acoustical.domain.model.BandCount
 import com.rork.acoustical.domain.model.BitDepth
 import com.rork.acoustical.domain.model.EqBand
 import com.rork.acoustical.domain.model.MusicianState
+import com.rork.acoustical.domain.model.ModeProfiles
 import com.rork.acoustical.domain.model.OutputTarget
 import com.rork.acoustical.domain.model.PanMatrix
 import com.rork.acoustical.domain.model.PanZone
@@ -150,6 +151,10 @@ class AudioEngineViewModel(
         val workConfig: WorkConfig = WorkConfig(),
         val spatialPosition: SpatialPosition = SpatialPosition(),
         val splCompensation: SplCompensation = SplCompensation(),
+        // Work mode active (v1.8): id of a ModeProfiles catalog entry, or
+        // "" when the user is on free adjustments (no mode). It is persisted
+        // and silently re-applied on startup, like in the Windows app.
+        val activeModeId: String = "",
         val inputs: List<InputTarget> = emptyList(),
         val outputs: List<OutputTarget> = emptyList(),
         val bluetoothDevices: List<BluetoothAudioManager.BtDevice> = emptyList(),
@@ -498,6 +503,15 @@ class AudioEngineViewModel(
             val active = profiles.firstOrNull { it.name == activeName }
             _uiState.update { it.copy(savedProfiles = profiles, activeProfile = active) }
         }
+
+        // Work mode (v1.8): silently reload the persisted active mode so the
+        // app starts where it left off — the SAME catalog the Windows app and
+        // the VST load from the C core. Only the profile is re-applied here;
+        // anything the user changes afterwards lives in the session state.
+        val persistedModeId = profileStore?.loadActiveModeId()
+        if (!persistedModeId.isNullOrEmpty() && _uiState.value.activeModeId != persistedModeId) {
+            setWorkMode(persistedModeId)
+        }
     }
 
     // === Session Management ===
@@ -679,6 +693,87 @@ class AudioEngineViewModel(
         }
     }
 
+    // === Work modes (v1.8): the six startup profiles of the shared catalog ===
+
+    /**
+     * Apply one of the six work modes from the catalog (the Kotlin mirror of
+     * the C table the Windows app and the VST read): engine config (target
+     * SPL, max gain, smoothing, band count, FFT, analysis interval,
+     * correction and noise-subtraction switches), the three dynamic EQs
+     * (enabled + settings + their per-zone support-band bank) and the
+     * spatial position of the element.
+     *
+     * [id] null/"" clears the active mode WITHOUT resetting the current
+     * adjustments (the modes screen offers it as "Sin modo" — same as the
+     * Windows app's quick modes). The active id is persisted and silently
+     * re-applied at startup, so every program starts in the same place.
+     */
+    fun setWorkMode(id: String?) {
+        val st = _uiState.value
+        if (id.isNullOrEmpty()) {
+            if (st.activeModeId.isEmpty()) return
+            _uiState.update { it.copy(activeModeId = "") }
+            profileStore?.saveActiveModeId(null)
+            publishLocalConfigToSync()
+            return
+        }
+        val m = ModeProfiles.byId(id) ?: return
+        if (st.activeModeId == id) return
+
+        // 1. Engine config (structural changes restart the engine in
+        //    updateConfig; the rest is applied in place).
+        val newCfg = st.config.copy(
+            targetSpl = m.targetSpl,
+            maxGainDb = m.maxGainDb,
+            smoothingFactor = m.smoothingFactor,
+            correctionEnabled = m.correctionEnabled,
+            noiseSubtractionEnabled = m.noiseSubtractionEnabled,
+            audioDelayMs = m.audioDelayMs,
+            bandCount = m.bandCount,
+            fftSize = m.fftSize,
+            analysisInterval = m.analysisInterval
+        )
+        updateConfig { newCfg }
+
+        // 2. The three dynamic EQs: enabled + settings + support band bank
+        //    (trebles/mids/subs per EQ, identical in the six modes).
+        _uiState.update { cur ->
+            cur.copy(
+                dynamicEqs = cur.dynamicEqs.mapIndexed { i, eq ->
+                    val me = m.eqs.getOrNull(i) ?: return@mapIndexed eq
+                    eq.copy(
+                        enabled = me.enabled,
+                        config = eq.config.copy(
+                            startFrom = SweepDirection.values()[me.startFrom],
+                            decisionIntervalMs = me.intervalMs,
+                            maxGainDb = me.maxGainDb,
+                            mixerLevel = me.mixerLevel,
+                            speedMultiplier = me.speedMultiplier,
+                            extraSweeps = me.extraSweeps
+                        ),
+                        supportBands = me.support
+                    )
+                }
+            )
+        }
+        val running = _uiState.value.isRunning
+        _uiState.value.dynamicEqs.forEachIndexed { i, eq ->
+            engine?.setDynamicEqConfig(i, eq.config)
+            engine?.setDynamicEqEnabled(i, eq.enabled && running)
+            engine?.setSupportBands(i, eq.supportBands)
+        }
+
+        // 3. Spatial position: recomputes the gain/delay compensation and
+        //    pushes it to the console when connected.
+        updateSpatialPosition(m.spatial)
+
+        // 4. Persist + mark active (reloaded at startup); the final publish
+        //    carries the mode id so the PC receives it in its next probe.
+        _uiState.update { it.copy(activeModeId = id) }
+        profileStore?.saveActiveModeId(id)
+        publishLocalConfigToSync()
+    }
+
     // === Auto-Check ===
 
     fun setAutoCheckEnabled(enabled: Boolean) {
@@ -846,8 +941,9 @@ class AudioEngineViewModel(
         engine?.setDynamicEqMixerLevel(index, clamped)
     }
 
-    /** Edit one free-frequency support band of one dynamic EQ. */
-    fun setDynamicEqSupportBand(eqIndex: Int, bandIndex: Int, frequencyHz: Float, gainDb: Float) {
+    /** Edit one free-frequency support band of one dynamic EQ (freq/gain/Q). */
+    fun setDynamicEqSupportBand(eqIndex: Int, bandIndex: Int, frequencyHz: Float, gainDb: Float, q: Float) {
+        val clampedQ = q.coerceIn(0.1f, 10f)
         _uiState.update { st ->
             st.copy(
                 dynamicEqs = st.dynamicEqs.mapIndexed { i, eq ->
@@ -855,7 +951,7 @@ class AudioEngineViewModel(
                         eq.copy(
                             supportBands = eq.supportBands.mapIndexed { bi, band ->
                                 if (bi == bandIndex) {
-                                    band.copy(frequencyHz = frequencyHz, gainDb = gainDb)
+                                    band.copy(frequencyHz = frequencyHz, gainDb = gainDb, q = clampedQ)
                                 } else band
                             }
                         )
@@ -1390,6 +1486,12 @@ class AudioEngineViewModel(
         if (output.isLocalDevice || output.connectionState == DeviceState.CONNECTED) {
             btAudioManager?.setStreamVolume(output.volume)
         }
+        // Spatial compensation (v1.8): the element's position adds its
+        // distance gain + propagation delay on top of the output's own
+        // gain/delay — the SAME law the Windows app and the VST apply to
+        // their real output (core C), so a far element is verified at the
+        // same level and timing as a close one.
+        val comp = _uiState.value.splCompensation
         val started = testSignalPlayer.play(
             outputId = outputId,
             type = type,
@@ -1397,7 +1499,9 @@ class AudioEngineViewModel(
             gainDb = output.gainDb,
             delayMs = output.delayMs,
             isMuted = output.isMuted,
-            device = resolveOutputDevice(output.deviceType)
+            device = resolveOutputDevice(output.deviceType),
+            spatialGainDb = comp.gainAdjustDb,
+            spatialDelayMs = comp.delayAdjustMs
         ) {
             _uiState.update { it.copy(testingOutputIds = it.testingOutputIds - outputId) }
         }
@@ -1627,6 +1731,17 @@ class AudioEngineViewModel(
             put("correctionEnabled", st.config.correctionEnabled)
             put("targetSpl", st.config.targetSpl.toDouble())
             put("audioDelayMs", st.config.audioDelayMs.toDouble())
+            // Work mode (v1.8): the PC applies it through its own catalog
+            // (the same C table) and highlights its mode button.
+            if (st.activeModeId.isNotEmpty()) put("modeId", st.activeModeId)
+            // Spatial position of the element (v1.8): the PC mirrors it in
+            // its Espacio section and applies the same compensation law.
+            putJsonObject("spatial") {
+                put("x", st.spatialPosition.x.toDouble())
+                put("y", st.spatialPosition.y.toDouble())
+                put("z", st.spatialPosition.z.toDouble())
+                put("size", st.spatialPosition.size.toDouble())
+            }
             putJsonObject("dynamicEqs") {
                 st.dynamicEqs.forEachIndexed { i, eq ->
                     putJsonObject("eq${i + 1}") {
@@ -1730,6 +1845,32 @@ class AudioEngineViewModel(
             }
             engine?.setDynamicEqEnabled(idx, on && _uiState.value.isRunning)
             publishLocalConfigToSync()
+        }
+
+        // Work mode from the PC (v1.8): the id of a catalog mode. Applying it
+        // re-publishes our full config, so the PC converges on the same
+        // values it sent (setWorkMode ignores an unchanged id, which is also
+        // the reentrancy guard for a re-pushed payload).
+        (cfg["modeId"] as? JsonPrimitive)
+            ?.takeIf { it !is JsonNull }?.content
+            ?.let { modeId ->
+                if (modeId != state.activeModeId) setWorkMode(modeId)
+            }
+
+        // Element spatial position from the PC (the same object the PC
+        // publishes from its Espacio section): mirror it locally so both
+        // sides compensate with the identical law.
+        (cfg["spatial"] as? JsonObject)?.let { sp ->
+            val nx = (sp["x"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            val ny = (sp["y"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            val nz = (sp["z"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            val ns = (sp["size"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            if (nx != null && ny != null && nz != null && ns != null) {
+                val pos = state.spatialPosition
+                if (pos.x != nx || pos.y != ny || pos.z != nz || pos.size != ns) {
+                    updateSpatialPosition(SpatialPosition(nx, ny, nz, ns))
+                }
+            }
         }
     }
 

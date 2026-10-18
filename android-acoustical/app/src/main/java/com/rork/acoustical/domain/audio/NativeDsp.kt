@@ -43,4 +43,39 @@ object NativeDsp {
         noiseFloorDb: Float,
         out: FloatArray
     )
+
+    // --- Signal generator (shared stateful core, same as the Windows app) --
+    //
+    // `handle` is an opaque C pointer (0 = create failed -> use the pure
+    // Kotlin fallback). Like the C API, every fill() takes the full
+    // parameter snapshot: waveform (ACOUSTICAL_WAVE_*: 0=Silence, 1=Sine,
+    // 2=BandSine, 3=LogSweep, 4=Pink, 5=White), frequency, amplitude, sweep
+    // range/duration and the sample rate; the handle only keeps the phase /
+    // pink filter / PRNG state, so the caller owns thread-safety.
+    external fun nativeSiggenCreate(): Long
+    external fun nativeSiggenFree(handle: Long)
+    external fun nativeSiggenFill(
+        handle: Long,
+        waveform: Int,
+        frequencyHz: Float,
+        amplitude: Float,
+        sweepStartHz: Float,
+        sweepEndHz: Float,
+        sweepSeconds: Float,
+        sampleRate: Int,
+        out: FloatArray
+    )
+
+    // --- Spatial position -> compensation (single C law, all 3 programs) --
+    //
+    // Fills [out] (length >= 2) with [0]=gain dB, [1]=delay ms, computed
+    // from the normalized position (x/y in [-1,1], z distance 0..1 -> 0..15 m,
+    // size 0..1). Identical to what the Windows app and the VST apply.
+    external fun nativeSpatialCompensate(
+        x: Float,
+        y: Float,
+        z: Float,
+        size: Float,
+        out: FloatArray
+    )
 }

@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.Gamepad
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -31,6 +32,7 @@ import com.rork.acoustical.ui.screens.AddDeviceScreen
 import com.rork.acoustical.ui.screens.CalibrationScreen
 import com.rork.acoustical.ui.screens.ControlScreen
 import com.rork.acoustical.ui.screens.FullEqScreen
+import com.rork.acoustical.ui.screens.ModesScreen
 import com.rork.acoustical.ui.screens.MusicianScreen
 import com.rork.acoustical.ui.screens.OutputMixScreen
 import com.rork.acoustical.ui.screens.RoutingMapScreen
@@ -69,6 +71,7 @@ fun AppNavigation(
         BottomNavItem("control", "Control", Icons.Filled.Gamepad),
         BottomNavItem("routing", "Ruteos", Icons.Filled.Hub),
         BottomNavItem("eq", "EQ", Icons.Filled.Equalizer),
+        BottomNavItem("modes", "Modos", Icons.Filled.Star),
         BottomNavItem("settings", "Ajustes", Icons.Filled.Tune)
     )
 
@@ -142,6 +145,9 @@ fun AppNavigation(
             }
             composable("calibration") {
                 CalibrationScreen(navController = navController, viewModel = viewModel)
+            }
+            composable("modes") {
+                ModesScreen(viewModel = viewModel)
             }
             composable("settings") {
                 SettingsScreen(navController = navController, viewModel = viewModel)

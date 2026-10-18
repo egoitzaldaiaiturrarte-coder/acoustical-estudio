@@ -43,6 +43,17 @@ class ProfileStore(context: Context) {
 
     fun loadActiveProfileName(): String? = prefs.getString(KEY_ACTIVE, null)
 
+    /**
+     * Work mode (v1.8): the id of the active catalog mode, persisted so the
+     * app silently re-applies it on the next startup (same catalog as the
+     * Windows app and the VST read from the C core).
+     */
+    fun saveActiveModeId(id: String?) {
+        prefs.edit().putString(KEY_ACTIVE_MODE, id).apply()
+    }
+
+    fun loadActiveModeId(): String? = prefs.getString(KEY_ACTIVE_MODE, null)
+
     /** Serialize a single profile into a shareable JSON payload. */
     fun exportProfile(profile: RoomProfile): String = json.encodeToString(profile)
 
@@ -57,5 +68,6 @@ class ProfileStore(context: Context) {
         private const val PREFS_NAME = "acoustical_profiles"
         private const val KEY_PROFILES = "profiles_json"
         private const val KEY_ACTIVE = "active_profile_name"
+        private const val KEY_ACTIVE_MODE = "active_mode_id"
     }
 }

@@ -225,19 +225,19 @@ fun CalibrationScreen(
                     ) {
                         Text("30 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("%.0f dB".format(state.config.targetSpl), style = MaterialTheme.typography.titleMedium, color = CyanGlow, fontWeight = FontWeight.Bold)
-                        Text("97 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("110 dB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Slider(
                         value = state.config.targetSpl,
                         onValueChange = { viewModel.setTargetSpl(it) },
-                        valueRange = 30f..97f
+                        valueRange = 30f..110f
                     )
                     // Quick presets
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        listOf(65f, 75f, 85f, 97f).forEach { target ->
+                        listOf(65f, 75f, 85f, 97f, 103f).forEach { target ->
                             OutlinedButton(
                                 onClick = { viewModel.setTargetSpl(target) },
                                 modifier = Modifier.weight(1f).height(36.dp),

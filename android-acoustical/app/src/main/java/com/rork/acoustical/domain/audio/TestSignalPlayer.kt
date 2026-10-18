@@ -14,11 +14,29 @@ import kotlin.math.sin
 
 /**
  * Test signal types available to verify that an output actually sounds.
+ *
+ * [SILENCE] goes FIRST, like in the Windows app and the VST: it is the
+ * unified "generator off" position (choosing it stops the signal; choosing
+ * anything else starts it instantly). The same ordering in the three
+ * programs is what makes "Silencio" a real switch, not a fourth waveform.
  */
 enum class TestSignalType(val label: String, val shortLabel: String) {
+    SILENCE("Silencio", "Silencio"),
     PINK_NOISE("Ruido rosa", "Rosa"),
     SWEEP("Barrido 20 Hz - 20 kHz", "Barrido"),
-    TONE("Tono 1 kHz", "Tono")
+    TONE("Tono 1 kHz", "Tono");
+    /**
+     * Waveform index in the shared C core (`ACOUSTICAL_WAVE_*`): used to
+     * delegate generation to the exact same stateful generator the Windows
+     * app runs. SILENCE maps to 0 by construction of the enum.
+     */
+    val waveformInt: Int
+        get() = when (this) {
+            SILENCE -> 0
+            PINK_NOISE -> 4
+            SWEEP -> 3
+            TONE -> 1
+        }
 }
 
 /**
@@ -35,6 +53,10 @@ class TestSignalPlayer {
     private val activeTracks = HashMap<String, AudioTrack>()
     private val lock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
+    // Shared C generator handle (created lazily on first native fill; keeps
+    // phase/pink/PRNG state between plays, same as the Windows app).
+    @Volatile
+    private var nativeSiggenHandle: Long = 0L
 
     /** Whether any test signal is currently playing. */
     val isPlaying: Boolean
@@ -48,6 +70,16 @@ class TestSignalPlayer {
      * Play [type] for [durationMs] honouring the output parameters, routed to
      * [device] when provided. Replaces any signal already playing for this
      * output without touching other outputs. No-op (false) when muted.
+     *
+     * [type] = [TestSignalType.SILENCE] is the unified "generator off": it
+     * stops any signal for this output (mirroring the Windows app, where
+     * "Silencio" in the combo is the only generator switch).
+     *
+     * [spatialGainDb] / [spatialDelayMs] add the spatial compensation of the
+     * element's position (distance gain + propagation delay — the same C law
+     * the Windows app and the VST apply to their real output) ON TOP of the
+     * output's own [gainDb]/[delayMs], so a far element sounds at the same
+     * level and timing as a close one.
      */
     fun play(
         outputId: String,
@@ -58,25 +90,64 @@ class TestSignalPlayer {
         delayMs: Float,
         isMuted: Boolean,
         device: AudioDeviceInfo? = null,
+        spatialGainDb: Float = 0f,
+        spatialDelayMs: Float = 0f,
         onFinished: () -> Unit = {}
     ): Boolean {
         if (isMuted) return false
+        if (type == TestSignalType.SILENCE) {
+            // "Generator off": kill this output's signal, leave the others.
+            stop(outputId)
+            return false
+        }
 
-        val amplitude = (BASE_AMPLITUDE * volume * 10f.pow(gainDb / 20f)).coerceIn(0f, 0.95f)
+        val amplitude = (BASE_AMPLITUDE * volume * 10f.pow((gainDb + spatialGainDb) / 20f)).coerceIn(0f, 0.95f)
         if (amplitude <= 0.002f) return false
 
         stop(outputId)
 
-        // Delay offset quantized to whole samples at 48 kHz (1 sample ≈ 0.021 ms)
-        val delaySamples = ((delayMs.coerceIn(0f, 2000f)) / 1000f * SAMPLE_RATE).roundToInt()
+        // Delay offset quantized to whole samples at 48 kHz (1 sample ≈ 0.021 ms).
+        // The spatial propagation delay joins the output's own delay (both are
+        // intentional and must not fight the correction loop downstream).
+        val totalDelayMs = (delayMs + spatialDelayMs).coerceIn(0f, 2000f)
+        val delaySamples = (totalDelayMs / 1000f * SAMPLE_RATE).roundToInt()
         val signalSamples = (durationMs / 1000f * SAMPLE_RATE).toInt()
         val totalSamples = signalSamples + delaySamples
         val samples = ShortArray(totalSamples)
 
-        when (type) {
-            TestSignalType.PINK_NOISE -> generatePinkNoise(samples, delaySamples, amplitude)
-            TestSignalType.SWEEP -> generateSweep(samples, delaySamples, amplitude)
-            TestSignalType.TONE -> generateTone(samples, delaySamples, amplitude)
+        // On device, delegate to the shared C stateful generator (the exact
+        // code the Windows app runs through its SignalGenerator wrapper):
+        // identical phase integration, pink filter and PRNG. Without the
+        // native lib (JVM unit tests, stripped builds) — or if creating the
+        // handle fails — the pure-Kotlin generators below produce the same
+        // signals.
+        var filled = false
+        if (NativeDsp.isAvailable) {
+            if (nativeSiggenHandle == 0L) nativeSiggenHandle = NativeDsp.nativeSiggenCreate()
+            if (nativeSiggenHandle != 0L) {
+                val f = FloatArray(signalSamples)
+                NativeDsp.nativeSiggenFill(
+                    nativeSiggenHandle,
+                    type.waveformInt,
+                    1000f,          // TONE frequency (Sine)
+                    amplitude,
+                    20f,             // SWEEP start
+                    20000f,         // SWEEP end
+                    5f,             // SWEEP duration
+                    SAMPLE_RATE,
+                    f
+                )
+                for (i in 0 until signalSamples) samples[delaySamples + i] = toShort16(f[i].toDouble())
+                filled = true
+            }
+        }
+        if (!filled) {
+            when (type) {
+                TestSignalType.PINK_NOISE -> generatePinkNoise(samples, delaySamples, amplitude)
+                TestSignalType.SWEEP -> generateSweep(samples, delaySamples, amplitude)
+                TestSignalType.TONE -> generateTone(samples, delaySamples, amplitude)
+                TestSignalType.SILENCE -> {} // unreachable: handled above
+            }
         }
 
         val track = buildTrack(totalSamples) ?: return false
