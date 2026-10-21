@@ -15,6 +15,7 @@
 // v1.10.0: el hub del PC (RouteHub.h / HubPanel.h) se retiró; la pestaña
 // "Ruteos" (RoutingMatrix) sigue siendo la de entradas/salidas.
 #include "PhoneLink.h"
+#include "PhoneSyncPayload.h"
 #include "RemoteAudioLink.h"
 #include "AsioBridgeClient.h"
 #include "StartupLog.h"
@@ -307,6 +308,7 @@ public:
     // más; cero malloc en el camino de audio salvo ese cambio puntual).
     std::vector<float> spatialRingL_, spatialRingR_;
     int spatialWritePos_ = 0;
+    bool spatialWasActive_ = false;   // solo hilo de audio
 
     // Modo de trabajo activo (v1.8): "" = ajustes personalizados; si hay id
     // válida se persiste en settings.json y se recarga en el arranque.
@@ -432,6 +434,19 @@ private:
         const auto modeVal = obj->getProperty("activeModeId");
         if (!modeVal.isVoid() && !modeVal.toString().isEmpty())
             activeModeId_ = modeVal.toString().toStdString();
+        // Posición espacial (v1.10.1: antes no se guardaba y cada arranque
+        // volvía al neutro aunque el usuario la hubiera movido).
+        storeSpatial(phonesync::spatialOf(obj));
+    }
+
+    // Publica una posición espacial leída de un JSON (settings, preset o
+    // móvil) en los atómicos que lee el callback de audio.
+    void storeSpatial(const phonesync::Spatial& sp) {
+        if (!sp.present) return;
+        spatialX_.store(sp.x, std::memory_order_relaxed);
+        spatialY_.store(sp.y, std::memory_order_relaxed);
+        spatialZ_.store(sp.z, std::memory_order_relaxed);
+        spatialSize_.store(sp.size, std::memory_order_relaxed);
     }
 
     // === Modos de trabajo (v1.8) ===
@@ -510,12 +525,21 @@ private:
             activeModeId_.clear();
             return;
         }
+        // Los ajustes guardados se leen ANTES de aplicar el modo:
+        // applyModeProfile() termina con saveSettings(), que reescribe
+        // settings.json con el catálogo puro — leerlo después (como hacía la
+        // v1.8-v1.10.0) devolvía el catálogo y los cambios del usuario dentro
+        // del modo se perdían en cada arranque.
+        juce::var saved;
+        if (const auto f = settingsFile(); f.existsAsFile())
+            saved = juce::JSON::parse(f);
         applyModeProfile(m);
-        const auto f = settingsFile();
-        if (f.existsAsFile()) {
-            if (const auto v = juce::JSON::parse(f); v.getDynamicObject() != nullptr)
-                applyEngineConfigVar(v);
+        if (saved.getDynamicObject() != nullptr) {
+            applyEngineConfigVar(saved);
+            saveSettings();   // el fichero vuelve a ser catálogo + ajustes
         }
+        // El arranque no es un cambio del usuario: nada que deshacer.
+        undoStack_.clear();
         startuplog::log(juce::String::fromUTF8("consola: modo activo ")
             + juce::String::fromUTF8(m->name) + juce::String::fromUTF8(" cargado"));
     }
@@ -623,7 +647,8 @@ private:
         // retardo de propagación d/343·1000 al final de la cadena (post-EQ +
         // nivel): "lejos y grande" llega al oído con el mismo nivel y
         // timing que "cerca y pequeño". Solo si hay compensación (el neutro
-        // z=0.5/size=0.5/x=0 da 0 dB/0 ms y no toca la señal).
+        // z=0.5/size=0.5/x=0 da 0 dB/0 ms y no toca la señal: desde la
+        // v1.10.1 la ley del core es relativa a ese neutro).
         {
             const float sx = spatialX_.load(std::memory_order_relaxed);
             const float sy = spatialY_.load(std::memory_order_relaxed);
@@ -631,12 +656,22 @@ private:
             const float ss = spatialSize_.load(std::memory_order_relaxed);
             float gainDb = 0.0f, delayMs = 0.0f;
             acoustical_spatial_compensate(sx, sy, sz, ss, &gainDb, &delayMs);
-            if (gainDb != 0.0f || delayMs > 0.0f) {
+            const bool active = gainDb != 0.0f || delayMs > 0.0f;
+            if (active) {
                 const int need = static_cast<int>(delayMs * lastSampleRate_ / 1000.0f);
                 const int minRing = need + numSamples + 2;
                 if (static_cast<int>(spatialRingL_.size()) < minRing) {
+                    // Solo si el bloque supera lo preasignado en
+                    // audioDeviceAboutToStart (allí se reserva el peor caso).
                     spatialRingL_.assign(static_cast<size_t>(minRing + 512), 0.0f);
                     spatialRingR_.assign(spatialRingL_.size(), 0.0f);
+                    spatialWritePos_ = 0;
+                } else if (!spatialWasActive_) {
+                    // Volver a compensar tras un rato en el neutro: el anillo
+                    // guarda el audio de la última vez (puede ser de hace
+                    // minutos) y la línea lo soltaría por la salida. Se vacía.
+                    std::fill(spatialRingL_.begin(), spatialRingL_.end(), 0.0f);
+                    std::fill(spatialRingR_.begin(), spatialRingR_.end(), 0.0f);
                     spatialWritePos_ = 0;
                 }
                 const int ringSize = static_cast<int>(spatialRingL_.size());
@@ -654,6 +689,7 @@ private:
                 }
                 spatialWritePos_ = (spatialWritePos_ + numSamples) % ringSize;
             }
+            spatialWasActive_ = active;
         }
 
         if (numOutputs > 0 && output[0])
@@ -679,6 +715,18 @@ private:
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
         lastSampleRate_ = device ? device->getCurrentSampleRate() : 48000.0;
+        // Línea de la compensación espacial preasignada para el peor caso
+        // (z = 1: 7.5 m más que el neutro) + el bloque: el callback de audio
+        // no tiene que hacer malloc al mover el control de distancia.
+        const int block = device ? device->getCurrentBufferSizeSamples() : 2048;
+        const double maxMs =
+            (ACOUSTICAL_SPATIAL_MAX_METERS - ACOUSTICAL_SPATIAL_NEUTRAL_METERS) / 343.0 * 1000.0;
+        const auto size = static_cast<size_t>(std::ceil(maxMs * lastSampleRate_ / 1000.0))
+                          + static_cast<size_t>(juce::jmax(block, 1)) + 2 + 512;
+        spatialRingL_.assign(size, 0.0f);
+        spatialRingR_.assign(size, 0.0f);
+        spatialWritePos_ = 0;
+        spatialWasActive_ = false;
     }
     void audioDeviceStopped() override {}
     // El dispositivo avisó de un error (tarjeta desconectada, driver que
@@ -810,6 +858,20 @@ private:
         // Modo de trabajo activo (v1.8): el id del perfil del catálogo; al
         // arrancar la app se vuelve a aplicar (con los ajustes guardados).
         obj->setProperty("activeModeId", juce::String::fromUTF8(activeModeId_.c_str()));
+        // Mismo dato con el nombre que lee el móvil (applyRemoteConfig de
+        // Android lee "modeId"; con solo "activeModeId" el modo del PC nunca
+        // le llegaba).
+        obj->setProperty("modeId", juce::String::fromUTF8(activeModeId_.c_str()));
+        // Posición espacial: se persiste (settings/presets) y viaja al móvil
+        // con "Sincronizar" — el móvil la lee de aquí ("spatial").
+        {
+            auto* sp = new juce::DynamicObject();
+            sp->setProperty("x", spatialX_.load(std::memory_order_relaxed));
+            sp->setProperty("y", spatialY_.load(std::memory_order_relaxed));
+            sp->setProperty("z", spatialZ_.load(std::memory_order_relaxed));
+            sp->setProperty("size", spatialSize_.load(std::memory_order_relaxed));
+            obj->setProperty("spatial", juce::var(sp));
+        }
         // Curva del EQ manual (antes no se guardaba: el preset perdía lo
         // principal, M8)
         auto eqGains = new juce::DynamicObject();
@@ -847,56 +909,40 @@ private:
         return juce::var(obj);
     }
 
-    void applyPhoneSync(const juce::var& payload, bool forceApply = false) {
-        // Payload sincronizado desde la app móvil: perfiles, correcciones, ajustes
-        auto* obj = payload.getDynamicObject();
-        if (obj == nullptr) return;
-
-        // Ajustes del móvil. La respuesta de cada sondeo lleva siempre su config
-        // en vivo, pero el PC solo la APLICA en dos casos explícitos — nunca
-        // automático, para que el sondeo de 3 s no vaya sobreescribiendo el PC:
-        //  (a) staged: el móvil pulsó "Enviar mis ajustes al PC" (bandera
-        //      sendToPc). El PC confirma con un push "acked" y el móvil borra
-        //      su estado pendiente.
+    void applyPhoneSync(const juce::var& reply, bool forceApply = false) {
+        // Respuesta de sync del móvil: un SOBRE {"type","ok","payload":{…}}
+        // con la config en vivo en payload.config (ver PhoneSyncPayload.h).
+        // Hasta la v1.10.0 se leía el nivel de arriba del sobre, donde no hay
+        // nada: "Recibir del móvil" no aplicaba ningún ajuste y el modo y el
+        // espacio del móvil nunca llegaban.
+        //
+        // La config viaja en CADA respuesta, pero el PC solo la APLICA en dos
+        // casos explícitos — nunca en el sondeo automático de 3 s, que si no
+        // reescribiría el PC (y reharía el panel de Ajustes) cada 3 s:
+        //  (a) staged: el móvil pidió enviar sus ajustes al PC (sendToPc). El
+        //      PC confirma con un push "acked" y el móvil borra lo pendiente.
         //  (b) forceApply: el usuario pulsó "Recibir del móvil" en Ajustes.
-        const auto cfg = obj->getProperty("config");
-        auto* cfgObj = cfg.getDynamicObject();
-        const bool staged = static_cast<bool>(obj->getProperty("sendToPc"));
-        if (cfgObj != nullptr && (forceApply || staged)) {
-            applyEngineConfigVar(juce::var(cfgObj));
-            if (staged) {
-                auto* ack = new juce::DynamicObject();
-                ack->setProperty("acked", true);
-                phoneLink_->pushSync(juce::var(ack), juce::String::fromUTF8("Ajustes del móvil aplicados"));
-            }
-        }
+        //
+        // Orden, la misma regla que el arranque: el modo del catálogo es la
+        // base (solo si cambia) y la config del móvil va ENCIMA (sus ajustes
+        // dentro del modo, su posición espacial).
+        auto* cfgObj = phonesync::configOf(reply);
+        const bool staged = phonesync::stagedOf(reply);
+        if (cfgObj == nullptr || !(forceApply || staged)) return;
 
-        // Posición espacial desde el móvil (v1.8): las 4 coordenadas
-        // normalizadas que la app del móvil envía con su config; el PC las
-        // aplica a su propia cadena de salida (misma ley que el móvil).
-        if (auto* sp = obj->getProperty("spatial").getDynamicObject()) {
-            auto num = [](const juce::DynamicObject* o, const char* key, double def) {
-                if (o == nullptr) return def;
-                const auto val = o->getProperty(key);
-                return val.isVoid() ? def : static_cast<double>(val);
-            };
-            spatialX_.store(static_cast<float>(num(sp, "x", spatialX_.load())), std::memory_order_relaxed);
-            spatialY_.store(static_cast<float>(num(sp, "y", spatialY_.load())), std::memory_order_relaxed);
-            spatialZ_.store(static_cast<float>(num(sp, "z", spatialZ_.load())), std::memory_order_relaxed);
-            spatialSize_.store(static_cast<float>(num(sp, "size", spatialSize_.load())), std::memory_order_relaxed);
-            if (settingsPanel_) settingsPanel_->refresh();  // los faders de Espacio se mueven
-        }
-
-        // Modo de trabajo enviado desde el móvil (id del catálogo)
-        const auto modeId = obj->getProperty("modeId").toString();
-        if (!modeId.isEmpty()) {
+        const auto modeId = phonesync::modeIdOf(cfgObj);
+        if (modeId.isNotEmpty() && modeId.toStdString() != activeModeId_)
             if (const auto* m = acoustical_mode_by_id(modeId.toRawUTF8()))
-                applyModeProfile(m);
-        }
+                applyModeProfile(m);   // deshacible; guarda y redibuja
 
-        // v1.10.0: los comandos de hub que en su día venían de la app móvil
-        // ya no se procesan (el hub se retiró); el resto del handler de
-        // sincronización es el de siempre.
+        applyEngineConfigVar(juce::var(cfgObj));   // incluye la posición espacial
+        saveSettings();
+
+        if (staged) {
+            auto* ack = new juce::DynamicObject();
+            ack->setProperty("acked", true);
+            phoneLink_->pushSync(juce::var(ack), juce::String::fromUTF8("Ajustes del móvil aplicados"));
+        }
     }
 
     void refreshPresets() {
@@ -982,7 +1028,8 @@ private:
                     }
                 }
             }
-        settingsPanel_->refresh();
+        storeSpatial(phonesync::spatialOf(obj));
+        if (settingsPanel_) settingsPanel_->refresh();
     }
 
     // === Layout ===

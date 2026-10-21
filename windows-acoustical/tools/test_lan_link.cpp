@@ -12,6 +12,7 @@
 
 #include "../app/BeaconListener.h"
 #include "../app/SyncClient.h"
+#include "../app/PhoneSyncPayload.h"
 #include "../app/RemoteAudioLink.h"
 
 #include <algorithm>
@@ -101,6 +102,15 @@ public:
         eq1->setProperty("extraSweeps", 2);
         eqs->setProperty("eq1", juce::var(eq1));
         c->setProperty("dynamicEqs", juce::var(eqs));
+        // Como publishLocalConfigToSync() de Android: el modo y la posición
+        // espacial viajan DENTRO de la config.
+        c->setProperty("modeId", "escenario3");
+        auto* sp = new juce::DynamicObject();
+        sp->setProperty("x", 0.25);
+        sp->setProperty("y", 0.0);
+        sp->setProperty("z", 0.9);
+        sp->setProperty("size", 0.9);
+        c->setProperty("spatial", juce::var(sp));
         return juce::var(c);
     }
 
@@ -348,6 +358,43 @@ int main() {
                   payloadOf(reply)->getProperty("config").getDynamicObject()->getProperty("dynamicEqs")
                       .getDynamicObject() != nullptr,
               "pull → config en vivo del móvil (escalares + ecuas)");
+
+        // Lo que hace la CONSOLA con esa misma respuesta (PhoneSyncPayload.h:
+        // applyPhoneSync lee de aquí). Hasta la v1.10.0 la consola buscaba
+        // "config"/"spatial"/"modeId" en el nivel de arriba del sobre y no
+        // encontraba nada.
+        {
+            auto* cfg = phonesync::configOf(reply);
+            check(cfg != nullptr && static_cast<double>(cfg->getProperty("maxGainDb")) == 14.0,
+                  "consola: encuentra la config del móvil dentro del sobre (payload.config)");
+            check(phonesync::modeIdOf(cfg) == "escenario3",
+                  "consola: lee el modo de trabajo del móvil (config.modeId)");
+            const auto sp = phonesync::spatialOf(cfg);
+            check(sp.present && std::abs(sp.x - 0.25f) < 1e-6f && std::abs(sp.z - 0.9f) < 1e-6f
+                      && std::abs(sp.size - 0.9f) < 1e-6f,
+                  "consola: lee la posición espacial del móvil (config.spatial)");
+            check(!phonesync::stagedOf(reply),
+                  "consola: sin 'enviar al PC' el sondeo no aplica nada (sendToPc ausente)");
+            // Robustez: sobre vacío, posición incompleta o con basura
+            check(phonesync::configOf(juce::var()) == nullptr, "consola: respuesta vacía → sin config");
+            auto* partial = new juce::DynamicObject();
+            auto* half = new juce::DynamicObject();
+            half->setProperty("x", 0.5);
+            partial->setProperty("spatial", juce::var(half));
+            check(!phonesync::spatialOf(partial).present, "consola: posición incompleta → se ignora");
+            auto* junk = new juce::DynamicObject();
+            auto* bad = new juce::DynamicObject();
+            bad->setProperty("x", "hola"); bad->setProperty("y", 0.0);
+            bad->setProperty("z", 0.5); bad->setProperty("size", 0.5);
+            junk->setProperty("spatial", juce::var(bad));
+            check(!phonesync::spatialOf(junk).present, "consola: posición con texto → se ignora");
+            juce::var keepPartial(partial), keepJunk(junk);
+            // El settings.json viejo del PC solo tenía "activeModeId"
+            auto* old = new juce::DynamicObject();
+            old->setProperty("activeModeId", "pas");
+            juce::var keepOld(old);
+            check(phonesync::modeIdOf(old) == "pas", "consola: acepta también 'activeModeId' (settings.json viejo)");
+        }
 
         // El móvil encola "enviar mis ajustes al PC" → el sondeo del PC ve la bandera
         phone.stageSendToPc();

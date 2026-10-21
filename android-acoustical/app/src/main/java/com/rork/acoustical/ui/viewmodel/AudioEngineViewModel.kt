@@ -488,10 +488,20 @@ class AudioEngineViewModel(
         // it (the Android mirror of the Windows loadActiveMode: the catalog
         // is the base, the saved settings are the personalization — the
         // overlay only happens when a mode was active, as in Windows).
+        //
+        // v1.10.1: the saved snapshot is read BEFORE applying the mode.
+        // setWorkMode() ends with persistCustomSettings(), which overwrites
+        // the stored snapshot with the pure catalog values — reading it
+        // afterwards (as v1.9-v1.10.0 did) returned the catalog, so every
+        // adjustment made inside a mode was lost on each restart.
         val persistedModeId = profileStore?.loadActiveModeId()
         if (!persistedModeId.isNullOrEmpty() && _uiState.value.activeModeId != persistedModeId) {
+            val savedSettings = profileStore?.loadCustomSettings()
             setWorkMode(persistedModeId)
-            profileStore?.loadCustomSettings()?.let { applyCustomSettings(it) }
+            savedSettings?.let {
+                applyCustomSettings(it)
+                persistCustomSettings()  // the store is again catalog + adjustments
+            }
         }
     }
 
@@ -1640,6 +1650,41 @@ class AudioEngineViewModel(
             ?.takeIf { it !is JsonNull }?.content?.toDoubleOrNull()
         fun b(key: String): Boolean? = (cfg[key] as? JsonPrimitive)
             ?.takeIf { it !is JsonNull }?.content?.toBooleanStrictOrNull()
+
+        // Work mode from the PC (v1.8): the id of a catalog mode. It goes
+        // FIRST (v1.10.1): the mode is the base and the rest of the PC's
+        // config is applied ON TOP of it — the same "catalog + adjustments"
+        // rule as the startup. Applied after the config (as before), the
+        // catalog overwrote the values the PC had just sent. setWorkMode
+        // ignores an unchanged id, which is also the reentrancy guard for a
+        // re-pushed payload. "" from the PC = no mode: nothing to apply.
+        (cfg["modeId"] as? JsonPrimitive)
+            ?.takeIf { it !is JsonNull }?.content
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { modeId ->
+                if (modeId != _uiState.value.activeModeId) setWorkMode(modeId)
+            }
+
+        // Element spatial position from the PC (its Espacio section): mirror
+        // it locally so both sides compensate with the identical law. Also
+        // before the "no delta" exit below (v1.10.1): a push that only moved
+        // the element used to be discarded there.
+        (cfg["spatial"] as? JsonObject)?.let { sp ->
+            val nx = (sp["x"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            val ny = (sp["y"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            val nz = (sp["z"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            val ns = (sp["size"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
+            if (nx != null && ny != null && nz != null && ns != null &&
+                nx.isFinite() && ny.isFinite() && nz.isFinite() && ns.isFinite()
+            ) {
+                val pos = _uiState.value.spatialPosition
+                if (pos.x != nx || pos.y != ny || pos.z != nz || pos.size != ns) {
+                    updateSpatialPosition(SpatialPosition(nx, ny, nz, ns))
+                    publishLocalConfigToSync()
+                }
+            }
+        }
+
         val state = _uiState.value
         val c = state.config
         val newCfg = c.copy(
@@ -1711,32 +1756,6 @@ class AudioEngineViewModel(
             }
             engine?.setDynamicEqEnabled(idx, on && _uiState.value.isRunning)
             publishLocalConfigToSync()
-        }
-
-        // Work mode from the PC (v1.8): the id of a catalog mode. Applying it
-        // re-publishes our full config, so the PC converges on the same
-        // values it sent (setWorkMode ignores an unchanged id, which is also
-        // the reentrancy guard for a re-pushed payload).
-        (cfg["modeId"] as? JsonPrimitive)
-            ?.takeIf { it !is JsonNull }?.content
-            ?.let { modeId ->
-                if (modeId != state.activeModeId) setWorkMode(modeId)
-            }
-
-        // Element spatial position from the PC (the same object the PC
-        // publishes from its Espacio section): mirror it locally so both
-        // sides compensate with the identical law.
-        (cfg["spatial"] as? JsonObject)?.let { sp ->
-            val nx = (sp["x"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
-            val ny = (sp["y"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
-            val nz = (sp["z"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
-            val ns = (sp["size"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.toFloatOrNull()
-            if (nx != null && ny != null && nz != null && ns != null) {
-                val pos = state.spatialPosition
-                if (pos.x != nx || pos.y != ny || pos.z != nz || pos.size != ns) {
-                    updateSpatialPosition(SpatialPosition(nx, ny, nz, ns))
-                }
-            }
         }
     }
 
