@@ -498,7 +498,7 @@ private:
         spatialReadout_->setText(
             juce::String(gainDb, 1) + juce::String::fromUTF8(" dB de ganancia  ·  ")
             + juce::String(delayMs, 1) + juce::String::fromUTF8(" ms de retardo  ·  ")
-            + juce::String(meters, 1) + juce::String::fromUTF8(" m de distancia (0 m = sin compensación)"),
+            + juce::String(meters, 1) + juce::String::fromUTF8(" m de distancia (7,5 m centrado y tamaño medio = sin compensación)"),
             juce::dontSendNotification);
     }
 

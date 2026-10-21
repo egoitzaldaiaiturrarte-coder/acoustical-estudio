@@ -375,6 +375,16 @@ void acoustical_siggen_fill(acoustical_siggen *g,
         for (int i = 0; i < count; ++i) out[i] = 0.0f;
         return;
     }
+    /* Lo mismo para los parámetros que entran en un log()/exp(): una
+     * frecuencia de seno no finita, o un barrido con extremos <= 0 / no
+     * finitos (log de un número <= 0 = NaN), envenenaría el bloque entero. */
+    if (!isfinite((double)frequencyHz) || !isfinite((double)amplitude) ||
+        (waveform == ACOUSTICAL_WAVE_LOG_SWEEP &&
+         (!(sweepStartHz > 0.0f) || !(sweepEndHz > 0.0f) ||
+          !isfinite((double)sweepStartHz) || !isfinite((double)sweepEndHz)))) {
+        for (int i = 0; i < count; ++i) out[i] = 0.0f;
+        return;
+    }
 
     const double twoPi = 2.0 * ACOUSTICAL_PI;
     for (int i = 0; i < count; ++i) {
@@ -384,7 +394,13 @@ void acoustical_siggen_fill(acoustical_siggen *g,
             case ACOUSTICAL_WAVE_BAND_SINE:
                 sample = (float)sin(g->phase);
                 g->phase += twoPi * (double)frequencyHz / (double)sampleRate;
-                if (g->phase >= twoPi) g->phase -= twoPi;
+                /* fmod y no una sola resta: con una frecuencia > fs (o
+                 * negativa) el incremento supera 2π y la fase crecería sin
+                 * límite, perdiendo precisión en el sin(). */
+                if (g->phase >= twoPi || g->phase < 0.0) {
+                    g->phase = fmod(g->phase, twoPi);
+                    if (g->phase < 0.0) g->phase += twoPi;
+                }
                 break;
             case ACOUSTICAL_WAVE_LOG_SWEEP: {
                 /* f(t) = f0·(f1/f0)^(t/T) con fase integrada muestra a muestra
@@ -441,25 +457,42 @@ static float clampF(float v, float lo, float hi) {
 void acoustical_spatial_compensate(float x, float y, float z, float size,
                                     float *out_gain_db, float *out_delay_ms) {
     /* Entradas no finitas (un fader corrupto) no pueden envenenar la cadena
-     * de salida en vivo: se trata todo como posición NEUTRA (centrada, cerca,
-     * tamaño medio) → 0 dB / 0 ms, nunca +3 dB de "tamaño 0". */
+     * de salida en vivo: se trata todo como la posición NEUTRA (centrada,
+     * z = 0.5, tamaño medio) → 0 dB / 0 ms exactos. */
     if (!isfinite((double)x) || !isfinite((double)z) ||
         !isfinite((double)size)) {
-        x = 0.0f; z = 0.0f; size = 0.5f;
+        if (out_gain_db) *out_gain_db = 0.0f;
+        if (out_delay_ms) *out_delay_ms = 0.0f;
+        return;
     }
     (void)y;  /* la ley de compensación no usa y (solo la posición la guarda) */
     x = clampF(x, -1.0f, 1.0f);
     z = clampF(z, 0.0f, 1.0f);
     size = clampF(size, 0.0f, 1.0f);
 
-    const float distanceMeters = z * 15.0f;
+    /* v1.10.1: la compensación es RELATIVA a la posición neutra (centro,
+     * z = 0.5 → 7.5 m, tamaño medio), que da exactamente 0 dB / 0 ms.
+     *
+     * Antes la ley era absoluta (referencia 1 m): la posición por defecto de
+     * las tres versiones (z = 0.5) subía la salida +17.5 dB y la retrasaba
+     * 21.9 ms nada más arrancar la app o insertar el VST — en contra de lo
+     * que dicen la consola ("el neutro z=0.5/size=0.5/x=0 da 0 dB/0 ms") y
+     * el rótulo del plugin ("posición neutra (0 dB · 0 ms)").
+     *
+     * La distancia se acota a 1 m por debajo (campo cercano): la ley vieja
+     * saltaba 6 dB de golpe al cruzar 0.5 m. */
+    const float distanceMeters = z * ACOUSTICAL_SPATIAL_MAX_METERS;
+    const float effectiveMeters = distanceMeters > 1.0f ? distanceMeters : 1.0f;
     const float distanceGain =
-        distanceMeters > 0.5f ? 20.0f * log10f(distanceMeters / 1.0f) : 0.0f;
+        20.0f * log10f(effectiveMeters / ACOUSTICAL_SPATIAL_NEUTRAL_METERS);
     const float sizeGain = (0.5f - size) * 6.0f;
     const float lateralGain = fabsf(x) * 1.5f;
 
     const float gain = distanceGain + sizeGain + lateralGain;
-    const float delayMs = (distanceMeters / 343.0f) * 1000.0f;
+    /* Retardo de propagación respecto al neutro; un retardo negativo no
+     * existe: lo que está más cerca que el neutro sale sin retardo. */
+    const float extraMeters = distanceMeters - ACOUSTICAL_SPATIAL_NEUTRAL_METERS;
+    const float delayMs = extraMeters > 0.0f ? (extraMeters / 343.0f) * 1000.0f : 0.0f;
     if (out_gain_db) *out_gain_db = gain;
     if (out_delay_ms) *out_delay_ms = delayMs;
 }
@@ -506,123 +539,55 @@ void acoustical_spatial_compensate(float x, float y, float z, float size,
 #define ACOUSTICAL_EQ_SWEEPS 6
 #define ACOUSTICAL_EQ_Q 0.1f
 
-static acoustical_support_band bandHz(float hz) {
-    acoustical_support_band b;
-    b.frequencyHz = hz;
-    b.gainDb = 0.0f;
-    b.q = ACOUSTICAL_EQ_Q;
-    return b;
-}
+/* Una banda de apoyo del catálogo (0 dB al arrancar, Q del catálogo). */
+#define ACOUSTICAL_SB(hz) { (hz), 0.0f, ACOUSTICAL_EQ_Q }
 
 /* v1.10.0: cada ecu lleva su ganancia máxima y su velocidad de suavizado
- * (los tres comparten intervalo, mezclador 0.8 y barridos extra). */
-static acoustical_eq_profile makeEq(int enabled, int startFrom,
-                                     float maxGainDb, float speedMultiplier,
-                                     float f0, float f1, float f2, float f3) {
-    acoustical_eq_profile e;
-    e.enabled = enabled;
-    e.intervalMs = ACOUSTICAL_EQ_INTERVAL;
-    e.maxGainDb = maxGainDb;
-    e.mixerLevel = 0.8f;
-    e.speedMultiplier = speedMultiplier;
-    e.extraSweeps = ACOUSTICAL_EQ_SWEEPS;
-    e.startFrom = startFrom;
-    /* Banco por zona (las 4 frecuencias se pasan por valor: sin compound
-     * literals, que el .c se compila también como C++ en el gate). */
-    const float freqs[4] = { f0, f1, f2, f3 };
-    for (int k = 0; k < 4; ++k) e.support[k] = bandHz(freqs[k]);
-    return e;
-}
+ * (los tres comparten intervalo, mezclador 0.8 y barridos extra). Orden de
+ * campos = acoustical_eq_profile. */
+#define ACOUSTICAL_EQ(startFrom, maxGainDb, speed, f0, f1, f2, f3)          \
+    { 1, ACOUSTICAL_EQ_INTERVAL, (maxGainDb), 0.8f, (speed),                \
+      ACOUSTICAL_EQ_SWEEPS, (startFrom),                                    \
+      { ACOUSTICAL_SB(f0), ACOUSTICAL_SB(f1), ACOUSTICAL_SB(f2),            \
+        ACOUSTICAL_SB(f3) } }
 
-static acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT];
+/* Los tres ecuas, idénticos en los seis modos (zonas: agudos / medios /
+ * subgraves). */
+#define ACOUSTICAL_COMMON_EQS                                                   \
+    { ACOUSTICAL_EQ(0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),      \
+      ACOUSTICAL_EQ(1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),            \
+      ACOUSTICAL_EQ(2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) }
 
-/* v1.9: la tabla se rellena en runtime (primera consulta) en vez de con un
- * initializer estático: en C estricto no se permiten llamadas a funciones
- * (makeEq/bandHz) dentro de un initializer de objeto estático — la forma
- * anterior (v1.8, `= { ... }`) solo compilaba cuando el .c se trataba como
- * C++ (así compila el gate), y el NDK de Android (clang, C puro) la
- * rechazaba. Mismos valores, mismo orden: el fichero compila igual como C
- * que como C++. */
-static void ensureModeProfiles(void) {
-    static int ready = 0;
-    if (ready) return;
+/* Un modo completo. Orden de campos = acoustical_mode_profile. */
+#define ACOUSTICAL_MODE(id, name, spl, corr, noise, z, size)                   \
+    { (id), (name), (spl), ACOUSTICAL_GAIN50, ACOUSTICAL_B124,                  \
+      ACOUSTICAL_FFT_8192, ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH,               \
+      (corr), (noise), 0.0f, ACOUSTICAL_COMMON_EQS,                             \
+      0.0f, 0.0f, (z), (size), ACOUSTICAL_WAVE_SILENCE, -12.0f }
 
-    kModeProfiles[0] = (acoustical_mode_profile){
-        "carro-normal", "Coche · Normal",
-        78.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
-        ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
-        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
-        0.0f, 0.0f, 0.2f, 0.3f,
-        ACOUSTICAL_WAVE_SILENCE, -12.0f
-    };
-
-    kModeProfiles[1] = (acoustical_mode_profile){
-        "carro-aire-libre", "Coche · Aire libre",
-        97.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
-        ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 0, 1, 0.0f,
-        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
-        0.0f, 0.0f, 0.5f, 0.5f,
-        ACOUSTICAL_WAVE_SILENCE, -12.0f
-    };
-
-    kModeProfiles[2] = (acoustical_mode_profile){
-        "estudio-esc1", "Estudio · Escenario 1",
-        89.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
-        ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
-        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
-        0.0f, 0.0f, 0.5f, 0.5f,
-        ACOUSTICAL_WAVE_SILENCE, -12.0f
-    };
-
-    kModeProfiles[3] = (acoustical_mode_profile){
-        "escenario2", "Escenario 2",
-        91.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
-        ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 0, 0, 0.0f,
-        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
-        0.0f, 0.0f, 0.5f, 0.5f,
-        ACOUSTICAL_WAVE_SILENCE, -12.0f
-    };
-
-    kModeProfiles[4] = (acoustical_mode_profile){
-        "escenario3", "Escenario 3",
-        93.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
-        ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
-        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
-        0.0f, 0.0f, 0.9f, 0.9f,
-        ACOUSTICAL_WAVE_SILENCE, -12.0f
-    };
-
-    kModeProfiles[5] = (acoustical_mode_profile){
-        "pas", "PAs",
-        103.0f, ACOUSTICAL_GAIN50, ACOUSTICAL_B124, ACOUSTICAL_FFT_8192,
-        ACOUSTICAL_AN_25MS, ACOUSTICAL_SMOOTH, 1, 1, 0.0f,
-        { makeEq(1, 0, 12.0f, 4.0f, 2500.0f, 5000.0f, 10000.0f, 20000.0f),
-          makeEq(1, 1, 6.0f, 2.0f, 63.0f, 250.0f, 1000.0f, 4000.0f),
-          makeEq(1, 2, 3.0f, 0.5f, 20.0f, 41.0f, 62.0f, 83.0f) },
-        0.0f, 0.0f, 0.2f, 0.3f,
-        ACOUSTICAL_WAVE_SILENCE, -12.0f
-    };
-
-    ready = 1;
-}
+/* v1.10.1: tabla ESTÁTICA y const, inicializada en tiempo de compilación.
+ *
+ * La v1.9 la rellenaba en la primera consulta (ensureModeProfiles, con un
+ * flag `static int ready`) porque makeEq()/bandHz() eran funciones y C no
+ * admite llamadas en el initializer de un objeto estático. Pero esa primera
+ * consulta podía llegar a la vez desde dos hilos (UI + audio/JNI): carrera
+ * de datos sobre la tabla y el flag. Con macros el initializer es constante:
+ * sin hilo, sin flag, y compila igual como C (NDK) que como C++ (gate). */
+static const acoustical_mode_profile kModeProfiles[ACOUSTICAL_MODE_COUNT] = {
+    /*               id                  nombre                    SPL     corr ruido  z     tamaño */
+    ACOUSTICAL_MODE("carro-normal",     "Coche · Normal",          78.0f,  1,   1,     0.2f, 0.3f),
+    ACOUSTICAL_MODE("carro-aire-libre", "Coche · Aire libre",      97.0f,  0,   1,     0.5f, 0.5f),
+    ACOUSTICAL_MODE("estudio-esc1",     "Estudio · Escenario 1",   89.0f,  1,   1,     0.5f, 0.5f),
+    ACOUSTICAL_MODE("escenario2",       "Escenario 2",             91.0f,  0,   0,     0.5f, 0.5f),
+    ACOUSTICAL_MODE("escenario3",       "Escenario 3",             93.0f,  1,   1,     0.9f, 0.9f),
+    ACOUSTICAL_MODE("pas",              "PAs",                     103.0f, 1,   1,     0.2f, 0.3f),
+};
 
 const acoustical_mode_profile *acoustical_mode_profiles(void) {
-    ensureModeProfiles();
     return kModeProfiles;
 }
 
 const acoustical_mode_profile *acoustical_mode_by_id(const char *id) {
-    ensureModeProfiles();
     if (!id) return NULL;
     for (int i = 0; i < ACOUSTICAL_MODE_COUNT; ++i)
         if (strcmp(kModeProfiles[i].id, id) == 0) return &kModeProfiles[i];

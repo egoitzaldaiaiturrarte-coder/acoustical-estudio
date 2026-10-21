@@ -188,9 +188,12 @@ static void testFftInvalid() {
     CHECK(acoustical_fft_create(0) == nullptr, "create(0) -> null");
     CHECK(acoustical_fft_create(100) == nullptr, "create(100) -> null (not power of 2)");
     CHECK(acoustical_fft_create(3) == nullptr, "create(3) -> null (odd)");
-    CHECK(acoustical_fft_create(256) != nullptr, "create(256) -> ok");
-    CHECK(acoustical_fft_create(1024) != nullptr, "create(1024) -> ok");
-    CHECK(acoustical_fft_create(16384) != nullptr, "create(16384) -> ok (large)");
+    // Los handles válidos se liberan (antes se filtraban: ASan lo marcaba)
+    for (int size : {256, 1024, 16384}) {
+        acoustical_fft *f = acoustical_fft_create(size);
+        CHECK(f != nullptr, "create(power of 2) -> ok");
+        acoustical_fft_free(f);
+    }
 }
 
 int main() {

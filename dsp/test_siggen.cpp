@@ -7,6 +7,7 @@
 //   - una tasa corrupta silencia el bloque en vez de envenenarlo.
 #include "acoustical_dsp.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -144,6 +145,40 @@ int main() {
         bool finite = true;
         for (float x : buf) if (!std::isfinite(x)) { finite = false; break; }
         CHECK(finite && allZero(buf), "tasa corrupta silencia el bloque");
+        acoustical_siggen_free(g);
+    }
+
+    // 8) Barrido con extremos <= 0 (log de 0 = -Inf) o frecuencia NaN: el
+    //    bloque se silencia en vez de llenarse de NaN.
+    {
+        acoustical_siggen* g = acoustical_siggen_create();
+        std::vector<float> buf(n, 42.0f);
+        acoustical_siggen_fill(g, ACOUSTICAL_WAVE_LOG_SWEEP, 0.0f, 1.0f,
+                                0.0f, 20000.0f, 5.0f, (float)sr, buf.data(), n);
+        CHECK(allZero(buf), "barrido desde 0 Hz silencia el bloque (no NaN)");
+        std::fill(buf.begin(), buf.end(), 42.0f);
+        acoustical_siggen_fill(g, ACOUSTICAL_WAVE_LOG_SWEEP, 0.0f, 1.0f,
+                                20.0f, -5.0f, 5.0f, (float)sr, buf.data(), n);
+        CHECK(allZero(buf), "barrido hacia frecuencia negativa silencia el bloque");
+        std::fill(buf.begin(), buf.end(), 42.0f);
+        acoustical_siggen_fill(g, ACOUSTICAL_WAVE_SINE, NAN, 1.0f,
+                                20.0f, 20000.0f, 5.0f, (float)sr, buf.data(), n);
+        CHECK(allZero(buf), "seno a NaN Hz silencia el bloque");
+        acoustical_siggen_free(g);
+    }
+
+    // 9) Seno por encima de fs (o negativo): la fase se mantiene acotada y la
+    //    salida finita y dentro de [-1, 1] bloque tras bloque.
+    {
+        acoustical_siggen* g = acoustical_siggen_create();
+        std::vector<float> buf(n);
+        bool ok = true;
+        for (int b = 0; b < 50 && ok; ++b) {
+            acoustical_siggen_fill(g, ACOUSTICAL_WAVE_SINE, (b % 2) ? 3.0f * sr : -1000.0f, 1.0f,
+                                    20.0f, 20000.0f, 5.0f, (float)sr, buf.data(), n);
+            for (float x : buf) if (!std::isfinite(x) || std::fabs(x) > 1.0001f) { ok = false; break; }
+        }
+        CHECK(ok, "seno fuera de [0, fs) sigue finito y acotado");
         acoustical_siggen_free(g);
     }
 

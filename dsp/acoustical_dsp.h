@@ -219,11 +219,21 @@ void acoustical_siggen_fill(acoustical_siggen *g,
  * them. One implementation here means the three versions cannot drift.
  * ========================================================================= */
 
+/* z = 1 is this many meters; the NEUTRAL position (x = 0, z = 0.5, size =
+ * 0.5 — the default of the three programs) is the reference of the law. */
+#define ACOUSTICAL_SPATIAL_MAX_METERS 15.0f
+#define ACOUSTICAL_SPATIAL_NEUTRAL_METERS 7.5f
+
 /*
- * out_gain_db = 20·log10(z·15 m) (when the distance exceeds 0.5 m)
+ * Relative to the neutral position (which yields exactly 0 dB / 0 ms):
+ *
+ * out_gain_db = 20·log10(max(z·15 m, 1 m) / 7.5 m)
  *               + (0.5 − size)·6 dB (larger element = more efficient)
  *               + |x|·1.5 dB (off-axis);
- * out_delay_ms = (z·15 m)/343 m/s · 1000.
+ * out_delay_ms = max(z·15 m − 7.5 m, 0)/343 m/s · 1000.
+ *
+ * Range: −20.5 dB (z ≈ 0, size 1) … +10.5 dB (z = 1, size 0, |x| = 1);
+ * 0 … 21.9 ms.
  *
  * Inputs are clamped (x,y ∈ [-1,1]; z,size ∈ [0,1]); non-finite inputs
  * return 0 dB / 0 ms instead of poisoning a live output chain.

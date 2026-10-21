@@ -254,21 +254,45 @@ data class SplCompensation(
          * Moving back (z increases) requires more gain to maintain pressure.
          * Making element bigger requires less gain (larger source = more efficient).
          */
-        fun calculate(pos: SpatialPosition, targetSpl: Float, env: WorkEnvironmentType): SplCompensation {
-            val distanceMeters = pos.z * 15f
-            // Inverse square law: +6 dB per doubling of distance
-            val distanceGain = if (distanceMeters > 0.5f) {
-                20f * kotlin.math.log10(distanceMeters / 1f)
-            } else 0f
+        fun calculate(pos: SpatialPosition, targetSpl: Float, env: WorkEnvironmentType): SplCompensation =
+            calculate(pos.x, pos.z, pos.size)
 
+        /** z = 1 in meters, and the NEUTRAL distance (z = 0.5, the default). */
+        const val MAX_METERS = 15f
+        const val NEUTRAL_METERS = 7.5f
+
+        /**
+         * The EXACT Kotlin mirror of `acoustical_spatial_compensate()` in the
+         * shared C core (the law the Windows app and the VST apply to their
+         * real output), so it also works in pure-JVM tests.
+         *
+         * v1.10.1: relative to the NEUTRAL position (centered, z = 0.5 →
+         * 7.5 m, medium size), which yields exactly 0 dB / 0 ms. The old
+         * absolute law (1 m reference) gave +17.5 dB / 21.9 ms at the default
+         * position; the distance is floored at 1 m (near field) instead of
+         * the old 0.5 m threshold that jumped 6 dB. Inputs are clamped and a
+         * non-finite input yields the neutral 0 dB / 0 ms.
+         */
+        fun calculate(x: Float, z: Float, size: Float): SplCompensation {
+            if (!x.isFinite() || !z.isFinite() || !size.isFinite()) {
+                return SplCompensation(gainAdjustDb = 0f, delayAdjustMs = 0f, isActive = true)
+            }
+            val cx = x.coerceIn(-1f, 1f)
+            val cz = z.coerceIn(0f, 1f)
+            val cs = size.coerceIn(0f, 1f)
+            val distanceMeters = cz * MAX_METERS
+            // Inverse square law relative to the neutral distance: +6 dB per
+            // doubling of distance beyond it, −6 dB per halving.
+            val distanceGain = 20f * kotlin.math.log10(maxOf(distanceMeters, 1f) / NEUTRAL_METERS)
             // Size compensation: larger elements are more efficient, need less gain
-            val sizeGain = (0.5f - pos.size) * 6f
-
+            val sizeGain = (0.5f - cs) * 6f
             // Lateral position: small gain adjustment for off-axis
-            val lateralGain = kotlin.math.abs(pos.x) * 1.5f
-
-            // Delay compensation: speed of sound ~343 m/s
-            val delayMs = (distanceMeters / 343f) * 1000f
+            val lateralGain = kotlin.math.abs(cx) * 1.5f
+            // Propagation delay beyond the neutral distance (speed of sound
+            // ~343 m/s); closer than the neutral = no delay (it cannot be
+            // negative).
+            val extra = distanceMeters - NEUTRAL_METERS
+            val delayMs = if (extra > 0f) extra / 343f * 1000f else 0f
 
             return SplCompensation(
                 gainAdjustDb = distanceGain + sizeGain + lateralGain,
