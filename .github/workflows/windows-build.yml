@@ -150,6 +150,15 @@ jobs:
             -o /tmp/test_wiring -lm
           /tmp/test_wiring
 
+      # El NDK compila dsp/acoustical_dsp.c como C PURO (clang), mientras
+      # que el resto del gate lo compila como C++: la v1.8 llegó a romper el
+      # build de Android con código que solo era válido en C++. Este paso lo
+      # compila como C99 estricto (pedantic, warnings = error).
+      - name: El núcleo DSP compila como C estricto (como el NDK)
+        run: |
+          gcc -std=c99 -Wall -Wextra -pedantic -Werror -Idsp \
+            -c dsp/acoustical_dsp.c -o /tmp/acoustical_dsp_c99.o
+
       - name: Compilar y testear el puente JNI (sin NDK)
         run: |
           g++ -std=c++17 -O2 -Idsp/jni_stub -Idsp \
@@ -309,6 +318,65 @@ jobs:
               https://github.com/juce-framework/JUCE.git /tmp/juce
           fi
           JUCE_DIR=/tmp/juce bash windows-acoustical/tools/build_lantest.sh /tmp/AcousticalLanTest --run
+
+  plugin:
+    # Test del procesador VST REAL (tools/test_plugin.cpp) en Linux:
+    # PluginProcessor.cpp + el motor + el core C enlazados contra los módulos
+    # JUCE reales, sin host. Hasta la v1.10.0 el plugin solo se COMPILABA (en
+    # el job de Windows) y nadie lo ejecutaba: así pasaron sin ser vistos los
+    # modos que escribían valores corruptos, el menú del generador que acababa
+    # siempre en "Seno", la recarga de proyecto que pisaba los ajustes y la
+    # línea de retardo que soltaba audio viejo.
+    #
+    # Coste: la primera vez compila 11 módulos JUCE (~3-5 min); los .o se
+    # cachean por versión de JUCE + script, y las siguientes corridas tardan
+    # lo que el test (~1 min). Corre en paralelo al job dsp, también en PRs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ github.workflow }}-reusable-${{ github.ref }}-plugin
+      cancel-in-progress: true
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Extraer la version de JUCE (para la caché)
+        id: juce_tag
+        run: |
+          tag=$(sed -n 's/.*GIT_TAG[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' \
+                   windows-acoustical/CMakeLists.txt | head -n1)
+          if [ -z "$tag" ]; then
+            echo "No se encontró GIT_TAG en windows-acoustical/CMakeLists.txt" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Caché del clon de JUCE
+        uses: actions/cache@v4
+        with:
+          path: /tmp/juce
+          key: juce-${{ steps.juce_tag.outputs.tag }}-${{ runner.os }}
+
+      - name: Caché de los módulos JUCE compilados
+        uses: actions/cache@v4
+        with:
+          path: /tmp/acoustical-juce-objs
+          key: juce-objs-${{ steps.juce_tag.outputs.tag }}-${{ runner.os }}-${{ hashFiles('windows-acoustical/tools/build_plugintest.sh') }}
+
+      - name: Cabeceras de X11 y freetype (las incluye juce_gui_basics)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libx11-dev libfreetype-dev
+
+      - name: Test del procesador VST (modos, estado, generador, retardo)
+        run: |
+          if [ ! -d "/tmp/juce/modules/juce_core" ]; then
+            git clone --quiet --depth 1 \
+              --branch "${{ steps.juce_tag.outputs.tag }}" \
+              https://github.com/juce-framework/JUCE.git /tmp/juce
+          fi
+          JUCE_DIR=/tmp/juce JUCE_OBJ_DIR=/tmp/acoustical-juce-objs \
+            bash windows-acoustical/tools/build_plugintest.sh /tmp/AcousticalPluginTest --run
 
   build:
     # Build completo de Windows: app + plugin VST (x64 y Win32) + driver ASIO

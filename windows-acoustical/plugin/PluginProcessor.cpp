@@ -160,6 +160,17 @@ AcousticalAudioProcessor::AcousticalAudioProcessor()
     // del proyecto) — cubre tanto los cambios de la ventana como la
     // automatización del host.
     for (auto* param : getParameters()) param->addListener(this);
+    // Punteros a los valores que lee processBlock, resueltos UNA vez: buscar
+    // por id en cada bloque construía juce::String (malloc) en el hilo de
+    // audio, ocho veces por bloque.
+    pGenSource_ = apvts.getRawParameterValue("genSource");
+    pGenFreq_ = apvts.getRawParameterValue("genFreq");
+    pGenLevel_ = apvts.getRawParameterValue("genLevel");
+    pDelayMs_ = apvts.getRawParameterValue("delayMs");
+    pSpatialX_ = apvts.getRawParameterValue("spatialX");
+    pSpatialY_ = apvts.getRawParameterValue("spatialY");
+    pSpatialZ_ = apvts.getRawParameterValue("spatialZ");
+    pSpatialSize_ = apvts.getRawParameterValue("spatialSize");
     engine_.onSweep = [this](acoustical::SweepProcess p, const acoustical::SweepStep& s) {
         std::lock_guard<std::mutex> lock(mutex_);
         sweepSteps_[static_cast<int>(p)] = s;
@@ -244,56 +255,55 @@ void AcousticalAudioProcessor::applyParameters() {
     // nada: los parámetros quedan libres. appliedMode_ guarda el último modo
     // aplicado: sin esa guarda, la escritura de cada parámetro dispararía su
     // propio callback async y el modo se re-aplicaría en bucle.
-    const int modeSel = static_cast<int>(l("mode"));
+    const int modeSel = static_cast<int>(std::lround(l("mode")));
     if (modeSel != appliedMode_) {
         appliedMode_ = modeSel;
         if (modeSel >= 1 && modeSel <= ACOUSTICAL_MODE_COUNT) {
             const auto* m = &acoustical_mode_profiles()[modeSel - 1];
-            auto setRaw = [this](const String& id, float v) {
-                if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(v);
-            };
-            // choice del APVTS en JUCE 7: valor crudo = índice 0-based
-            auto setChoice = [this](const String& id, int index, int count) {
+            // setValueNotifyingHost() espera el valor NORMALIZADO (0-1) del
+            // host: cada valor del catálogo (en sus unidades: dB, ms, Hz,
+            // índice de opción…) pasa por el convertTo0to1 de SU parámetro.
+            // La v1.8-v1.10.0 le pasaba el valor tal cual: SPL 103 → 110,
+            // intervalo 100 ms → 2000, apoyos a 20 kHz/−12 dB, x = −1…
+            // (tools/test_plugin.cpp lo comprueba contra el catálogo).
+            auto setParam = [this](const String& id, float value) {
                 if (auto* p = apvts.getParameter(id))
-                    p->setValueNotifyingHost(
-                        juce::NormalisableRange<float>(0.0f,
-                            static_cast<float>(count - 1))
-                            .convertTo0to1(static_cast<float>(index)));
+                    p->setValueNotifyingHost(p->convertTo0to1(value));
             };
-            setRaw("targetSpl", m->targetSpl);
-            setRaw("maxGain", m->maxGainDb);
-            setRaw("smoothing", m->smoothingFactor);
-            setRaw("noiseSub", m->noiseSubtractionEnabled ? 1.0f : 0.0f);
-            setRaw("correction", m->correctionEnabled ? 1.0f : 0.0f);
-            setChoice("analysisInterval", m->analysisIntervalIndex, 5);
-            setChoice("bandCount", m->bandCountIndex, 5);
-            setChoice("fftSize", m->fftSizeIndex, 5);
+            setParam("targetSpl", m->targetSpl);
+            setParam("maxGain", m->maxGainDb);
+            setParam("smoothing", m->smoothingFactor);
+            setParam("noiseSub", m->noiseSubtractionEnabled ? 1.0f : 0.0f);
+            setParam("correction", m->correctionEnabled ? 1.0f : 0.0f);
+            setParam("analysisInterval", static_cast<float>(m->analysisIntervalIndex));
+            setParam("bandCount", static_cast<float>(m->bandCountIndex));
+            setParam("fftSize", static_cast<float>(m->fftSizeIndex));
             for (int i = 0; i < 3; ++i) {
                 const String n(i + 1);
                 const auto& e = m->eqs[i];
-                setRaw("eq" + n + "Enabled", e.enabled ? 1.0f : 0.0f);
-                setRaw("eq" + n + "Interval", static_cast<float>(e.intervalMs));
-                setRaw("eq" + n + "Gain", e.maxGainDb);
-                setRaw("eq" + n + "Mixer", e.mixerLevel);
-                setRaw("eq" + n + "Speed", e.speedMultiplier);
-                setRaw("eq" + n + "Extras", static_cast<float>(e.extraSweeps));
-                setChoice("eq" + n + "Start", e.startFrom, 3);
+                setParam("eq" + n + "Enabled", e.enabled ? 1.0f : 0.0f);
+                setParam("eq" + n + "Interval", static_cast<float>(e.intervalMs));
+                setParam("eq" + n + "Gain", e.maxGainDb);
+                setParam("eq" + n + "Mixer", e.mixerLevel);
+                setParam("eq" + n + "Speed", e.speedMultiplier);
+                setParam("eq" + n + "Extras", static_cast<float>(e.extraSweeps));
+                setParam("eq" + n + "Start", static_cast<float>(e.startFrom));
                 for (int k = 1; k <= 4; ++k) {
                     const String s(k);
-                    setRaw("eq" + n + "Sb" + s + "Freq", e.support[k - 1].frequencyHz);
-                    setRaw("eq" + n + "Sb" + s + "Gain", e.support[k - 1].gainDb);
-                    setRaw("eq" + n + "Sb" + s + "Q", e.support[k - 1].q);
+                    setParam("eq" + n + "Sb" + s + "Freq", e.support[k - 1].frequencyHz);
+                    setParam("eq" + n + "Sb" + s + "Gain", e.support[k - 1].gainDb);
+                    setParam("eq" + n + "Sb" + s + "Q", e.support[k - 1].q);
                 }
             }
-            setRaw("spatialX", m->spatialX);
-            setRaw("spatialY", m->spatialY);
-            setRaw("spatialZ", m->spatialZ);
-            setRaw("spatialSize", m->spatialSize);
+            setParam("spatialX", m->spatialX);
+            setParam("spatialY", m->spatialY);
+            setParam("spatialZ", m->spatialZ);
+            setParam("spatialSize", m->spatialSize);
         }
     }
 }
 
-void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/) {
+void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     // prepareToPlay corre en el HILO de audio: no se puede llamar a
     // configure() directamente aquí — toma stateMutex_, que el hilo del motor
     // sostiene DURANTE la FFT, así que un cambio de rate del host podía
@@ -327,6 +337,18 @@ void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPer
     c.fftSize = static_cast<acoustical::FftSize>(static_cast<int>(l("fftSize")));
     engine_.requestConfigure(c);
     engine_.start();    // no-op si ya estaba en marcha
+
+    // Línea de retardo preasignada para el peor caso (retardo global máximo
+    // del parámetro + retardo espacial máximo + un bloque): processBlock no
+    // tiene que hacer malloc al subir el retardo (solo si el host manda un
+    // bloque mayor que el anunciado).
+    const float maxDelayMs =
+        apvts.getParameterRange("delayMs").end
+        + (ACOUSTICAL_SPATIAL_MAX_METERS - ACOUSTICAL_SPATIAL_NEUTRAL_METERS) / 343.0f * 1000.0f;
+    const int ringSize = static_cast<int>(std::ceil(maxDelayMs * sampleRate / 1000.0))
+                         + juce::jmax(1, samplesPerBlock) + 2 + 512;
+    for (auto& ring : delayRing_) ring.assign(static_cast<size_t>(ringSize), 0.0f);
+    delayWritePos_ = 0;
 }
 
 void AcousticalAudioProcessor::releaseResources() {
@@ -347,7 +369,6 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const int numOut = getTotalNumOutputChannels();
     const int numIn = getTotalNumInputChannels();
     const float sr = static_cast<float>(getSampleRate());
-    auto l = [this](const String& id) { return apvts.getRawParameterValue(id)->load(); };
 
     // 0. Si el host cambió la sample rate entre bloques (prepareToPlay solo
     //    ENCOLA la nueva config; el motor la aplica en su próximo tick),
@@ -376,17 +397,11 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     //        referencia de laboratorio sin depender de la fuente.
     //
     //    Mapeo menú->forma de onda EXPLÍCITO (dsp/plugin_genmap.h, testeado
-    //    por el gate DSP): el valor crudo del parámetro choice es 0..1
-    //    (índice/(nº-1)), así que se convierte de vuelta a ÍNDICE con
-    //    redondeo — la truncación directa al int que hacía el código anterior
-    //    (`static_cast<int>(raw)`) colapsaba las cuatro primeras opciones del
-    //    menú a "1 kHz de seno" (crudo 0..0.75 → 0) y dejaba a "Seno"
-    //    (crudo 1.0 → 1) sonando "Ruido rosa": el bug que esta versión corrige.
-    const int genSource =
-        juce::jlimit(0, acoustical::genmenu::kMenuCount - 1,
-                      static_cast<int>(std::lround(
-                          l("genSource") * static_cast<float>(
-                              acoustical::genmenu::kMenuCount - 1))));
+    //    por el gate DSP y por test_plugin.cpp): el APVTS da el valor
+    //    DESNORMALIZADO, que en un parámetro choice es el ÍNDICE de la opción
+    //    (0..5). La v1.9 lo creía 0..1 y lo multiplicaba por 5: todas las
+    //    opciones salvo Silencio acababan sonando "Seno".
+    const int genSource = acoustical::genmenu::menuIndexFromValue(pGenSource_->load());
     if (genSource != 1) {   // 1 = "Apagado": passthrough (el input pasa tal cual)
         const int wave = acoustical::genmenu::waveformForMenuIndex(genSource);
         if (wave >= 0) {
@@ -398,8 +413,8 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                 generator_.setWaveform(wf);
                 generator_.setSweepRange(20.0f, 20000.0f, 5.0f);
             }
-            const float freq = l("genFreq");
-            const float level = l("genLevel");
+            const float freq = pGenFreq_->load();
+            const float level = pGenLevel_->load();
             if (std::abs(freq - genFrequency_) > 0.01f) {
                 genFrequency_ = freq;
                 generator_.setFrequency(freq);
@@ -420,16 +435,16 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     //    línea: la posición lejana se alínea con la cercana con la MISMA ley
     //    del core C que usan la app y el móvil, y el host (Cubase) compensa el
     //    total vía PDC.
-    const float sx = l("spatialX");
-    const float sy = l("spatialY");
-    const float sz = l("spatialZ");
-    const float ss = l("spatialSize");
+    const float sx = pSpatialX_->load();
+    const float sy = pSpatialY_->load();
+    const float sz = pSpatialZ_->load();
+    const float ss = pSpatialSize_->load();
     float spatialGainDb = 0.0f, spatialDelayMs = 0.0f;
     acoustical_spatial_compensate(sx, sy, sz, ss, &spatialGainDb, &spatialDelayMs);
     const float spatialGain = (spatialGainDb != 0.0f)
         ? std::pow(10.0f, spatialGainDb / 20.0f) : 1.0f;
     const int wantDelay =
-        static_cast<int>(std::lround((l("delayMs") + spatialDelayMs) * sr / 1000.0f));
+        static_cast<int>(std::lround((pDelayMs_->load() + spatialDelayMs) * sr / 1000.0f));
     const int minRing = wantDelay + numSamples + 2;
     if (static_cast<int>(delayRing_[0].size()) < minRing) {
         const int newSize = minRing + 512;
@@ -449,20 +464,21 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         reportedLatency_ = pdc;
         setLatencySamples(pdc);
     }
-    if (delaySamples_ > 0) {
-        for (int ch = 0; ch < juce::jmin(2, numOut); ++ch) {
-            float* data = buffer.getWritePointer(ch);
-            auto& ring = delayRing_[static_cast<size_t>(ch)];
-            for (int s = 0; s < numSamples; ++s) {
-                const int writePos = (delayWritePos_ + s) % ringSize;
-                const int readPos = (writePos - delaySamples_ + ringSize) % ringSize;
-                const float delayed = ring[static_cast<size_t>(readPos)];
-                ring[static_cast<size_t>(writePos)] = data[s];
-                data[s] = delayed;
-            }
+    // El anillo se escribe SIEMPRE, también con retardo 0: si no, al volver
+    // a poner retardo tras un rato a 0 ms se leía lo que quedó en él de la
+    // última vez (segundos de audio viejo en la salida). Se escribe y luego
+    // se lee, así el retardo 0 es exactamente la muestra actual.
+    for (int ch = 0; ch < juce::jmin(2, numOut); ++ch) {
+        float* data = buffer.getWritePointer(ch);
+        auto& ring = delayRing_[static_cast<size_t>(ch)];
+        for (int s = 0; s < numSamples; ++s) {
+            const int writePos = (delayWritePos_ + s) % ringSize;
+            const int readPos = (writePos - delaySamples_ + ringSize) % ringSize;
+            ring[static_cast<size_t>(writePos)] = data[s];
+            data[s] = ring[static_cast<size_t>(readPos)];
         }
-        delayWritePos_ = (delayWritePos_ + numSamples) % ringSize;
     }
+    delayWritePos_ = (delayWritePos_ + numSamples) % ringSize;
 
     // 3. Copia del espectro ANTES de salir (pre-EQ): de aquí se captura la
     //    referencia al pulsar "Capturar referencia".
@@ -552,27 +568,34 @@ void AcousticalAudioProcessor::setStateInformation(const void* data, int sizeInB
             juce::ValueTree tree = juce::ValueTree::fromXml(*xml);
             // Migración one-shot del menú antiguo (v1.8, 5 opciones, ver
             // dsp/plugin_genmap.h): solo se toca un estado SIN marcador (de
-            // antes del menú nuevo) y desplaza cada crudo k/4 a su posición
-            // (k+1)/5 en el menú nuevo: Apagado→Apagado, Rosa→Rosa,
-            // Blanco→Blanco, Barrido→Barrido, Seno→Seno (1.0 en ambos). El
-            // proyecto sigue sonando exactamente lo que sonaba.
+            // antes del menú nuevo). El "value" guardado es el ÍNDICE de la
+            // opción: el k viejo pasa a k+1 en el menú nuevo (Apagado→Apagado,
+            // Rosa→Rosa, …, Seno→Seno). El proyecto sigue sonando exactamente
+            // lo que sonaba.
             if (tree.getProperty("genSourceMenu").toString().trim() != "6") {
                 for (auto child : tree) {
                     if (child.getProperty("id").toString() == "genSource") {
                         // JUCE 7: el var ya no tiene toDouble(); la
                         // conversión numérica va por sus operadores
                         // de conversión implicitos.
-                        const float raw =
+                        const float old =
                             static_cast<float>(child.getProperty("value"));
-                        const float migrated = acoustical::genmenu::migrateRawValue(raw);
-                        if (migrated != raw)
-                            child.setProperty("value", migrated, nullptr);
+                        child.setProperty("value",
+                                          acoustical::genmenu::migrateLegacyIndex(old),
+                                          nullptr);
                         break;
                     }
                 }
             }
             tree.setProperty("genSourceMenu", "6", nullptr);
             apvts.replaceState(tree);
+            // El modo guardado YA está aplicado en los valores que se acaban
+            // de restaurar (incluidos los ajustes que el usuario hizo encima):
+            // se marca como aplicado para que applyParameters() no vuelva a
+            // escribir el catálogo y los pise. Antes, abrir un proyecto con un
+            // modo activo devolvía todos sus parámetros al catálogo.
+            appliedMode_ = static_cast<int>(std::lround(
+                apvts.getRawParameterValue("mode")->load()));
             applyParameters();
         }
     }

@@ -6,8 +6,7 @@
  * VST, Android): "Silencio" es SIEMPRE la primera opción y la única que
  * nunca suena:
  *
- *   Menú nuevo (v1.9, 6 opciones; el valor crudo del parámetro VST3/VST2
- *   del host es índice/5):
+ *   Menú nuevo (v1.9, 6 opciones):
  *     0 = Silencio     — escribe CEROS en la salida (conmutador unificado:
  *                        el anillo pre-EQ de referencia también ve ceros,
  *                        el generador no deja huella)
@@ -17,17 +16,25 @@
  *     4 = Barrido      — ACOUSTICAL_WAVE_LOG_SWEEP
  *     5 = Seno         — ACOUSTICAL_WAVE_SINE
  *
- *   Menú antiguo (v1.8 y anteriores, 5 opciones; crudo = índice/4):
+ *   Menú antiguo (v1.8 y anteriores, 5 opciones):
  *     0 = Apagado, 1 = Ruido rosa, 2 = Ruido blanco, 3 = Barrido, 4 = Seno
  *
+ * QUÉ VALOR LLEGA (v1.10.1): el APVTS guarda y devuelve el valor
+ * DESNORMALIZADO de cada parámetro — en un AudioParameterChoice eso es el
+ * ÍNDICE de la opción (0..5), tanto en getRawParameterValue() como en la
+ * propiedad "value" del estado guardado. Solo el host ve la escala 0-1.
+ * La v1.9 asumió lo contrario (crudo = índice/5) y multiplicaba por 5: todas
+ * las opciones menos Silencio acababan en "Seno" (a +5 dBFS de pico con la
+ * ganancia espacial de entonces), y la migración mandaba a Silencio los
+ * proyectos v1.8 con Blanco/Barrido/Seno. test_plugin.cpp lo comprueba ahora
+ * contra el procesador real.
+ *
  * MIGRACIÓN: el estado guardado por el host que no lleva el marcador de
- * propiedad "genSourceMenu" es de v1.8 o anterior. Cada valor crudo k/4 del
- * menú antiguo se desplaza a (k+1)/5 del menú nuevo (índice +1), de modo que
- * un proyecto antiguo sigue sonando EXACTAMENTE lo que sonaba: Apagado sigue
- * Apagado, Rosa sigue Rosa, …, Seno (crudo 1.0 en ambos menús) sigue Seno.
- * El estado guardado por la versión nueva SIEMPRE lleva el marcador (lo
- * escribe getStateInformation), así que la migración es one-shot e
- * idempotente (ver migrateRawValue).
+ * propiedad "genSourceMenu" es de v1.8 o anterior: su índice k pasa a ser
+ * k + 1 en el menú nuevo, de modo que un proyecto antiguo sigue sonando
+ * EXACTAMENTE lo que sonaba (Apagado sigue Apagado, …, Seno sigue Seno). El
+ * estado guardado por la versión nueva SIEMPRE lleva el marcador (lo escribe
+ * getStateInformation), así que la migración es one-shot.
  *
  * Funciones puras (sin JUCE, sin allocations): el gate DSP lo testa
  * (test_genmap.cpp) y el plugin compila este mismo fichero tal cual, para
@@ -65,40 +72,38 @@ inline int waveformForMenuIndex(int index) {
     }
 }
 
+/* Opción del menú a la que se vuelve ante un valor corrupto: "Apagado"
+ * (passthrough), el comportamiento por defecto del plugin hasta la v1.8 —
+ * un valor ilegible no puede ni enmudecer la pista ni meter una señal. */
+constexpr int kFallbackIndex = 1;
+
 /*
- * True si `raw` (0-1) cae sobre la rejilla del menú antiguo de 5 opciones
- * {0, 1/4, 1/2, 3/4, 1}. El epsilon absorbe el redondeo del XML del estado
- * del host (el valor se serializa con decimales limitados).
+ * Valor del parámetro "genSource" tal como lo da el APVTS (el índice como
+ * float) → índice de opción 0..5. Redondea (el host puede devolver 2.9999)
+ * y acota; no finito → kFallbackIndex.
  */
-inline bool isLegacyRawValue(float raw) {
-    for (int k = 0; k <= 4; ++k) {
-        if (std::fabs(raw - k / 4.0f) <= 1e-4f) return true;
-    }
-    return false;
+inline int menuIndexFromValue(float value) {
+    if (!std::isfinite((double)value)) return kFallbackIndex;
+    const long i = std::lround(value);
+    if (i < 0) return 0;
+    if (i > kMenuCount - 1) return kMenuCount - 1;
+    return static_cast<int>(i);
 }
 
 /*
- * Migración one-shot de un valor crudo 0-1 del menú antiguo de 5 opciones al
- * menú nuevo de 6:
- *   - crudo k/4 de la rejilla antigua → (k+1)/5: la MISMA opción en el menú
- *     nuevo (Apagado 0→1, Rosa 1→2, Blanco 2→3, Barrido 3→4, Seno 4→5).
- *   - crudo de la rejilla nueva {0, 1/5, 2/5, 3/5, 4/5, 1} que NO coincide
- *     con la antigua → inalterado: idempotente para estado nuevo (el caller
- *     solo invoca la migración sobre estados sin marcador; ver abajo).
- *   - valor corrupto (no finito o fuera de [0,1]) → 0 (Silencio): la salida
- *     más segura, nunca una señal equivocada.
- *
- * Nota: 0.0 y 1.0 pertenecen a AMBAS rejillas. El caller solo migra estados
- * sin marcador (v1.8 o anteriores), donde 0.0 significa "Apagado" y debe
- * migrar a 0.2; un 0.0 de estado nuevo nunca pasa por aquí porque su XML ya
- * lleva el marcador.
+ * Migración one-shot de un índice del menú antiguo de 5 opciones (el
+ * "value" guardado en un estado SIN marcador) al índice del menú nuevo:
+ * k → k + 1 (Apagado 0→1, Rosa 1→2, Blanco 2→3, Barrido 3→4, Seno 4→5).
+ * Un valor que no es un índice antiguo válido (no finito, fuera de 0..4 o
+ * no entero) → kFallbackIndex.
  */
-inline float migrateRawValue(float raw) {
-    if (!std::isfinite((double)raw) || raw < 0.0f || raw > 1.0f) return 0.0f;
+inline float migrateLegacyIndex(float value) {
+    if (!std::isfinite((double)value)) return static_cast<float>(kFallbackIndex);
     for (int k = 0; k <= 4; ++k) {
-        if (std::fabs(raw - k / 4.0f) <= 1e-4f) return (k + 1) / 5.0f;
+        if (std::fabs(value - static_cast<float>(k)) <= 1e-3f)
+            return static_cast<float>(k + 1);
     }
-    return raw;
+    return static_cast<float>(kFallbackIndex);
 }
 
 }  // namespace genmenu

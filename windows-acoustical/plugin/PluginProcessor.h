@@ -203,5 +203,16 @@ private:
     // modo en bucle.
     int appliedMode_ = 0;
 
+    // Valores de los parámetros que lee processBlock, resueltos en el
+    // constructor (sin búsquedas por String en el hilo de audio).
+    std::atomic<float>* pGenSource_ = nullptr;
+    std::atomic<float>* pGenFreq_ = nullptr;
+    std::atomic<float>* pGenLevel_ = nullptr;
+    std::atomic<float>* pDelayMs_ = nullptr;
+    std::atomic<float>* pSpatialX_ = nullptr;
+    std::atomic<float>* pSpatialY_ = nullptr;
+    std::atomic<float>* pSpatialZ_ = nullptr;
+    std::atomic<float>* pSpatialSize_ = nullptr;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcousticalAudioProcessor)
 };

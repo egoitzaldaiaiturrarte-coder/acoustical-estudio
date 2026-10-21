@@ -37,7 +37,7 @@ jobs:
     # (sin runs-on, steps ni timeout-minutes): los limites de tiempo y
     # cancelación se fijan en los jobs del propio reusable.
     if: github.event_name == 'pull_request'
-    uses: $/.github/workflows/windows-build.yml
+    uses: ./.github/workflows/windows-build.yml
     with:
       run-windows-build: false
     # Sufijo por JOB en el group: varios jobs del mismo workflow con el mismo
@@ -59,7 +59,7 @@ jobs:
     # Mismas restricciones que el job de arriba (un job llamador no puede
     # llevar timeout-minutes: el timeout vive en el job build del reusable).
     if: github.event_name != 'pull_request'
-    uses: $/.github/workflows/windows-build.yml
+    uses: ./.github/workflows/windows-build.yml
     with:
       publish: true
     concurrency:

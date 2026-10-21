@@ -34,7 +34,7 @@ jobs:
     # sha256 y los diagnosticos viven en windows-build.yml (compartido con
     # build-windows.yml): el nocturno valida por fin el instalador REAL,
     # exactamente igual que el build oficial.
-    uses: $/.github/workflows/windows-build.yml
+    uses: ./.github/workflows/windows-build.yml
     with:
       publish: false
       artifact-suffix: "-nocturno"
