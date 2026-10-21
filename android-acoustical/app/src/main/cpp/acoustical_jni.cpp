@@ -103,8 +103,9 @@ Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSiggenFill(
         jfloat sweepStartHz, jfloat sweepEndHz, jfloat sweepSeconds,
         jint sampleRate, jfloatArray out) {
     acoustical_siggen* g = siggenFromHandle(handle);
-    if (!g) return;
+    if (!g || out == nullptr) return;
     float* outp = env->GetFloatArrayElements(out, nullptr);
+    if (outp == nullptr) return;  // sin memoria: la JVM ya lanzó OutOfMemoryError
     acoustical_siggen_fill(g, waveform,
                            static_cast<float>(frequencyHz),
                            static_cast<float>(amplitude),
@@ -127,7 +128,11 @@ Java_com_rork_acoustical_domain_audio_NativeDsp_nativeSpatialCompensate(
     acoustical_spatial_compensate(static_cast<float>(x), static_cast<float>(y),
                                   static_cast<float>(z), static_cast<float>(size),
                                   &gainDb, &delayMs);
+    // out debe tener al menos 2 huecos: con uno más corto se escribiría
+    // fuera del array de la JVM (corrupción de heap, no una excepción).
+    if (out == nullptr || env->GetArrayLength(out) < 2) return;
     float* outp = env->GetFloatArrayElements(out, nullptr);
+    if (outp == nullptr) return;
     outp[0] = gainDb;
     outp[1] = delayMs;
     env->ReleaseFloatArrayElements(out, outp, 0);

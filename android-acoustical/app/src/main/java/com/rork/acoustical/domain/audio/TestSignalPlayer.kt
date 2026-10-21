@@ -8,6 +8,7 @@ import android.media.AudioTrack
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -54,10 +55,6 @@ class TestSignalPlayer {
     private val activeTracks = HashMap<String, AudioTrack>()
     private val lock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
-    // Shared C generator handle (created lazily on first native fill; keeps
-    // phase/pink/PRNG state between plays, same as the Windows app).
-    @Volatile
-    private var nativeSiggenHandle: Long = 0L
 
     /** Whether any test signal is currently playing. */
     val isPlaying: Boolean
@@ -122,24 +119,34 @@ class TestSignalPlayer {
         // native lib (JVM unit tests, stripped builds) — or if creating the
         // handle fails — the pure-Kotlin generators below produce the same
         // signals.
+        //
+        // v1.10.1: one fresh handle per play. The shared handle of v1.8-v1.10.0
+        // kept the sweep clock between plays (the 2nd "Barrido" started where
+        // the 1st had stopped) and was never freed. And the sweep now lasts
+        // exactly the signal: with a fixed 5 s sweep inside a 2 s signal the
+        // "20 Hz - 20 kHz" test only reached ~320 Hz.
         var filled = false
-        if (NativeDsp.isAvailable) {
-            if (nativeSiggenHandle == 0L) nativeSiggenHandle = NativeDsp.nativeSiggenCreate()
-            if (nativeSiggenHandle != 0L) {
-                val f = FloatArray(signalSamples)
-                NativeDsp.nativeSiggenFill(
-                    nativeSiggenHandle,
-                    type.waveformInt,
-                    1000f,          // TONE frequency (Sine)
-                    amplitude,
-                    20f,             // SWEEP start
-                    20000f,         // SWEEP end
-                    5f,             // SWEEP duration
-                    SAMPLE_RATE,
-                    f
-                )
-                for (i in 0 until signalSamples) samples[delaySamples + i] = toShort16(f[i].toDouble())
-                filled = true
+        if (NativeDsp.isAvailable && signalSamples > 0) {
+            val handle = NativeDsp.nativeSiggenCreate()
+            if (handle != 0L) {
+                try {
+                    val f = FloatArray(signalSamples)
+                    NativeDsp.nativeSiggenFill(
+                        handle,
+                        type.waveformInt,
+                        TONE_HZ,                        // TONE frequency (Sine)
+                        amplitude,
+                        SWEEP_START_HZ,
+                        SWEEP_END_HZ,
+                        signalSamples.toFloat() / SAMPLE_RATE,  // the whole signal
+                        SAMPLE_RATE,
+                        f
+                    )
+                    for (i in 0 until signalSamples) samples[delaySamples + i] = toShort16(f[i].toDouble())
+                    filled = true
+                } finally {
+                    NativeDsp.nativeSiggenFree(handle)
+                }
             }
         }
         if (!filled) {
@@ -248,16 +255,21 @@ class TestSignalPlayer {
         }
     }
 
-    /** Logarithmic sweep from 20 Hz to 20 kHz across the signal portion. */
+    /**
+     * Logarithmic sweep from 20 Hz to 20 kHz across the signal portion (the
+     * same law as the C core: f(t) = f0·(f1/f0)^(t/T), phase integrated).
+     * Before v1.10.1 the exp() was missing: the "frequency" was ln(f), 3 to
+     * 10 Hz — an inaudible sweep whenever the native lib was absent.
+     */
     private fun generateSweep(out: ShortArray, offset: Int, amplitude: Float) {
         val count = out.size - offset
         if (count <= 0) return
-        val logMin = ln(20.0)
-        val logMax = ln(20000.0)
+        val logMin = ln(SWEEP_START_HZ.toDouble())
+        val logMax = ln(SWEEP_END_HZ.toDouble())
         var phase = 0.0
         for (i in 0 until count) {
             val progress = i.toDouble() / count
-            val freq = (logMin + (logMax - logMin) * progress).pow(1.0)
+            val freq = exp(logMin + (logMax - logMin) * progress)
             phase += 2.0 * Math.PI * freq / SAMPLE_RATE
             out[offset + i] = toShort16(sin(phase) * amplitude)
         }
@@ -267,7 +279,7 @@ class TestSignalPlayer {
     private fun generateTone(out: ShortArray, offset: Int, amplitude: Float) {
         for (i in offset until out.size) {
             val t = (i - offset).toDouble() / SAMPLE_RATE
-            out[i] = toShort16(sin(2.0 * Math.PI * 1000.0 * t) * amplitude)
+            out[i] = toShort16(sin(2.0 * Math.PI * TONE_HZ * t) * amplitude)
         }
     }
 
@@ -324,5 +336,8 @@ class TestSignalPlayer {
         const val DEFAULT_DURATION_MS = 2000L
         private const val BASE_AMPLITUDE = 0.3f
         private const val PINK_SCALE = 0.11
+        private const val TONE_HZ = 1000f
+        private const val SWEEP_START_HZ = 20f
+        private const val SWEEP_END_HZ = 20000f
     }
 }
