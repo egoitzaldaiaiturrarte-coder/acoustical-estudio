@@ -15,8 +15,8 @@ android {
         applicationId = "com.rork.acoustical"
         minSdk = 24
         targetSdk = 36
-        versionCode = 17
-        versionName = "1.10.1"
+        versionCode = 18
+        versionName = "1.10.2"
     }
 
     // --- Firma del proyecto ---
