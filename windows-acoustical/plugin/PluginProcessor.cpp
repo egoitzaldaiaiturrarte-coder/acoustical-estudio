@@ -82,9 +82,12 @@ AcousticalAudioProcessor::createParameterLayout() {
 
     // --- Generador de referencia (señal conocida para capturar la referencia) ---
     // v1.9: el menú unificado de las tres versiones (dsp/plugin_genmap.h,
-    // testeado por el gate DSP): "Silencio" es la PRIMERA opción y la única
-    // que nunca suena (ceros en la salida); "Apagado" es el passthrough
-    // propio del VST (la entrada pasa tal cual). El estado guardado con el
+    // testeado por el gate DSP): "Silencio" es la PRIMERA opción y la de
+    // arranque. v1.10.2: "Silencio" = generador apagado, la entrada pasa tal
+    // cual — como en la app y el móvil y como arrancaba el plugin hasta la
+    // v1.7 (en la v1.9-v1.10.1 escribía ceros: insertar el plugin enmudecía
+    // la pista). "Apagado" hace lo mismo y se conserva por los proyectos
+    // guardados con él. El estado guardado con el
     // menú antiguo de 5 opciones (v1.8) se migra en setStateInformation
     // (marcador "genSourceMenu"), de modo que cada proyecto sigue sonando
     // exactamente lo que sonaba.
@@ -388,11 +391,9 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     //    señal conocida. El anillo pre-EQ del paso 3 se alimenta de este
     //    buffer, así que lo que la referencia captura es EXACTAMENTE lo que
     //    hay en el menú:
-    //      - "Silencio" (la primera opción del menú unificado de las tres
-    //        versiones): CEROS — la única que nunca suena; la referencia
-    //        capturaría silencio (no deja huella).
-    //      - "Apagado" (passthrough, propio del VST): la entrada pasa tal
-    //        cual; la referencia se captura de la fuente real.
+    //      - "Silencio" (la primera opción, la de arranque) y "Apagado":
+    //        generador apagado, la entrada pasa tal cual; la referencia se
+    //        captura de la fuente real.
     //      - Rosa/Blanco/Barrido/Seno: la señal conocida, para capturar una
     //        referencia de laboratorio sin depender de la fuente.
     //
@@ -402,11 +403,11 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     //    (0..5). La v1.9 lo creía 0..1 y lo multiplicaba por 5: todas las
     //    opciones salvo Silencio acababan sonando "Seno".
     const int genSource = acoustical::genmenu::menuIndexFromValue(pGenSource_->load());
-    if (genSource != 1) {   // 1 = "Apagado": passthrough (el input pasa tal cual)
+    {
+        // -1 = Silencio/Apagado (passthrough); 2..5 = rosa/blanco/barrido/
+        // seno (valores canónicos ACOUSTICAL_WAVE_*).
         const int wave = acoustical::genmenu::waveformForMenuIndex(genSource);
         if (wave >= 0) {
-            // 0 = Silencio (el core rellena con ceros) y 2..5 = rosa/blanco/
-            // barrido/seno (valores canónicos ACOUSTICAL_WAVE_*).
             const auto wf = acoustical::SignalGenerator::fromCanonical(wave);
             if (wf != genWaveform_) {
                 genWaveform_ = wf;

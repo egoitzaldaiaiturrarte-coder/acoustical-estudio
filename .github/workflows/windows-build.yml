@@ -330,7 +330,9 @@ jobs:
     #
     # Coste: la primera vez compila 11 módulos JUCE (~3-5 min); los .o se
     # cachean por versión de JUCE + script, y las siguientes corridas tardan
-    # lo que el test (~1 min). Corre en paralelo al job dsp, también en PRs.
+    # lo que el test (~1 min; 20 s de ellos son el bucle cerrado con la sala
+    # simulada, que va a ritmo real). Corre en paralelo al job dsp, también
+    # en PRs.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:

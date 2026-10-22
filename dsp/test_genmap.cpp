@@ -33,8 +33,8 @@ int main() {
     using namespace acoustical::genmenu;
 
     // === El menú nuevo mapea a las formas canónicas del core ===
-    CHECK(waveformForMenuIndex(0) == ACOUSTICAL_WAVE_SILENCE,
-          "0 = Silencio (primera opción; la única que nunca suena)");
+    CHECK(waveformForMenuIndex(0) == -1,
+          "0 = Silencio (primera opción): generador apagado, la entrada pasa (v1.10.2)");
     CHECK(waveformForMenuIndex(1) == -1,
           "1 = Apagado (passthrough: el generador no interviene)");
     CHECK(waveformForMenuIndex(2) == ACOUSTICAL_WAVE_PINK, "2 = Ruido rosa");

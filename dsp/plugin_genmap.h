@@ -7,10 +7,10 @@
  * nunca suena:
  *
  *   Menú nuevo (v1.9, 6 opciones):
- *     0 = Silencio     — escribe CEROS en la salida (conmutador unificado:
- *                        el anillo pre-EQ de referencia también ve ceros,
- *                        el generador no deja huella)
- *     1 = Apagado      — passthrough: la entrada pasa tal cual (solo VST)
+ *     0 = Silencio     — generador APAGADO: la entrada pasa tal cual (v1.10.2;
+ *                        lo mismo que "Silencio" en la app Windows y el móvil,
+ *                        y lo que hacía el plugin por defecto hasta la v1.7)
+ *     1 = Apagado      — lo mismo (se conserva: proyectos guardados con él)
  *     2 = Ruido rosa   — ACOUSTICAL_WAVE_PINK
  *     3 = Ruido blanco — ACOUSTICAL_WAVE_WHITE
  *     4 = Barrido      — ACOUSTICAL_WAVE_LOG_SWEEP
@@ -28,6 +28,10 @@
  * ganancia espacial de entonces), y la migración mandaba a Silencio los
  * proyectos v1.8 con Blanco/Barrido/Seno. test_plugin.cpp lo comprueba ahora
  * contra el procesador real.
+ *
+ * v1.10.2: en la v1.9-v1.10.1 "Silencio" escribía CEROS en la salida y era
+ * la opción por defecto: insertar el plugin enmudecía la pista. En la app y
+ * en el móvil "Silencio" siempre ha sido "sin señal añadida, la entrada pasa".
  *
  * MIGRACIÓN: el estado guardado por el host que no lleva el marcador de
  * propiedad "genSourceMenu" es de v1.8 o anterior: su índice k pasa a ser
@@ -55,15 +59,15 @@ constexpr int kMenuCount = 6;
 
 /*
  * Índice de opción del menú NUEVO → valor de forma de onda canónica del
- * core (ACOUSTICAL_WAVE_*). Devuelve -1 para "Apagado" (passthrough: no
+ * core (ACOUSTICAL_WAVE_*). Devuelve -1 para Silencio/Apagado (passthrough: no
  * interviene el generador; la entrada pasa tal cual y no deja huella en el
  * anillo pre-EQ). Fuera de rango también devuelve -1: la rama más segura es
  * nunca emitir una señal equivocada.
  */
 inline int waveformForMenuIndex(int index) {
     switch (index) {
-        case 0:  return ACOUSTICAL_WAVE_SILENCE;    /* Silencio: la que nunca suena */
-        case 1:  return -1;                          /* Apagado: passthrough */
+        case 0:  return -1;                          /* Silencio: generador apagado (passthrough) */
+        case 1:  return -1;                          /* Apagado: passthrough (compatibilidad) */
         case 2:  return ACOUSTICAL_WAVE_PINK;
         case 3:  return ACOUSTICAL_WAVE_WHITE;
         case 4:  return ACOUSTICAL_WAVE_LOG_SWEEP;

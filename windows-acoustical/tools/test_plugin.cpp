@@ -15,12 +15,21 @@
 //      absoluta).
 //   4. La línea de retardo no suelta audio viejo al volver a usarse
 //      (antes, tras pasar por 0 ms, reproducía lo que quedó en el anillo).
+//   5. Cada opción del menú Generador hace lo que dice; una instancia nueva
+//      ("Silencio") deja pasar la entrada (v1.9-v1.10.1 enmudecía la pista).
+//   6. Migración de proyectos v1.8.
+//   7. Bucle cerrado con una sala simulada: un modo del catálogo corrige y
+//      se mantiene estable (v1.10.0-v1.10.1: con 124 bandas y el Q fijo de
+//      1.41 el bucle se disparaba hasta ~36.000 veces el fondo de escala).
 //
 // Compila con tools/build_plugintest.sh (Linux, sin CMake ni X11 en runtime).
 #include "PluginProcessor.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -93,6 +102,65 @@ float runBlocks(AcousticalAudioProcessor& p, int blocks, float amp, double& phas
             *maxAbsOut = std::max(*maxAbsOut, buf.getMagnitude(0, 0, kBlock));
     }
     return last;
+}
+
+// === Sala simulada (sección 7) ===
+struct Biquad {
+    double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+    double run(double x) { const double y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return y; }
+    static Biquad peaking(double f0, double gainDb, double q) {
+        Biquad b; const double A = std::pow(10.0, gainDb / 40.0);
+        const double w = 2 * juce::MathConstants<double>::pi * f0 / kRate, al = std::sin(w) / (2 * q), c = std::cos(w);
+        const double a0 = 1 + al / A;
+        b.b0 = (1 + al * A) / a0; b.b1 = -2 * c / a0; b.b2 = (1 - al * A) / a0; b.a1 = -2 * c / a0; b.a2 = (1 - al / A) / a0;
+        return b;
+    }
+    static Biquad bandpass(double f0, double q) {
+        Biquad b; const double w = 2 * juce::MathConstants<double>::pi * f0 / kRate, al = std::sin(w) / (2 * q), c = std::cos(w);
+        const double a0 = 1 + al;
+        b.b0 = al / a0; b.b2 = -al / a0; b.a1 = -2 * c / a0; b.a2 = (1 - al) / a0;
+        return b;
+    }
+};
+
+// Ruido rosa determinista (Paul Kellet + LCG)
+struct Pink {
+    unsigned s = 12345u; double b[7] = {};
+    double white() { s = s * 1664525u + 1013904223u; return (s >> 8) / 8388608.0 - 1.0; }
+    double next() {
+        const double w = white();
+        b[0] = 0.99886 * b[0] + w * 0.0555179; b[1] = 0.99332 * b[1] + w * 0.0750759;
+        b[2] = 0.96900 * b[2] + w * 0.1538520; b[3] = 0.86650 * b[3] + w * 0.3104856;
+        b[4] = 0.55000 * b[4] + w * 0.5329522; b[5] = -0.7616 * b[5] - w * 0.0168980;
+        const double p = (b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6] + w * 0.5362) * 0.11;
+        b[6] = w * 0.115926;
+        return p;
+    }
+};
+
+// Niveles por tercio de octava (dB), 100 Hz-8 kHz
+std::vector<double> thirdOctave(const std::vector<float>& x, std::vector<double>& centers) {
+    centers.clear();
+    for (double f = 100; f <= 8100; f *= std::pow(2.0, 1.0 / 3.0)) centers.push_back(f);
+    std::vector<double> out;
+    const size_t skip = static_cast<size_t>(0.3 * kRate);
+    for (double fc : centers) {
+        Biquad bp = Biquad::bandpass(fc, 4.32);
+        double e = 0; size_t n = 0;
+        for (size_t i = 0; i < x.size(); ++i) { const double y = bp.run(x[i]); if (i >= skip) { e += y * y; ++n; } }
+        out.push_back(10 * std::log10(e / std::max<size_t>(n, 1) + 1e-30));
+    }
+    return out;
+}
+
+// Picos y valles de a frente a b (dB RMS), sin el nivel ni la pendiente global
+double roomResidual(const std::vector<double>& a, const std::vector<double>& b, const std::vector<double>& f) {
+    const size_t n = a.size(); double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (size_t i = 0; i < n; ++i) { const double x = std::log2(f[i]), y = a[i] - b[i]; sx += x; sy += y; sxx += x * x; sxy += x * y; }
+    const double beta = (n * sxy - sx * sy) / (n * sxx - sx * sx), alpha = (sy - beta * sx) / n;
+    double s = 0;
+    for (size_t i = 0; i < n; ++i) { const double d = a[i] - b[i] - alpha - beta * std::log2(f[i]); s += d * d; }
+    return std::sqrt(s / n);
 }
 
 }  // namespace
@@ -251,7 +319,7 @@ int main() {
         };
         const GenOut silencio = genOut(0), apagado = genOut(1), rosa = genOut(2),
                      blanco = genOut(3), barrido = genOut(4), seno = genOut(5);
-        check(silencio.rmsDb < -150.0f, "Silencio: la salida es silencio");
+        check(silencio.rmsDb < -150.0f, "Silencio: con la entrada en silencio no suena nada (generador apagado)");
         check(apagado.rmsDb < -150.0f, "Apagado: con la entrada en silencio no suena nada (no hay generador)"
               " (hay " + juce::String(apagado.rmsDb, 1) + " dB)");
         // 1 kHz a 48 kHz = ~21 cruces por bloque de 512
@@ -309,15 +377,74 @@ int main() {
         }
     }
 
-    // ---- Informativo: el generador por defecto ----
+    // ---- 5b. Una instancia nueva deja pasar la entrada ----
+    // Generador en su valor de arranque ("Silencio"): la entrada debe pasar,
+    // como en la v1.7. En la v1.9-v1.10.1 la pista quedaba muda.
     {
         AcousticalAudioProcessor p;
+        setRaw(p, "correction", 0.0f);
+        for (int i = 1; i <= 3; ++i) setRaw(p, ("eq" + juce::String(i) + "Enabled").toRawUTF8(), 0.0f);
+        pump();
         prepare(p);
         double phase = 0.0;
-        const float outDb = runBlocks(p, 10, 0.25f, phase);
-        std::printf("info: instancia nueva (generador por defecto: \"%s\"): salida %.1f dB con un seno de entrada a -15 dB RMS\n",
-                    p.parameters().getParameter("genSource")->getCurrentValueAsText().toRawUTF8(), outDb);
+        const float inDb = 20.0f * std::log10(0.25f / std::sqrt(2.0f));
+        const float outDb = runBlocks(p, 20, 0.25f, phase);
+        check(p.parameters().getParameter("genSource")->getCurrentValueAsText() == "Silencio"
+                  && std::fabs(outDb - inDb) < 1.0f,
+              "instancia nueva (generador en \"Silencio\"): la entrada pasa (entrada " + juce::String(inDb, 1)
+                  + " dB, salida " + juce::String(outDb, 1) + " dB)");
         p.releaseResources();
+    }
+
+    // ---- 7. Bucle cerrado con una sala simulada (tiempo real, ~20 s) ----
+    // Ruido rosa coloreado por una "sala" (+9 dB a 150 Hz, -9 dB a 2,5 kHz,
+    // -6 dB a 8 kHz) entra al plugin con el modo "Estudio · Escenario 1" del
+    // catálogo (posición neutra: la salida no lleva ganancia espacial; 124
+    // bandas, FFT 8192, 25 ms, 50 dB, ecuas a 100 ms ×4). El motor decide por
+    // reloj de pared: se alimenta a ritmo real. Debe mantenerse estable y no
+    // empeorar la sala. (v1.10.0-v1.10.1: residuo ~3 dB, el doble que la
+    // entrada, y pico de hasta ~36.000.)
+    {
+        AcousticalAudioProcessor p;
+        setRaw(p, "mode", 3.0f);   // Estudio · Escenario 1
+        pump();
+        prepare(p);
+        Pink pk;
+        Biquad room[3] = {Biquad::peaking(150, 9, 1.0), Biquad::peaking(2500, -9, 1.2), Biquad::peaking(8000, -6, 0.8)};
+        juce::AudioBuffer<float> buf(2, kBlock);
+        juce::MidiBuffer midi;
+        const int blocks = static_cast<int>(20.0 * kRate / kBlock);
+        const int keepFrom = blocks - static_cast<int>(4.0 * kRate / kBlock);
+        std::vector<float> in, out;
+        float peak = 0.0f;
+        bool finite = true;
+        auto t = std::chrono::steady_clock::now();
+        const auto dt = std::chrono::microseconds(static_cast<long long>(1e6 * kBlock / kRate));
+        for (int b = 0; b < blocks; ++b) {
+            for (int s = 0; s < kBlock; ++s) {
+                double v = pk.next() * 0.5;
+                for (auto& f : room) v = f.run(v);
+                buf.setSample(0, s, static_cast<float>(v));
+                buf.setSample(1, s, static_cast<float>(v));
+                if (b >= keepFrom) in.push_back(static_cast<float>(v));
+            }
+            p.processBlock(buf, midi);
+            for (int s = 0; s < kBlock; ++s) finite = finite && std::isfinite(buf.getSample(0, s));
+            peak = std::max(peak, buf.getMagnitude(0, 0, kBlock));
+            if (b >= keepFrom) out.insert(out.end(), buf.getReadPointer(0), buf.getReadPointer(0) + kBlock);
+            t += dt;
+            std::this_thread::sleep_until(t);
+        }
+        p.releaseResources();
+        std::vector<float> pure;
+        { Pink clean; for (size_t i = 0; i < in.size(); ++i) pure.push_back(static_cast<float>(clean.next() * 0.5)); }
+        std::vector<double> centers;
+        const auto pureDb = thirdOctave(pure, centers);
+        const double rin = roomResidual(thirdOctave(in, centers), pureDb, centers);
+        const double rout = roomResidual(thirdOctave(out, centers), pureDb, centers);
+        check(finite && peak < 2.0f, "bucle cerrado, modo Estudio-Esc1: estable (pico " + juce::String(peak, 2) + ")");
+        check(rout < rin + 0.25, "bucle cerrado, modo Estudio-Esc1: no empeora la sala (picos/valles " + juce::String(rin, 2)
+                                   + " dB -> " + juce::String(rout, 2) + " dB)");
     }
 
     std::printf("\nPLUGIN: %d comprobaciones, %d fallos\n", g_checks, g_fail);
