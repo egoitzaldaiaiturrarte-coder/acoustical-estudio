@@ -2,6 +2,8 @@
 #pragma once
 
 #include "AcousticalParameters.h"
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace acoustical {
@@ -45,6 +47,30 @@ struct StandardFrequencies {
             return out;
         }();
         return v;
+    }
+
+    // Q de los filtros del EQ para un juego de bandas: cada filtro tan ancho
+    // como la distancia a su vecina (Q de N-ésimo de octava,
+    // sqrt(2^b)/(2^b - 1) con b = separación típica en octavas). 10 bandas
+    // (una octava) → 1.41, el valor fijo de siempre; 31 (1/3 oct) → 4.32;
+    // 124 (~1/12 oct) → ~17.8.
+    //
+    // v1.10.2: hasta ahora el Q era 1.41 para cualquier número de bandas. Con
+    // 124 bandas (los seis modos del catálogo desde la v1.10.0) cada
+    // corrección se solapaba con ~12 vecinas, el bucle corregía ~12 veces de
+    // más y se disparaba (salida de cientos o miles de veces el fondo de
+    // escala; ver tools/test_plugin.cpp, sección 7).
+    static float eqQ(const std::vector<float>& freqs) {
+        std::vector<double> octaves;
+        for (size_t i = 1; i < freqs.size(); ++i)
+            if (freqs[i - 1] > 0.0f && freqs[i] > freqs[i - 1])
+                octaves.push_back(std::log2(static_cast<double>(freqs[i]) / freqs[i - 1]));
+        if (octaves.empty()) return 1.41f;
+        // mediana: los juegos de 8 y 16 bandas no son regulares
+        std::sort(octaves.begin(), octaves.end());
+        const double r = std::pow(2.0, octaves[octaves.size() / 2]);
+        const double q = std::sqrt(r) / (r - 1.0);
+        return static_cast<float>(std::clamp(q, 0.7, 20.0));
     }
 
     static std::vector<float> forCount(BandCount count) {

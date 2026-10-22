@@ -26,7 +26,23 @@ static double rmsFrom(const std::vector<float>& v, size_t from) {
     return std::sqrt(s / double(v.size() - from));
 }
 
+static void testEqQ() {
+    // Q del EQ según la separación entre bandas (v1.10.2). Con 10 bandas
+    // tiene que seguir siendo el 1.41 de siempre (comportamiento de la v1.7).
+    const float q10 = StandardFrequencies::eqQ(StandardFrequencies::forCount(BandCount::B10));
+    const float q8 = StandardFrequencies::eqQ(StandardFrequencies::forCount(BandCount::B8));
+    const float q31 = StandardFrequencies::eqQ(StandardFrequencies::forCount(BandCount::B31));
+    const float q124 = StandardFrequencies::eqQ(StandardFrequencies::forCount(BandCount::B124));
+    std::printf("  Q del EQ: 8→%.2f 10→%.2f 31→%.2f 124→%.2f\n", q8, q10, q31, q124);
+    CHECK(std::fabs(q10 - 1.414f) < 0.01f, "10 bandas: Q 1.41 (igual que siempre)");
+    CHECK(std::fabs(q8 - 1.414f) < 0.01f, "8 bandas: Q 1.41 (mediana de una octava)");
+    CHECK(std::fabs(q31 - 4.32f) < 0.1f, "31 bandas: Q de tercio de octava");
+    CHECK(q124 > 15.0f && q124 < 20.0f, "124 bandas: Q de ~1/12 de octava");
+    CHECK(StandardFrequencies::eqQ({}) == 1.41f, "sin bandas: Q por defecto");
+}
+
 int main() {
+    testEqQ();
     const int sr = 48000;
     const int fftSize = 2048;
 

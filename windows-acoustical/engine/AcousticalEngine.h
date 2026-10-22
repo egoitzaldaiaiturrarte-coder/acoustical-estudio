@@ -184,6 +184,9 @@ private:
 
     AudioConfig config_;
     std::vector<float> bandFrequencies_;
+    // Q del banco del EQ para las bandas actuales (StandardFrequencies::eqQ):
+    // 1.41 con 10 bandas, como siempre; más estrecho cuantas más bandas.
+    float eqQ_ = 1.41f;
     std::vector<EqBand> bands_;
     std::unique_ptr<FftProcessor> fft_;
     std::unique_ptr<RoomCorrector> corrector_;

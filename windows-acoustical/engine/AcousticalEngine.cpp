@@ -1,5 +1,6 @@
 #include "AcousticalEngine.h"
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <memory>
 
@@ -77,6 +78,7 @@ void AcousticalEngine::configureLocked(const AudioConfig& config) {
 
     if (structural) {
         bandFrequencies_ = StandardFrequencies::forCount(config.bandCount);
+        eqQ_ = StandardFrequencies::eqQ(bandFrequencies_);
         fft_ = std::make_unique<FftProcessor>(fftSamples(config.fftSize));
         corrector_ = std::make_unique<RoomCorrector>(
             bandFrequencies_, sampleRateHz(config.sampleRate), fft_->binCount(),
@@ -88,13 +90,13 @@ void AcousticalEngine::configureLocked(const AudioConfig& config) {
 
         bands_.clear();
         for (int i = 0; i < static_cast<int>(bandFrequencies_.size()); ++i)
-            bands_.push_back(EqBand{i, bandFrequencies_[i], 0.0f, 0.0f, 1.41f});
+            bands_.push_back(EqBand{i, bandFrequencies_[i], 0.0f, 0.0f, eqQ_});
 
         // El EQ se prepara con la tasa configurada; si la tasa real del
         // dispositivo difiere, analyzeFrameLocked() lo re-prepara con la real.
         const float sr = static_cast<float>(sampleRateHz(config.sampleRate));
-        dspL_.prepare(bandFrequencies_, sr);
-        dspR_.prepare(bandFrequencies_, sr);
+        dspL_.prepare(bandFrequencies_, sr, eqQ_);
+        dspR_.prepare(bandFrequencies_, sr, eqQ_);
         eqSampleRate_ = static_cast<int>(sr);
 
         const int newBandCount = static_cast<int>(bandFrequencies_.size());
@@ -288,8 +290,8 @@ void AcousticalEngine::analyzeFrameLocked(const std::vector<float>& samples, int
     if (sampleRate != eqSampleRate_) {
         eqSampleRate_ = sampleRate;
         const float sr = static_cast<float>(sampleRate);
-        dspL_.prepare(bandFrequencies_, sr);
-        dspR_.prepare(bandFrequencies_, sr);
+        dspL_.prepare(bandFrequencies_, sr, eqQ_);
+        dspR_.prepare(bandFrequencies_, sr, eqQ_);
     }
 
     const float spl = splMeter_->computeSpl(samples.data(), static_cast<int>(samples.size()));

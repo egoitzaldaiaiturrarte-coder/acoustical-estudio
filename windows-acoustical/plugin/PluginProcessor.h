@@ -177,6 +177,11 @@ private:
     // frente a la línea de retardo de 0–100 ms del usuario. (Una cota "1-2
     // muestras por biquad" no cerraba el caso de 10 bandas, y "2 por banda
     // activa" sobreestimaría el de 124 bandas: 248 vs ~70 medidas.)
+    //
+    // v1.10.2: esa medida es del Q 1.41 (10 bandas). Con 31/124 bandas el Q
+    // sube (StandardFrequencies::eqQ) y el retardo de grupo de las bandas
+    // graves también: la cota se queda corta y Cubase alinea algo peor en
+    // graves con esos modos. No afecta a la estabilidad ni a la corrección.
     static constexpr int kEqGroupDelaySamples = 128;
 
     // Rate del bloque con la que se preparó el EQ (solo hilo de audio):
