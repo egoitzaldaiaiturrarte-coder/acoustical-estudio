@@ -10,6 +10,8 @@
 #include "PhoneLink.h"
 #include "Theme.h"
 #include "SpatialJoystick.h"
+#include "SplGauge.h"
+#include "RefSpectrum.h"
 
 class SettingsPanel : public juce::Component {
 public:
@@ -65,6 +67,42 @@ public:
                                           spatialY_.load(std::memory_order_relaxed));
     }
 
+    // v1.11.0 (lote 3): el timer de la consola lo llama a 30 Hz con el SPL del
+    // último análisis (ya copiado bajo el lock del motor; aquí solo se pinta) y
+    // la última sonda del auto-chequeo (null = sin sondas todavía). Refresca el
+    // gauge de nivel con su pastilla "Objetivo alcanzado", la lectura de la
+    // última sonda y el mini-espectro de la referencia capturada.
+    void tickLive(float currentSpl, const acoustical::ProbeResult* lastProbe) {
+        if (splGauge_)
+            splGauge_->setValues(currentSpl, engine_.config().targetSpl, engine_.isRunning());
+        if (probeLabel_) {
+            if (lastProbe) {
+                probeLabel_->setText(
+                    juce::String::fromUTF8("Última sonda: ") + juce::String(lastProbe->spl, 1)
+                    + juce::String::fromUTF8(" dB · RT60 ") + juce::String(lastProbe->rt60Ms, 0)
+                    + juce::String::fromUTF8(" ms · corrección activa ")
+                    + juce::String(lastProbe->correctionApplied * 100.0f, 0)
+                    + juce::String::fromUTF8(" % (") + juce::String(lastProbe->id) + ")",
+                    juce::dontSendNotification);
+            } else {
+                probeLabel_->setText(juce::String::fromUTF8(
+                    "Sin sondas todavía: activa el auto-chequeo (la primera llega a su intervalo)."),
+                    juce::dontSendNotification);
+            }
+        }
+        if (refStatus_) {
+            const bool captured = engine_.isReferenceCaptured();
+            refStatus_->setText(captured
+                                    ? juce::String::fromUTF8("Estado: Activa — la corrección compara la sala contra la referencia capturada.")
+                                    : juce::String::fromUTF8("Estado: Sin capturar — sin referencia, la corrección usa objetivo plano (0 dB en todas las bandas)."),
+                             juce::dontSendNotification);
+        }
+        if (refSpectrum_)
+            refSpectrum_->setReference(engine_.isReferenceCaptured(),
+                                        engine_.referenceBands(),
+                                        engine_.bandFrequencies());
+    }
+
 private:
     // Cambio de configuración con deshacer y guardado automático integrados
     template <typename F>
@@ -74,6 +112,58 @@ private:
         f(c);
         engine_.configure(c);
         if (onAfterChange) onAfterChange();
+    }
+
+    // v1.11.0 (lote 3): lo mismo pero para la config de trabajo (WorkConfig:
+    // fuente de referencia, auto-chequeo y profundidad de bits) — el motor la
+    // consume en su tick; el audio no la toca.
+    template <typename F>
+    void mutateWork(F f) {
+        if (onBeforeChange) onBeforeChange();
+        auto w = engine_.workConfig();
+        f(w);
+        engine_.setWorkConfig(w);
+        if (onAfterChange) onAfterChange();
+    }
+
+    // v1.11.0 (lote 3): retardo fino — escribe el valor (0–2000 ms, paso
+    // 0,01) en la config, refresca la lectura tiempo+distancia y mueve el
+    // slider sin disparar un segundo mutate (delaySyncing_ lo enmudece).
+    void setDelayMs(double v) {
+        v = juce::jlimit(0.0, 2000.0, std::round(v * 100.0) / 100.0);
+        mutate([v](auto& c) { c.audioDelayMs = static_cast<float>(v); });
+        updateDelayReadout(v);
+        if (delaySlider_) {
+            delaySyncing_ = true;
+            delaySlider_->setValue(v, juce::sendNotification);
+            delaySyncing_ = false;
+        }
+    }
+
+    // Lectura "12,45 ms · 4,27 m" (343 m/s; cm para distancias cortas):
+    // espejo de formatDelayDistance() del móvil.
+    void updateDelayReadout(double v) {
+        if (!delayReadout_) return;
+        const float meters = static_cast<float>(v) * 0.343f;
+        const juce::String dist = meters >= 1.0f
+            ? juce::String(meters, 2) + juce::String::fromUTF8(" m")
+            : juce::String(meters * 100.0f, 1) + juce::String::fromUTF8(" cm");
+        delayReadout_->setText(juce::String(v, 2) + juce::String::fromUTF8(" ms · ") + dist,
+                                juce::dontSendNotification);
+    }
+
+    // Descripción de la fuente de referencia elegida (una línea, como el móvil).
+    void updateRefDescription(acoustical::ReferenceSource src) {
+        if (!refDesc_) return;
+        const juce::String d =
+            src == acoustical::ReferenceSource::PresetSequence
+                ? juce::String::fromUTF8("Secuencia predefinida: test automático con tonos y barridos calibrados.")
+            : src == acoustical::ReferenceSource::SineSweep
+                ? juce::String::fromUTF8("Barrido de seno: la señal de prueba barre de 20 Hz a 20 kHz como referencia de sala.")
+            : src == acoustical::ReferenceSource::PinkNoise
+                ? juce::String::fromUTF8("Ruido rosa: nivel calibrado de ruido rosa como referencia.")
+                : juce::String::fromUTF8("Entrada externa: archivo o consola — la señal llega por el canal de entrada (puente ASIO) y se compara con la salida.");
+        refDesc_->setText(d, juce::dontSendNotification);
     }
 
     // === Construcción del panel ===
@@ -238,18 +328,200 @@ private:
 
         // --- Trabajo ---
         addGroup("Trabajo");
-        addSlider("Retardo global", 0, 100, 0.01, cfg.audioDelayMs, [this](double v) {
-            mutate([v](auto& c) { c.audioDelayMs = static_cast<float>(v); });
-        }, 1.0, 2);
-        endRow();
-        addSlider("SPL objetivo", 30, 110, 0.1, cfg.targetSpl, [this](double v) {
-            mutate([v](auto& c) { c.targetSpl = static_cast<float>(v); });
-        }, 1.0, 1);
-        endRow();
+        // v1.11.0 (lote 3): retardo fino 0–2000 ms con pasos de 0,01 ms
+        // (botones ±), lectura tiempo+distancia y presets de escenarios
+        // comunes — espejo del FineDelayControl del móvil (pantalla
+        // Calibración > "Retardo de audio").
+        {
+            auto* lab = new juce::Label({}, juce::String::fromUTF8("Retardo fino (ms)"));
+            lab->setColour(juce::Label::textColourId, theme::textDim);
+            rowLabels_.add(lab);
+            content().addAndMakeVisible(lab);
+            lab->setBounds(16, y_, 300, 22);
+            auto* ds = new juce::Slider(juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight);
+            ds->setNormalisableRange(juce::NormalisableRange<double>(0.0, 2000.0, 0.01));
+            ds->setValue(cfg.audioDelayMs, juce::dontSendNotification);
+            ds->setNumDecimalPlacesToDisplay(2);
+            ds->setTextBoxStyle(juce::Slider::TextBoxRight, false, 88, 22);
+            ds->onValueChange = [this, ds] {
+                if (!ds) return;
+                if (delaySyncing_) return;  // actualización programada desde un botón: el mutate ya ocurrió
+                const double v = ds->getValue();
+                mutate([v](auto& c) { c.audioDelayMs = static_cast<float>(v); });
+                updateDelayReadout(v);
+            };
+            widgets_.add(ds);
+            content().addAndMakeVisible(ds);
+            ds->setBounds(340, y_ - 2, 380, 26);
+            delaySlider_ = ds;
+            auto* minus = addButton(juce::String::fromUTF8("−"), [this] {
+                setDelayMs(engine_.config().audioDelayMs - 0.01);
+            });
+            minus->setBounds(726, y_ - 2, 36, 26);
+            auto* plus = addButton(juce::String::fromUTF8("+"), [this] {
+                setDelayMs(engine_.config().audioDelayMs + 0.01);
+            });
+            plus->setBounds(768, y_ - 2, 36, 26);
+            endRow();
+            // Lectura tiempo + distancia (343 m/s; cm para retardos cortos).
+            delayReadout_ = new juce::Label({}, juce::String());
+            delayReadout_->setColour(juce::Label::textColourId, theme::primary);
+            content().addAndMakeVisible(delayReadout_);
+            delayReadout_->setBounds(16, y_, 400, 18);
+            updateDelayReadout(cfg.audioDelayMs);
+            y_ += 22;
+            // Presets de escenarios (mismo juego que la fila del móvil).
+            auto* presetLab = new juce::Label({}, juce::String::fromUTF8("Presets:"));
+            presetLab->setColour(juce::Label::textColourId, theme::textDim);
+            content().addAndMakeVisible(presetLab);
+            presetLab->setBounds(16, y_, 70, 22);
+            const double delayPresets[5] = {25.0, 50.0, 100.0, 250.0, 500.0};
+            for (int i = 0; i < 5; ++i) {
+                const double p = delayPresets[i];
+                auto* b = addButton(juce::String(p, 0), [this, p] { setDelayMs(p); });
+                b->setBounds(96 + i * 88, y_, 84, 24);
+            }
+            y_ += 32;
+        }
         addSlider(juce::String::fromUTF8("Calibración SPL (dB)"), -20, 20, 0.5, engine_.splCalibrationOffset(), [this](double v) {
             engine_.setSplCalibrationOffset(static_cast<float>(v));
         }, 1.0, 1);
         endRow();
+
+        // --- Nivel SPL (v1.11.0, lote 3): gauge + objetivo + presets ---
+        // El slider "SPL objetivo" se traslada aquí (antes en "Trabajo"): el
+        // gauge (izquierda) muestra el nivel actual con su marcador, la
+        // pastilla "Objetivo alcanzado" se enciende mientras el nivel llega al
+        // objetivo con el motor en marcha, y los presets (derecha) escriben el
+        // mismo targetSpl del motor (el móvil tiene los mismos cinco).
+        addGroup(juce::String::fromUTF8("Nivel SPL"));
+        {
+            splGauge_ = new SplGauge();
+            widgets_.add(splGauge_);
+            content().addAndMakeVisible(splGauge_);
+            splGauge_->setBounds(16, y_ - 4, 240, 240);
+            auto* lab = new juce::Label({}, juce::String::fromUTF8("SPL objetivo (dB)"));
+            lab->setColour(juce::Label::textColourId, theme::textDim);
+            rowLabels_.add(lab);
+            content().addAndMakeVisible(lab);
+            lab->setBounds(280, y_ + 8, 180, 22);
+            auto* ts = new juce::Slider(juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight);
+            ts->setNormalisableRange(juce::NormalisableRange<double>(30.0, 110.0, 0.1));
+            ts->setValue(cfg.targetSpl, juce::dontSendNotification);
+            ts->setNumDecimalPlacesToDisplay(1);
+            ts->setTextBoxStyle(juce::Slider::TextBoxRight, false, 88, 22);
+            ts->onValueChange = [this, ts] {
+                if (!ts) return;
+                const double v = ts->getValue();
+                mutate([v](auto& c) { c.targetSpl = static_cast<float>(v); });
+            };
+            widgets_.add(ts);
+            content().addAndMakeVisible(ts);
+            ts->setBounds(470, y_ + 6, 414, 26);
+            const double splPresets[5] = {65.0, 75.0, 85.0, 97.0, 103.0};
+            for (int i = 0; i < 5; ++i) {
+                const double p = splPresets[i];
+                auto* b = addButton(juce::String(p, 0), [this, p] {
+                    mutate([p](auto& c) { c.targetSpl = static_cast<float>(p); });
+                });
+                b->setBounds(470 + i * 84, y_ + 44, 80, 24);
+            }
+            y_ += 248;
+        }
+
+        // --- Auto-chequeo (v1.11.0, lote 3): sonda periódica del motor ---
+        // El motor mide a la cadencia configurada (intervalo 10–600 s) con la
+        // calidad elegida (FFT/bandas propias de la sonda) y la UI muestra la
+        // última lectura; espejo del AutoCheckConfig del móvil.
+        addGroup(juce::String::fromUTF8("Auto-chequeo (sonda periódica)"));
+        {
+            const auto wc = engine_.workConfig();
+            addToggle(juce::String::fromUTF8("Auto-chequeo activado"), wc.autoCheck.enabled, [this](bool on) {
+                mutateWork([on](auto& w) { w.autoCheck.enabled = on; });
+            });
+            endRow();
+            addSlider(juce::String::fromUTF8("Intervalo (s)"), 10, 600, 5,
+                    static_cast<double>(wc.autoCheck.intervalSeconds), [this](double v) {
+                        mutateWork([v](auto& w) { w.autoCheck.intervalSeconds = static_cast<int>(v); });
+                    }, 1.0, 0);
+            endRow();
+            addCombo(juce::String::fromUTF8("Calidad"),
+                    {juce::String::fromUTF8("Rápida (1K / 10 bandas)"),
+                     juce::String::fromUTF8("Normal (2K / 16 bandas)"),
+                     juce::String::fromUTF8("Alta (4K / 31 bandas)")},
+                    static_cast<int>(wc.autoCheck.quality), [this](int i) {
+                        mutateWork([i](auto& w) {
+                            w.autoCheck.quality = static_cast<acoustical::ProbeQuality>(i);
+                        });
+                    });
+            endRow();
+            addCombo(juce::String::fromUTF8("Profundidad de bits"),
+                    {juce::String::fromUTF8("16-bit"), juce::String::fromUTF8("24-bit"),
+                     juce::String::fromUTF8("32-bit (float)")},
+                    static_cast<int>(wc.bitDepth), [this](int i) {
+                        mutateWork([i](auto& w) {
+                            const auto bd = static_cast<acoustical::BitDepth>(i);
+                            w.bitDepth = bd;
+                            w.autoCheck.bitDepth = bd;
+                        });
+                    });
+            endRow();
+            probeLabel_ = new juce::Label({}, juce::String());
+            probeLabel_->setColour(juce::Label::textColourId, theme::primary);
+            content().addAndMakeVisible(probeLabel_);
+            probeLabel_->setBounds(24, y_, 850, 20);
+            probeLabel_->setText(juce::String::fromUTF8(
+                "Sin sondas todavía: activa el auto-chequeo (la primera llega a su intervalo)."),
+                                 juce::dontSendNotification);
+            endRow();
+        }
+
+        // --- Referencia (v1.11.0, lote 3): fuente de señal y espectro ---
+        // Espejo de la sección "Referencia" del móvil: elección de fuente
+        // (WorkConfig.referenceSource), estado de la captura y el espectro de
+        // bandas capturadas (lo que la corrección compara contra la sala).
+        addGroup(juce::String::fromUTF8("Referencia (fuente y espectro)"));
+        {
+            const auto wc = engine_.workConfig();
+            addCombo(juce::String::fromUTF8("Fuente"),
+                    {juce::String::fromUTF8("Secuencia predefinida"),
+                     juce::String::fromUTF8("Barrido de seno"),
+                     juce::String::fromUTF8("Ruido rosa"),
+                     juce::String::fromUTF8("Entrada externa (archivo / consola)")},
+                    static_cast<int>(wc.referenceSource), [this](int i) {
+                        const auto src = static_cast<acoustical::ReferenceSource>(i);
+                        mutateWork([src](auto& w) { w.referenceSource = src; });
+                        updateRefDescription(src);
+                    });
+            endRow();
+            refDesc_ = new juce::Label({}, juce::String());
+            refDesc_->setColour(juce::Label::textColourId, theme::textDim);
+            refDesc_->setJustificationType(juce::Justification::centredLeft);
+            content().addAndMakeVisible(refDesc_);
+            refDesc_->setBounds(16, y_, 870, 18);
+            updateRefDescription(wc.referenceSource);
+            y_ += 22;
+            refStatus_ = new juce::Label({}, juce::String());
+            refStatus_->setColour(juce::Label::textColourId, theme::textPrimary);
+            refStatus_->setJustificationType(juce::Justification::centredLeft);
+            content().addAndMakeVisible(refStatus_);
+            refStatus_->setBounds(16, y_, 870, 18);
+            y_ += 24;
+            auto* cap = addButton(juce::String::fromUTF8("Capturar referencia"), [this] {
+                engine_.captureReference();
+            });
+            cap->setBounds(16, y_, 150, 24);
+            auto* clr = addButton(juce::String::fromUTF8("Borrar"), [this] {
+                engine_.clearReference();
+            });
+            clr->setBounds(174, y_, 90, 24);
+            endRow();
+            refSpectrum_ = new RefSpectrum();
+            widgets_.add(refSpectrum_);
+            content().addAndMakeVisible(refSpectrum_);
+            refSpectrum_->setBounds(16, y_, 856, 96);
+            y_ += 104;
+        }
 
         // --- Espacio (v1.11.0: panel como la pantalla "Control" del móvil:
         // joystick para x/y + faders verticales de distancia/tamaño +
@@ -831,6 +1103,22 @@ private:
     int contentHeight_ = 400;
     int groupStartY_ = 0;
     bool groupOpen_ = false;
+
+    // v1.11.0 (lote 3): retardo fino (botones ± + presets escriben la config y
+    // mueven el slider; delaySyncing_ evita el doble mutate en ese camino).
+    juce::Slider* delaySlider_ = nullptr;
+    juce::Label* delayReadout_ = nullptr;
+    bool delaySyncing_ = false;
+    // v1.11.0 (lote 3): grupo "Nivel SPL" — gauge de nivel + pastilla
+    // "Objetivo alcanzado" (tickLive lo refresca a 30 Hz).
+    SplGauge* splGauge_ = nullptr;
+    // v1.11.0 (lote 3): grupo "Auto-chequeo" — lectura de la última sonda.
+    juce::Label* probeLabel_ = nullptr;
+    // v1.11.0 (lote 3): grupo "Referencia" — descripción de la fuente,
+    // estado de la captura y el mini-espectro de la referencia capturada.
+    juce::Label* refDesc_ = nullptr;
+    juce::Label* refStatus_ = nullptr;
+    RefSpectrum* refSpectrum_ = nullptr;
 
     juce::Viewport scroller_;
     juce::OwnedArray<juce::Component> widgets_;

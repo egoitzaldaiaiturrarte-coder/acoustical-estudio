@@ -59,6 +59,9 @@ public:
 
     std::function<void(const AnalysisResult&)> onAnalysis;            // hilo del motor
     std::function<void(SweepProcess, const SweepStep&)> onSweep;      // decisión de un ecu
+    // v1.11.0 (lote 3): sonda periódica del auto-chequeo (config en WorkConfig;
+    // el resultado llega al caller por este callback, desde el hilo del motor).
+    std::function<void(const ProbeResult&)> onProbe;
     std::function<void(float)> onNoiseCaptureProgress;
     std::function<void()> onNoiseCaptureComplete;
     std::function<void(const std::string&)> onStartFailed;
@@ -86,6 +89,20 @@ public:
     std::vector<float> bandFrequencies() const {
         std::lock_guard<std::mutex> lock(stateMutex_);
         return bandFrequencies_;
+    }
+
+    // === Configuración de trabajo (v1.11.0, lote 3) ===
+    // Espejo del WorkConfig del móvil (fuente de referencia, auto-chequeo y
+    // profundidad de bits). La UI (pestaña Ajustes) lee y escribe COPIAS bajo
+    // el mismo lock que la config del motor: el hilo del motor la consume en
+    // su tick (cadencia/calidad de la sonda) y el hilo de audio no la toca.
+    WorkConfig workConfig() const {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        return workConfig_;
+    }
+    void setWorkConfig(const WorkConfig& config) {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        workConfig_ = config;
     }
     std::vector<EqBand> bands() const;
     void setBandGain(int index, float gainDb);
@@ -164,12 +181,17 @@ private:
         std::vector<std::pair<SweepProcess, SweepStep>> sweeps;
         AnalysisResult analysis;
         bool hasAnalysis = false;
+        ProbeResult probe;  // v1.11.0: sonda del auto-chequeo (si corrió)
+        bool hasProbe = false;
         float noiseProgress = -1.0f;  // -1 = sin progreso este tick
         bool noiseComplete = false;
     };
 
     void engineLoop();
     void analyzeFrameLocked(const std::vector<float>& samples, int sampleRate, TickEvents& ev);
+    // v1.11.0 (lote 3): (re)crea la FFT/agregador de la sonda si la calidad
+    // del auto-chequeo cambió (requiere stateMutex_ tomado).
+    void ensureProbeQualityLocked(ProbeQuality q);
     // Cuerpo de configure() sin lock: lo llaman configure() (que toma
     // stateMutex_ por el caller) y el tick del motor (que ya lo sostiene al
     // aplicar un requestConfigure encolado).
@@ -186,6 +208,9 @@ private:
     }
 
     AudioConfig config_;
+    // v1.11.0 (lote 3): config de trabajo (fuente de referencia, auto-chequeo):
+    // el motor la lee en el tick; la UI la edita vía setWorkConfig() (lock).
+    WorkConfig workConfig_;
     std::vector<float> bandFrequencies_;
     // Q del banco del EQ para las bandas actuales (StandardFrequencies::eqQ):
     // 1.41 con 10 bandas, como siempre; más estrecho cuantas más bandas.
@@ -233,6 +258,14 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<long long> framesAnalyzed_{0};
     std::atomic<long long> lastAnalysisMs_{0};
+    // v1.11.0 (lote 3): sonda del auto-chequeo. FFT/agregador INDEPENDIENTES
+    // de la cadena de análisis (la calidad de la sonda elige 1024/2048/4096
+    // con 10/16/31 bandas, como el móvil): no tocan fft_/corrector_.
+    std::atomic<long long> lastProbeMs_{0};
+    ProbeQuality probeQuality_{ProbeQuality::Normal};
+    int probeFftSize_ = 0;  // tamaño real de probeFft_ (fuente única)
+    std::unique_ptr<FftProcessor> probeFft_;
+    std::unique_ptr<RoomCorrector> probeAgg_;
 
     EqDsp dspL_, dspR_;
     Rt60Estimator rt60_;

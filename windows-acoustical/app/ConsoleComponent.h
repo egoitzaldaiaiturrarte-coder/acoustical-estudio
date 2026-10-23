@@ -276,6 +276,10 @@ public:
 
         refreshPresets();
         engine_.onAnalysis = [this](const acoustical::AnalysisResult& r) { storeAnalysis(r); };
+        // v1.11.0 (lote 3): sonda del auto-chequeo (el motor la dispara a la
+        // cadencia de WorkConfig.autoCheck; la consola guarda la última para
+        // que la pestaña Ajustes la muestre).
+        engine_.onProbe = [this](const acoustical::ProbeResult& p) { storeProbe(p); };
         engine_.onSweep = [this](acoustical::SweepProcess p, const acoustical::SweepStep& s) {
             storeSweep(p, s);
         };
@@ -744,6 +748,13 @@ private:
         lastAnalysis_ = std::make_unique<acoustical::AnalysisResult>(r);
     }
 
+    // v1.11.0 (lote 3): última sonda del auto-chequeo (mismo lock que el
+    // análisis: el timer de la consola copia ambos a 30 Hz para el panel).
+    void storeProbe(const acoustical::ProbeResult& p) {
+        std::lock_guard<std::mutex> lock(analysisMutex_);
+        lastProbe_ = std::make_unique<acoustical::ProbeResult>(p);
+    }
+
     void storeSweep(acoustical::SweepProcess p, const acoustical::SweepStep& s) {
         const int i = static_cast<int>(p);
         std::lock_guard<std::mutex> lock(sweepMutex_);
@@ -756,6 +767,21 @@ private:
         // 0. Espacio (v1.8): la lectura de compensación del panel se recalcula
         //     de los atómicos (misma ley que la cadena de salida de audio).
         if (settingsPanel_) settingsPanel_->tickSpatialReadout();
+        // 0a'. v1.11.0 (lote 3): la pestaña Ajustes se refresca a 30 Hz:
+        //     gauge de SPL (nivel del último análisis), última sonda del
+        //     auto-chequeo y espectro de la referencia capturada. Los valores
+        //     se copian bajo el lock del análisis (el motor despacha desde su
+        //     hilo) y el panel solo pinta.
+        {
+            float splNow = 0.0f;
+            const acoustical::ProbeResult* probeNow = nullptr;
+            {
+                const std::lock_guard<std::mutex> lock(analysisMutex_);
+                if (lastAnalysis_) splNow = lastAnalysis_->spl;
+                if (lastProbe_) probeNow = &*lastProbe_;
+            }
+            if (settingsPanel_) settingsPanel_->tickLive(splNow, probeNow);
+        }
         // 0a. Diagnóstico: primer bloque de audio recibido (una sola vez) y
         //     cualquier error del dispositivo pendiente de volcar al log.
         if (!audioLogged_ && audioBursts_.load(std::memory_order_relaxed) > 0) {
@@ -1099,6 +1125,8 @@ private:
 
     std::mutex analysisMutex_;
     std::unique_ptr<acoustical::AnalysisResult> lastAnalysis_;
+    // v1.11.0 (lote 3): última sonda del auto-chequeo (protegida por analysisMutex_).
+    std::unique_ptr<acoustical::ProbeResult> lastProbe_;
     std::mutex sweepMutex_;
     std::mutex dspMutex_;
 

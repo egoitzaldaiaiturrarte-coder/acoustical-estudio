@@ -51,7 +51,7 @@ inline long analysisIntervalMs(AnalysisInterval i) {
 
 enum class BandCount { B8, B10, B16, B31, B124 };
 
-enum class BitDepth { Int16, Int24 };
+enum class BitDepth { Int16, Int24, Float32 };  // (móvil: 16 / 24 / 32-bit float)
 
 enum class ProbeQuality { Low, Normal, High };
 
@@ -201,6 +201,20 @@ struct WorkConfig {
     AutoCheckConfig autoCheck;
     BitDepth bitDepth = BitDepth::Int24;
     SampleRate workSampleRate = SampleRate::Hz48000;
+};
+
+// v1.11.0 (lote 3): resultado de una sonda periódica del auto-chequeo.
+// Espejo de ProbeResult del móvil: el motor la mide solo (sin tocar la cadena
+// de corrección) y la UI la muestra; la calidad elige la resolución de la
+// medición (FFT 1024/2048/4096 con 10/16/31 bandas, como el móvil).
+struct ProbeResult {
+    std::string id;
+    long long timestampMs = 0;
+    float spl = 0.0f;               // medido con la calibración vigente
+    float rt60Ms = 0.0f;            // último RT60 estimado por el motor
+    float correctionApplied = 0.0f; // intensidad de la corrección activa (0..1)
+    std::vector<float> bandGains;  // niveles de banda de la propia sonda
+    float noiseFloorDb = 0.0f;
 };
 
 // === Banda del EQ y fotograma de espectro ===

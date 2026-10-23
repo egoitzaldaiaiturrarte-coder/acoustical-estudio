@@ -123,6 +123,29 @@ void AcousticalEngine::configureLocked(const AudioConfig& config) {
         if (sweepers_[i]) sweepers_[i]->applyConfig(dynamicCfgs_[i]);
 }
 
+// v1.11.0 (lote 3): la sonda del auto-chequeo mide con SU PROPIA FFT y su
+// propio agregador de bandas, independientes de la cadena de análisis (que
+// sigue corriendo con la config del motor): la calidad elige la resolución,
+// espejo de ProbeQuality del móvil (Rápida 1024/10, Normal 2048/16, Alta
+// 4096/31). Solo se (re)crea cuando la calidad cambia. Requiere stateMutex_.
+void AcousticalEngine::ensureProbeQualityLocked(ProbeQuality q) {
+    if (q == probeQuality_ && probeAgg_ && probeFft_) return;
+    probeQuality_ = q;
+    const FftSize fs = q == ProbeQuality::Low ? FftSize::S1024
+                  : q == ProbeQuality::Normal ? FftSize::S2048
+                                               : FftSize::S4096;
+    const BandCount bc = q == ProbeQuality::Low ? BandCount::B10
+                    : q == ProbeQuality::Normal ? BandCount::B16
+                                                 : BandCount::B31;
+    probeFftSize_ = fftSamples(fs);
+    probeFft_ = std::make_unique<FftProcessor>(probeFftSize_);
+    // El agregador solo se usa para la agregación de bandas (maxGain 0 = sin
+    // corrección): la sonda mide, no corrige.
+    probeAgg_ = std::make_unique<RoomCorrector>(StandardFrequencies::forCount(bc),
+        sampleRateHz(config_.sampleRate), probeFft_->binCount(), 0.0f, 0.0f,
+        config_.noiseFloorDb, 0);
+}
+
 std::vector<EqBand> AcousticalEngine::bands() const {
     std::lock_guard<std::mutex> lock(stateMutex_);
     return bands_;
@@ -263,12 +286,58 @@ void AcousticalEngine::engineLoop() {
                 }
                 lastAnalysisMs_.store(now);
             }
+
+            // 3. v1.11.0 (lote 3): sonda del auto-chequeo. Se dispara a la
+            //    cadencia configurada (WorkConfig.autoCheck) y mide UNA sola
+            //    vez, con la calidad elegida: SPL (con la calibración
+            //    vigente), RT60 del motor, la corrección activa y los niveles
+            //    de banda de la propia medición. Es una instantánea
+            //    independiente: ni toca la cadena de análisis ni la de
+            //    corrección (igual que en el móvil, donde el auto-chequeo es
+            //    una cadencia de medición, no un cambio de comportamiento).
+            {
+                const AutoCheckConfig& ac = workConfig_.autoCheck;
+                if (ac.enabled &&
+                    now - lastProbeMs_.load(std::memory_order_relaxed)
+                        >= static_cast<long long>(ac.intervalSeconds) * 1000) {
+                    lastProbeMs_.store(now, std::memory_order_relaxed);
+                    ensureProbeQualityLocked(ac.quality);
+                    std::vector<float> pblock;
+                    const int need = probeFftSize_;  // (probeFft_ ya existe: la creó ensure)
+                    if (need > 0) {
+                        std::lock_guard<std::mutex> rlock(ringMutex_);
+                        if (static_cast<int>(ring_.size()) >= need) {
+                            const int start = static_cast<int>(ring_.size()) - need;
+                            pblock.assign(std::next(ring_.begin(), start), ring_.end());
+                        }
+                    }
+                    if (!pblock.empty()) {
+                        ProbeResult pr;
+                        pr.id = std::to_string(now);
+                        pr.timestampMs = now;
+                        pr.spl = splMeter_
+                            ? splMeter_->computeSpl(pblock.data(), static_cast<int>(pblock.size()))
+                            : 0.0f;
+                        pr.rt60Ms = rt60_.currentRt60Ms();
+                        pr.correctionApplied =
+                            RoomCorrector::correctionIntensity(bands_, config_.maxGainDb);
+                        const int rate = inputSampleRate_.load(std::memory_order_relaxed);
+                        const auto& mags = probeFft_->computeMagnitudesDb(pblock.data(), rate);
+                        const auto& binFreqs = probeFft_->binFrequencies(rate);
+                        pr.bandGains = probeAgg_->aggregateBands(mags, binFreqs);
+                        pr.noiseFloorDb = config_.noiseFloorDb;
+                        ev.probe = std::move(pr);
+                        ev.hasProbe = true;
+                    }
+                }
+            }
         }
 
         // --- Despacho de callbacks FUERA del lock ---
         for (auto& s : ev.sweeps)
             if (onSweep) onSweep(s.first, s.second);
         if (ev.hasAnalysis && onAnalysis) onAnalysis(ev.analysis);
+        if (ev.hasProbe && onProbe) onProbe(ev.probe);
         if (ev.noiseComplete && onNoiseCaptureComplete) onNoiseCaptureComplete();
         if (ev.noiseProgress >= 0.0f && onNoiseCaptureProgress) onNoiseCaptureProgress(ev.noiseProgress);
 
