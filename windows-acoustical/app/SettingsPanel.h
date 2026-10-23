@@ -9,6 +9,7 @@
 #include <AcousticalEngine.h>
 #include "PhoneLink.h"
 #include "Theme.h"
+#include "SpatialJoystick.h"
 
 class SettingsPanel : public juce::Component {
 public:
@@ -52,9 +53,17 @@ public:
 
     void refresh() { rebuild(); }
 
-    // El timer de la consola lo llama a 30 Hz: el texto de compensación se
-    // recalcula de los atómicos (misma ley que el audio).
-    void tickSpatialReadout() { updateSpatialReadout(); }
+    // El timer de la consola lo llama a 30 Hz: la lectura de compensación se
+    // recalcula de los atómicos (misma ley que el audio), la etiqueta de
+    // posición se refresca y el joystick sigue a los atómicos cuando no está
+    // siendo arrastrado (modo/sync/undo lo mueven desde fuera).
+    void tickSpatialReadout() {
+        updateSpatialReadout();
+        updatePositionLabel();
+        if (joy_ && !joy_->isDragging())
+            joy_->setPositionFromOutside(spatialX_.load(std::memory_order_relaxed),
+                                          spatialY_.load(std::memory_order_relaxed));
+    }
 
 private:
     // Cambio de configuración con deshacer y guardado automático integrados
@@ -242,28 +251,110 @@ private:
         }, 1.0, 1);
         endRow();
 
-        // --- Espacio (posición del elemento + compensación) ---
+        // --- Espacio (v1.11.0: panel como la pantalla "Control" del móvil:
+        // joystick para x/y + faders verticales de distancia/tamaño +
+        // entorno; la lectura de compensación queda igual, abajo) ---
         addGroup(juce::String::fromUTF8("Espacio — posición del elemento y compensación"));
-        addSlider(juce::String::fromUTF8("Izquierda ↔ Derecha (x)"), -1, 1, 0.05, spatialX_.load(), [this](double v) {
-            spatialX_.store(static_cast<float>(v), std::memory_order_relaxed);
-            updateSpatialReadout();
-        });
-        endRow();
-        addSlider(juce::String::fromUTF8("Frente ↔ Detrás (y)"), -1, 1, 0.05, spatialY_.load(), [this](double v) {
-            spatialY_.store(static_cast<float>(v), std::memory_order_relaxed);
-            updateSpatialReadout();
-        });
-        endRow();
-        addSlider(juce::String::fromUTF8("Cerca ↔ Lejos (z, 0–15 m)"), 0, 1, 0.05, spatialZ_.load(), [this](double v) {
-            spatialZ_.store(static_cast<float>(v), std::memory_order_relaxed);
-            updateSpatialReadout();
-        });
-        endRow();
-        addSlider(juce::String::fromUTF8("Tamaño del elemento (0 pequeño – 1 grande)"), 0, 1, 0.05, spatialSize_.load(), [this](double v) {
-            spatialSize_.store(static_cast<float>(v), std::memory_order_relaxed);
-            updateSpatialReadout();
-        });
-        endRow();
+        {
+            auto* lab = new juce::Label({}, juce::String::fromUTF8(
+                "Posición: arrastra dentro del círculo (izquierda/derecha · frente/detrás)"));
+            lab->setColour(juce::Label::textColourId, theme::textDim);
+            rowLabels_.add(lab);
+            content().addAndMakeVisible(lab);
+            lab->setBounds(16, y_, 300, 22);
+            joy_ = new SpatialJoystick([this](float x, float y) {
+                spatialX_.store(x, std::memory_order_relaxed);
+                spatialY_.store(y, std::memory_order_relaxed);
+                updateSpatialReadout();
+                updatePositionLabel();
+            });
+            joy_->setEnvironment(currentEnv_);
+            widgets_.add(joy_);
+            content().addAndMakeVisible(joy_);
+            joy_->setBounds(340, y_ - 6, 208, 208);
+            auto* envCombo = new juce::ComboBox();
+            envCombo->setColour(juce::ComboBox::backgroundColourId, theme::surface);
+            envCombo->setColour(juce::ComboBox::textColourId, theme::textPrimary);
+            envCombo->setColour(juce::ComboBox::arrowColourId, theme::textDim);
+            envCombo->addItem(juce::String::fromUTF8("Sala (8×10 m)"), 1);
+            envCombo->addItem(juce::String::fromUTF8("Estudio (6×7 m)"), 2);
+            envCombo->addItem(juce::String::fromUTF8("Escenario (12×8 m)"), 3);
+            envCombo->addItem(juce::String::fromUTF8("Exterior (20×30 m)"), 4);
+            envCombo->setSelectedItemIndex(static_cast<int>(currentEnv_) + 1, juce::dontSendNotification);
+            envCombo->onChange = [this, envCombo] {
+                currentEnv_ = static_cast<SpatialEnvironment>(envCombo->getSelectedItemIndex() - 1);
+                if (joy_) joy_->setEnvironment(currentEnv_);
+                updatePositionLabel();
+            };
+            widgets_.add(envCombo);
+            content().addAndMakeVisible(envCombo);
+            envCombo->setBounds(568, y_, 318, 26);
+            positionLabel_ = new juce::Label({}, juce::String());
+            positionLabel_->setColour(juce::Label::textColourId, theme::textPrimary);
+            positionLabel_->setJustificationType(juce::Justification::centredLeft);
+            content().addAndMakeVisible(positionLabel_);
+            positionLabel_->setBounds(568, y_ + 34, 318, 22);
+            updatePositionLabel();
+            y_ += 224;
+            // Faders verticales (móvil: "Traer aquí / llevar" y "Tamaño equipo")
+            auto* distLab = new juce::Label({}, juce::String::fromUTF8(
+                "Distancia (cerca ↔ lejos)"));
+            distLab->setColour(juce::Label::textColourId, theme::textDim);
+            rowLabels_.add(distLab);
+            content().addAndMakeVisible(distLab);
+            distLab->setBounds(340, y_, 130, 20);
+            auto* ds = new juce::Slider(juce::Slider::LinearVertical, juce::Slider::TextBoxBelow);
+            ds->setNormalisableRange(juce::NormalisableRange<double>(0.0, 15.0, 0.05));
+            ds->setValue(spatialZ_.load() * 15.0, juce::dontSendNotification);
+            ds->setNumDecimalPlacesToDisplay(1);
+            ds->setColour(juce::Slider::backgroundColourId, theme::background);
+            ds->setColour(juce::Slider::trackColourId, theme::primaryDark);
+            ds->setColour(juce::Slider::thumbColourId, theme::primary);
+            ds->setColour(juce::Slider::textBoxTextColourId, theme::textPrimary);
+            ds->setColour(juce::Slider::textBoxBackgroundColourId, theme::surface);
+            ds->onValueChange = [this, ds] {
+                if (!ds) return;
+                const double v = ds->getValue();
+                spatialZ_.store(static_cast<float>(v / 15.0), std::memory_order_relaxed);
+                updateSpatialReadout();
+            };
+            distSlider_ = ds;
+            widgets_.add(ds);
+            content().addAndMakeVisible(ds);
+            ds->setBounds(340, y_ + 24, 40, 112);
+            auto* sizeLab = new juce::Label({}, juce::String::fromUTF8("Tamaño del elemento"));
+            sizeLab->setColour(juce::Label::textColourId, theme::textDim);
+            rowLabels_.add(sizeLab);
+            content().addAndMakeVisible(sizeLab);
+            sizeLab->setBounds(500, y_, 130, 20);
+            auto* ss = new juce::Slider(juce::Slider::LinearVertical, juce::Slider::TextBoxBelow);
+            ss->setNormalisableRange(juce::NormalisableRange<double>(0.0, 1.0, 0.05));
+            ss->setValue(spatialSize_.load(), juce::dontSendNotification);
+            ss->setNumDecimalPlacesToDisplay(2);
+            ss->setColour(juce::Slider::backgroundColourId, theme::background);
+            ss->setColour(juce::Slider::trackColourId, theme::primaryDark);
+            ss->setColour(juce::Slider::thumbColourId, theme::primary);
+            ss->setColour(juce::Slider::textBoxTextColourId, theme::textPrimary);
+            ss->setColour(juce::Slider::textBoxBackgroundColourId, theme::surface);
+            ss->onValueChange = [this, ss] {
+                if (!ss) return;
+                const double v = ss->getValue();
+                spatialSize_.store(static_cast<float>(v), std::memory_order_relaxed);
+                updateSpatialReadout();
+                updateSizeName();
+            };
+            sizeSlider_ = ss;
+            widgets_.add(ss);
+            content().addAndMakeVisible(ss);
+            ss->setBounds(500, y_ + 24, 40, 112);
+            sizeName_ = new juce::Label({}, juce::String());
+            sizeName_->setColour(juce::Label::textColourId, theme::textDim);
+            sizeName_->setJustificationType(juce::Justification::centredLeft);
+            content().addAndMakeVisible(sizeName_);
+            sizeName_->setBounds(548, y_ + 136, 120, 18);
+            updateSizeName();
+            y_ += 158;
+        }
         spatialReadout_ = new juce::Label({}, juce::String());
         spatialReadout_->setColour(juce::Label::textColourId, theme::textDim);
         spatialReadout_->setBounds(16, y_, 870, 22);
@@ -502,6 +593,29 @@ private:
             juce::dontSendNotification);
     }
 
+    // v1.11.0: etiqueta de posición ("Centro" / "Izq 1,2 m · Frente 3,4 m"),
+    // espejo de positionLabel del móvil, en metros del entorno elegido.
+    void updatePositionLabel() {
+        if (!positionLabel_) return;
+        positionLabel_->setText(
+            spatialPositionLabel(spatialX_.load(std::memory_order_relaxed),
+                                 spatialY_.load(std::memory_order_relaxed),
+                                 currentEnv_),
+            juce::dontSendNotification);
+    }
+
+    // v1.11.0: nombre del tamaño (móvil: Pequeño/Mediano/Grande/Muy grande).
+    void updateSizeName() {
+        if (!sizeName_) return;
+        const float s = spatialSize_.load(std::memory_order_relaxed);
+        const juce::String name =
+            s < 0.25f ? juce::String::fromUTF8("Pequeño")
+            : s < 0.5f ? juce::String::fromUTF8("Mediano")
+            : s < 0.75f ? juce::String::fromUTF8("Grande")
+                         : juce::String::fromUTF8("Muy grande");
+        sizeName_->setText(name, juce::dontSendNotification);
+    }
+
     void applyMode(int m) {
         struct Modo {
             int bandCount, analysisInterval, fftSize;
@@ -585,11 +699,15 @@ private:
             "los 3 ecuas con sus bandas de apoyo y la posición espacial. Pulsa uno,\n"
             "afina lo que quieras (sigue guardándose con ese modo) y al arrancar la\n"
             "app se carga el último modo activo, con los cambios que hayas hecho.\n\n"
-            "ESPACIO (v1.8)\n"
-            "Posición del elemento que escuchas (x izquierda/derecha, y frente/detrás,\n"
-            "z distancia de 0 a 15 m, tamaño del elemento): la compensación de ganancia\n"
-            "y retardo de propagación se aplica a la salida real, igual que en el móvil\n"
-            "y en el plugin VST (misma ley en las tres versiones).\n\n"
+            "ESPACIO (v1.8; v1.11.0: panel como en el móvil)\n"
+            "Posición del elemento que escuchas: el joystick (arrastrar dentro del\n"
+            "círculo) fija izquierda/derecha (x) y frente/detrás (y); los faders\n"
+            "verticales, la distancia (z, 0 a 15 m) y el tamaño del elemento.\n"
+            "El entorno (sala/estudio/escenario/exterior) define los metros de la\n"
+            "lectura y el fondo del joystick.\n"
+            "La compensación de ganancia y retardo de propagación se aplica a la\n"
+            "salida real, igual que en el móvil y en el plugin VST (misma ley en las\n"
+            "tres versiones).\n\n"
             "VALORES EXACTOS\n"
             "Cada deslizador tiene su caja de texto a la derecha: haz clic y escribe el\n"
             "valor exacto (físico o con Teclado en pantalla). Precisión: retardos de\n"
@@ -719,6 +837,16 @@ private:
     juce::OwnedArray<juce::Label> rowLabels_;
     juce::OwnedArray<juce::GroupComponent> boxes_;
     juce::Label* spatialReadout_ = nullptr;  // creada en rebuild() de "Espacio"
+    // v1.11.0: el panel de Espacio pasa a tener joystick + faders verticales
+    // + entorno (igual que la pantalla "Control" del móvil). El entorno es solo
+    // visual (metros del entorno en la lectura y el fondo del joystick); la ley
+    // de compensación no depende de él.
+    SpatialJoystick* joy_ = nullptr;
+    juce::Label* positionLabel_ = nullptr;
+    juce::Slider* distSlider_ = nullptr;
+    juce::Slider* sizeSlider_ = nullptr;
+    juce::Label* sizeName_ = nullptr;
+    SpatialEnvironment currentEnv_ = SpatialEnvironment::Room;
 
     // Referencias al estado espacial de la consola (la UI escribe, el callback
     // de audio lee con load()): nunca se copian, el panel y el audio miran
