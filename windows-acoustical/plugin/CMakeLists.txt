@@ -8,7 +8,14 @@ if(NOT _vst2_sdk)
     set(_vst2_sdk "${CMAKE_CURRENT_SOURCE_DIR}/../vst2-sdk")
 endif()
 if(EXISTS "${_vst2_sdk}/pluginterfaces/vst2.x/aeffect.h")
-    juce_set_vst2_sdk_path("${_vst2_sdk}")
+    # JUCE 7.0.12: juce_set_vst2_sdk_path solo se puede llamar UNA vez por
+    # proyecto (FATAL_ERROR si no; el guard es TARGET juce_vst2_sdk). En el
+    # build completo lo llama primero este plugin; el complementario
+    # "Acoustical Spatial" (spatial-plugin/) salta su llamada: misma ruta
+    # (../vst2-sdk desde ambos directorios hermanos).
+    if(NOT TARGET juce_vst2_sdk)
+        juce_set_vst2_sdk_path("${_vst2_sdk}")
+    endif()
     set(FORMATS VST3 VST)
     message(STATUS "Acoustical: compilando VST3 + VST2.4 (SDK: ${_vst2_sdk})")
 else()
