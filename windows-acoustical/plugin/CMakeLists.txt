@@ -19,7 +19,7 @@ endif()
 juce_add_plugin(AcousticalDynamicEq
     PLUGIN_MANUFACTURER_CODE Acos
     PLUGIN_CODE Aeq1
-    VERSION 1.10.2
+    VERSION 1.11.0
     FORMATS ${FORMATS}
     PRODUCT_NAME "Acoustical Dynamic EQ"
     COMPANY_NAME "Acoustical"
