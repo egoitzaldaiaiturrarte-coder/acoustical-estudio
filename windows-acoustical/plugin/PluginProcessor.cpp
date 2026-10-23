@@ -53,6 +53,16 @@ AcousticalAudioProcessor::createParameterLayout() {
         juce::ParameterID{"spatialSize", 1}, utf8("Tamaño del elemento"),
         juce::NormalisableRange<float>(0.0f, 1.0f, 0.05f), 0.5f));
 
+    // --- Referencia entre instancias (v1.11.0, lote 2) ---
+    // 0 = la propia entrada (el comportamiento de siempre); >0 = el número
+    // de instancia del master cuya salida post-fader (publicada en su anillo
+    // de memoria compartida) captura la referencia. El combo de la ventana
+    // lista las instancias descubiertas por baliza; si el master se cierra,
+    // la captura cae a la propia entrada.
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"refMaster", 1}, utf8("Referencia (instancia master)"),
+        juce::NormalisableRange<float>(0.0f, 9999.0f, 1.0f), 0.0f));
+
     // --- Modo de trabajo (v1.8): perfil completo del catálogo compartido ---
     // 0 = "Actual" (ajustes libres, sin modo); 1..6 = los perfiles del core
     // C (Coche Normal / Aire libre, Estudio-Esc 1, Escenarios 2/3, PAs):
@@ -174,6 +184,13 @@ AcousticalAudioProcessor::AcousticalAudioProcessor()
     pSpatialY_ = apvts.getRawParameterValue("spatialY");
     pSpatialZ_ = apvts.getRawParameterValue("spatialZ");
     pSpatialSize_ = apvts.getRawParameterValue("spatialSize");
+    pRefMaster_ = apvts.getRawParameterValue("refMaster");
+    // v1.11.0 (lote 2): número de instancia (4 cifras). Se genera una vez;
+    // getStateInformation/setStateInformation lo persisten en el estado del
+    // proyecto (marcador "instanceId") para que sea ESTABLE entre recargas —
+    // así un slave que apunta a un master por su número lo sigue apuntando.
+    instanceId_ = 1000 + (int)(juce::Random::getSystemRandom().nextInt(9000));
+    link_.start(instanceId_);
     engine_.onSweep = [this](acoustical::SweepProcess p, const acoustical::SweepStep& s) {
         std::lock_guard<std::mutex> lock(mutex_);
         sweepSteps_[static_cast<int>(p)] = s;
@@ -531,15 +548,48 @@ void AcousticalAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             for (int s = 0; s < numSamples; ++s) data[s] *= spatialGain;
         }
     }
+
+    // 7. v1.11.0 (lote 2): publicación de la salida POST-FADER en el anillo
+    //    de memoria compartida del número de esta instancia. Todo lo que
+    //    sale del plugin (post-retardo, post-EQ, post-ganancia-espacial; el
+    //    mono mezcla los dos canales, igual que el anillo pre-EQ del paso 3)
+    //    queda disponible para que OTRAS instancias lo usen como referencia.
+    //    Es barata (copia de n floats a la mapping, sin lock): se hace en
+    //    todos los bloques, aunque nadie la esté leyendo — decidir "quién es
+    //    el master" no es responsabilidad de la instancia.
+    //    El mono del paso 5 se escalaría por la ganancia espacial si no
+    //    estuviera ya incluida: el paso 6 multiplica todos los canales por el
+    //    mismo factor, así el mono final = mono post-EQ * spatialGain.
+    if (spatialGain != 1.0f) {
+        for (int s = 0; s < numSamples; ++s) mono[s] *= spatialGain;
+    }
+    link_.publish(mono, numSamples, getSampleRate());
 }
 
 void AcousticalAudioProcessor::captureReferenceFromInput() {
     // El reader es la captura del engine (hilo de mensajes): readLatest solo
     // lee los punteros atómicos (w, r) y copia las últimas muestras — sin
     // lock, sin realloc; entrega toda la ventana reciente, como el deque.
+    //
+    // v1.11.0 (lote 2): si el usuario eligió otra instancia como master
+    // (parámetro refMaster > 0), la referencia se captura de la salida
+    // post-fader PUBLICADA por esa instancia (anillo de memoria compartida),
+    // no de la propia entrada. Si el master no está (baliza caducada o
+    // mapping inexistente — se cerró), se cae a la propia entrada: el
+    // comportamiento de siempre, sin sorpresas.
     std::vector<float> block;
-    preRing_.readLatest(block);
-    engine_.captureReferenceFrom(block, static_cast<int>(getSampleRate()));
+    int rate = 0;
+    const float masterId = pRefMaster_->load(std::memory_order_relaxed);
+    if (masterId > 0.5f) {
+        const juce::String mid = juce::String(masterId, 0);
+        if (!link_.readMaster(mid, 3000, block, rate) || block.empty())
+            block.clear();
+    }
+    if (block.empty()) {
+        preRing_.readLatest(block);
+        rate = static_cast<int>(getSampleRate());
+    }
+    engine_.captureReferenceFrom(block, rate);
 }
 
 juce::AudioProcessorEditor* AcousticalAudioProcessor::createEditor() {
@@ -559,6 +609,11 @@ void AcousticalAudioProcessor::getStateInformation(juce::MemoryBlock& destData) 
     auto state = apvts.copyState();
     if (state.getProperty("genSourceMenu").toString().trim() != "6")
         state.setProperty("genSourceMenu", "6", nullptr);
+    // v1.11.0 (lote 2): el número de instancia se persiste en cada guardado:
+    // es ESTABLE entre recargas del proyecto (la referencia entre instancias
+    // apunta a un master POR SU NÚMERO; sin esto, recargar el proyecto
+    // cambiaría de id y rompería la referencia de sus slaves).
+    state.setProperty("instanceId", juce::String(instanceId_), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary(*xml, destData);
 }
@@ -590,6 +645,18 @@ void AcousticalAudioProcessor::setStateInformation(const void* data, int sizeInB
             }
             tree.setProperty("genSourceMenu", "6", nullptr);
             apvts.replaceState(tree);
+            // v1.11.0 (lote 2): el proyecto guardó un número de instancia
+            // distinto (el que tenía cuando se guardó): se adopta y el anillo
+            // de memoria compartida se renombrara vía reid() — los readers que
+            // apuntaban al viejo número caerán a su propia entrada (fallback)
+            // y el usuario puede re-enlazarlos con el combo.
+            const juce::String savedId = tree.getProperty("instanceId").toString().trim();
+            const int newId = savedId.getIntValue();
+            if (savedId.isNotEmpty() && newId != instanceId_
+                && newId >= 1000 && newId <= 9999) {
+                instanceId_ = newId;
+                link_.reid(newId);
+            }
             // El modo guardado YA está aplicado en los valores que se acaban
             // de restaurar (incluidos los ajustes que el usuario hizo encima):
             // se marca como aplicado para que applyParameters() no vuelva a

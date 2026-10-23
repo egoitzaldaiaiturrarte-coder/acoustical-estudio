@@ -114,6 +114,9 @@ public:
     void captureReference();   // reinicia correcciones y barridos automáticamente
     void clearReference();
     bool isReferenceCaptured() const { return referenceCaptured_.load(); }
+    // (v1.11.0: UI/diagnóstico + tests) copia de los niveles agregados en
+    // bandas de la referencia capturada; vacío si no hay referencia.
+    std::vector<float> referenceBands() const;
     void startNoiseCapture();
     void cancelNoiseCapture();
     void clearNoiseProfile();

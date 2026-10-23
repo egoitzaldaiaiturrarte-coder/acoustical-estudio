@@ -221,7 +221,7 @@ public:
     }
 
     explicit AcousticalEditor(AcousticalAudioProcessor& p)
-        : AudioProcessorEditor(p), processor_(p),
+        : AudioProcessorEditor(p), processor_(p), refWatch_{&p.parameters()},
           correccion_(p.parameters(), "correction", utf8("Corrección")),
           link_(p.parameters(), "link", "Link L/R"),
           ruido_(p.parameters(), "noiseSub", utf8("Sustracción de ruido")),
@@ -306,6 +306,24 @@ public:
         spatialReadout_.setJustificationType(juce::Justification::topLeft);
         addAndMakeVisible(spatialReadout_);
 
+        // v1.11.0 (lote 2): la referencia entre instancias. El combo lista
+        // "Propia" + las instancias descubiertas por baliza; su selección
+        // escribe el parámetro refMaster (0 = propia, N = número del master)
+        // vía el listener ComboRef (no hay attachment: el id de cada item
+        // ya es el número, y el parámetro es un float plano).
+        refCombo_.setColour(juce::ComboBox::backgroundColourId, theme::surface);
+        refCombo_.setColour(juce::ComboBox::textColourId, theme::textPrimary);
+        refCombo_.setColour(juce::ComboBox::arrowColourId, theme::textDim);
+        // (Un ComboBox nuevo no es editable por defecto: nada que cambiar.)
+        refCombo_.addListener(&refWatch_);
+        addAndMakeVisible(refCombo_);
+        instanceLabel_.setFont(juce::Font(11.0f));
+        instanceLabel_.setColour(juce::Label::textColourId, theme::textPrimary);
+        addAndMakeVisible(instanceLabel_);
+        refStatus_.setFont(juce::Font(11.0f));
+        refStatus_.setColour(juce::Label::textColourId, theme::textDim);
+        addAndMakeVisible(refStatus_);
+
         eqCanvas_ = std::make_unique<EqCanvas>([this](int band, float gain) {
             processor_.engine().setBandGain(band, gain);
         });
@@ -380,6 +398,11 @@ public:
         auto rowG = top.removeFromTop(200);
         joy_->setBounds(rowG.removeFromLeft(190).reduced(2, 2));
         spatialReadout_.setBounds(rowG.removeFromLeft(240).reduced(4, 2));
+        // v1.11.0 (lote 2): bloque de referencia entre instancias.
+        auto refBlock = rowG.removeFromLeft(300);
+        instanceLabel_.setBounds(refBlock.removeFromTop(20).reduced(4, 2));
+        refCombo_.setBounds(refBlock.removeFromTop(26).reduced(4, 2));
+        refStatus_.setBounds(refBlock.removeFromTop(20).reduced(4, 2));
 
         // Fila inferior: tarjeta + panel de controles por ecu dinámico.
         auto bottom = bounds.removeFromBottom(376);
@@ -482,9 +505,82 @@ private:
                       + meters + utf8(" con tamaño medio"),
                 juce::dontSendNotification);
         }
+
+        // v1.11.0 (lote 2): la referencia entre instancias. El combo lista
+        // "Propia" + las instancias vivas (baliza <= 3 s) y su selección
+        // sigue al parámetro refMaster (si el DAW lo cambia, el combo lo
+        // refleja; si el usuario hace clic, el ComboRef escribe el
+        // parámetro y en el siguiente tick la selección ya concuerda).
+        // El estado dice qué va a capturar la referencia: la propia entrada
+        // (fallback) o la salida post-fader del master elegido.
+        {
+            const auto& P = processor_.parameters();
+            const int self = processor_.instanceId();
+            const int master = static_cast<int>(std::lround(
+                P.getRawParameterValue("refMaster")->load()));
+            instanceLabel_.setText(utf8("Su instancia: ") + juce::String(self),
+                                   juce::dontSendNotification);
+            // Opciones: texto + id (0 = propia, >0 = número del master).
+            juce::StringArray itemTexts;
+            std::vector<int> itemIds;
+            itemTexts.add(utf8("Propia"));
+            itemIds.push_back(0);
+            for (const auto& p : processor_.instanceLink().peers(3000)) {
+                itemTexts.add(utf8("Instancia ") + p.id);
+                itemIds.push_back(p.id.getIntValue());
+            }
+            if ((int)itemTexts.size() != refCombo_.getNumItems()) {
+                refCombo_.clear(juce::dontSendNotification);
+                for (int i = 0; i < itemTexts.size(); ++i)
+                    refCombo_.addItem(itemTexts[i], itemIds[i]);
+            }
+            // La selección sigue al parámetro: si el DAW lo cambia, el combo
+            // lo refleja; si el usuario hace clic, el ComboRef escribe el
+            // parámetro y en el siguiente tick la selección ya concuerda.
+            // (setSelectedId con dontSendNotification no dispara al listener:
+            //  no hay bucle de escritura.)
+            if (refCombo_.indexOfItemId(master) >= 0) {
+                if (refCombo_.getSelectedItemIndex()
+                    != refCombo_.indexOfItemId(master))
+                    refCombo_.setSelectedId(master, juce::dontSendNotification);
+            } else if (master != 0 && refCombo_.getSelectedItemIndex() != 0) {
+                // El master elegido ya no está en la lista (desaparecido):
+                // mostrar "Propia" sin tocar el parámetro (el estado, abajo,
+                // explica que la captura caerá a la propia entrada).
+                refCombo_.setSelectedId(0, juce::dontSendNotification);
+            }
+            juce::String st;
+            if (master == 0) {
+                st = utf8("Referencia: propia entrada (pre-EQ)");
+            } else if (processor_.instanceLink()
+                           .isPeerFresh(juce::String(master), 3000)) {
+                st = utf8("Referencia: instancia ") + juce::String(master)
+                   + utf8(" (su salida post-fader)");
+            } else {
+                st = utf8("Referencia: instancia ") + juce::String(master)
+                   + utf8(" no detectada → captura la propia");
+            }
+            refStatus_.setText(st, juce::dontSendNotification);
+        }
     }
 
     AcousticalAudioProcessor& processor_;
+    // v1.11.0 (lote 2): escucha del combo de referencia; la selección escribe
+    // el parámetro refMaster (el id del item ya es el número de instancia).
+    struct ComboRef : public juce::ComboBox::Listener {
+        juce::AudioProcessorValueTreeState* state = nullptr;
+        ComboRef() = default;
+        explicit ComboRef(juce::AudioProcessorValueTreeState* s) : state(s) {}
+        void comboBoxChanged(juce::ComboBox* c) override {
+            if (state == nullptr || c == nullptr) return;
+            const float v = static_cast<float>(c->getSelectedId());
+            if (auto* prm = state->getParameter("refMaster"))
+                prm->setValueNotifyingHost(prm->convertTo0to1(v));
+        }
+    };
+    ComboRef refWatch_;
+    juce::ComboBox refCombo_;
+    juce::Label instanceLabel_, refStatus_;
     ParamToggle correccion_, link_, ruido_;
     ParamRow maxGain_, suavizado_, splObjetivo_, retardo_, calib_, nivelGen_, freqGen_;
     ParamCombo intervaloAnalisis_, bandas_, fft_, generador_;

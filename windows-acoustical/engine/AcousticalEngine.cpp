@@ -448,6 +448,14 @@ void AcousticalEngine::clearReference() {
     referenceLevels_.clear();
 }
 
+// (v1.11.0) La UI/tests no deben tocar el estado del corrector: solo se
+// devuelve una copia de los niveles ya agregados (bajo el mismo lock que los
+// demás accessors; no se reinicia nada al leer).
+std::vector<float> AcousticalEngine::referenceBands() const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return referenceLevels_;
+}
+
 void AcousticalEngine::startNoiseCapture() {
     std::lock_guard<std::mutex> lock(stateMutex_);
     if (noiseProfiler_) noiseProfiler_->startCapture();

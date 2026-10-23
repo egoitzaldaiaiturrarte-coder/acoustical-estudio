@@ -25,6 +25,13 @@
 //      exacto en la posición neutra; la ley del core C se aplica a la
 //      salida (a 15 m: +6 dB y el pulso llega ~21,9 ms después); el estado
 //      guardado conserva la posición y el entorno.
+//   9. La referencia entre instancias VST (v1.11.0, lote 2): cada instancia
+//      publica su salida post-fader en un anillo de memoria compartida
+//      nombrada; una segunda instancia que la elige como master (parámetro
+//      refMaster) captura su espectro en vez del propio; si el master se
+//      cierra, la captura cae a la propia entrada (el comportamiento de
+//      siempre) — se comprueba que la banda capturada cambia de 1 kHz a
+//      500 Hz con el fallback.
 //
 // Compila con tools/build_plugintest.sh (Linux, sin CMake ni X11 en runtime).
 #include "PluginProcessor.h"
@@ -33,6 +40,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -537,6 +545,127 @@ int main() {
                   "spatial, estado guardado: conserva la posicion y el entorno");
             t.releaseResources();
         }
+    }
+
+    // ---- 9. Referencia entre instancias VST (v1.11.0, lote 2) ----
+    //   9a. El master A publica su salida post-fader en su anillo de memoria
+    //        compartida. La esclava B lo elige (parámetro refMaster): su
+    //        captura lee el stream del master (seno de 1 kHz a -12 dB), no
+    //        su propia entrada (silencio).
+    //   9b. El master se cierra (su mapping se suelta, la baliza desaparece):
+    //        la captura de B — que sigue apuntando a A — cae a su propia
+    //        entrada (seno de 500 Hz): la banda más fuerte del motor pasa
+    //        de 1 kHz a 500 Hz.
+    {
+        // Seno de frecuencia `freq` durante `blocks` bloques (amplitud `amp`;
+        // 0 = silencio); deja el RMS (dB) del último bloque.
+        auto runSine = [](juce::AudioProcessor& p, int blocks, float amp,
+                          double freq, double& phase, float& lastRmsDb) {
+            juce::AudioBuffer<float> buf(2, kBlock);
+            juce::MidiBuffer midi;
+            lastRmsDb = -200.0f;
+            for (int b = 0; b < blocks; ++b) {
+                for (int s = 0; s < kBlock; ++s) {
+                    const float v = amp * static_cast<float>(std::sin(phase));
+                    phase += 2.0 * juce::MathConstants<double>::pi * freq / kRate;
+                    buf.setSample(0, s, v);
+                    buf.setSample(1, s, v);
+                }
+                p.processBlock(buf, midi);
+                lastRmsDb = rmsDb(buf.getReadPointer(0), kBlock);
+            }
+        };
+        // Índice de la banda más cercana a una frecuencia (para las aserciones
+        // sobre la banda dominante de la referencia capturada).
+        auto nearestBand = [](const std::vector<float>& freqs, float f) {
+            int best = 0;
+            double bestD = 1e30;
+            for (int i = 0; i < (int)freqs.size(); ++i) {
+                const double d = std::fabs((double)freqs[i] - (double)f);
+                if (d < bestD) { bestD = d; best = i; }
+            }
+            return best;
+        };
+        auto argmaxBand = [](const std::vector<float>& bands) {
+            int best = 0;
+            for (int i = 1; i < (int)bands.size(); ++i)
+                if (bands[i] > bands[best]) best = i;
+            return best;
+        };
+        // El nivel de cada banda es la MEDIA de los bins (dB) dentro de ella:
+        // un seno puro ocupa solo unos pocos bins, así que el nivel absoluto
+        // depende de la cuadrícula de bandas (la de 1 kHz se diluye más que
+        // la de 500 Hz). La prueba robusta es la SEPARACIÓN entre la banda
+        // capturada y la siguiente más fuerte: si la captura hubiera usado la
+        // propia entrada de B (silencio) todas las bandas estarían en el
+        // suelo de -120 dB y no habría separación.
+        auto separation = [](const std::vector<float>& bands, int mx) {
+            float second = -200.0f;
+            for (int i = 0; i < (int)bands.size(); ++i)
+                if (i != mx && bands[i] > second) second = bands[i];
+            return bands[mx] - second;
+        };
+
+        auto A = std::make_unique<AcousticalAudioProcessor>();
+        auto B = std::make_unique<AcousticalAudioProcessor>();
+        prepare(*A);
+        prepare(*B);
+        pump();  // (el motor ticka en su hilo y crea la FFT/rector)
+
+        const float amp12 = static_cast<float>(std::pow(10.0, -12.0 / 20.0));
+        // A (master): 64 bloques de seno de 1 kHz a -12 dB. El anillo post-
+        // fader (32768 muestras) queda lleno exactamente de ese seno.
+        double phA = 0.0;
+        float aRms = -200.0f;
+        runSine(*A, 64, amp12, 1000.0, phA, aRms);
+        A->releaseResources();
+        // B (esclava): su propia entrada es silencio mientras tanto (su
+        // anillo pre-EQ es todo ceros: si la captura usase la propia
+        // entrada capturaría silencio).
+        double phB = 0.0;
+        float bRms = -200.0f;
+        runSine(*B, 64, 0.0f, 1000.0, phB, bRms);
+        B->releaseResources();
+
+        // 9a: B elige a A como master y captura.
+        setRaw(*B, "refMaster", static_cast<float>(A->instanceId()));
+        B->instanceLink().notePeerForTest(juce::String(A->instanceId()));
+        B->captureReferenceFromInput();
+        pump();
+        const auto bandsA = B->engine().referenceBands();
+        const auto freqs = B->engine().bandFrequencies();
+        const int b1k = nearestBand(freqs, 1000.0f);
+        const int mx = argmaxBand(bandsA);
+        check(B->engine().isReferenceCaptured() && !bandsA.empty()
+                  && mx == b1k && separation(bandsA, mx) >= 12.0f,
+              "referencia entre instancias: la captura usa la salida del master "
+              "(banda 1 kHz a " + juce::String(bandsA[b1k], 1) + " dB, "
+              + juce::String(separation(bandsA, mx), 0)
+              + " dB por encima de la siguiente; entrada de A " + juce::String(aRms, 1)
+              + " dB, entrada de B: silencio)");
+
+        // 9b: el master se cierra: su mapping se suelta y su par se olvida.
+        // La captura de B (que sigue apuntando a A) cae a su propia entrada:
+        // un seno de 500 Hz a -12 dB.
+        B->engine().clearReference();
+        A.reset();
+        B->instanceLink().clearPeersForTest();
+        bRms = -200.0f;
+        runSine(*B, 64, amp12, 500.0, phB, bRms);
+        B->releaseResources();
+        B->captureReferenceFromInput();
+        pump();
+        const auto bandsB = B->engine().referenceBands();
+        const int b500 = nearestBand(freqs, 500.0f);
+        const int mx2 = argmaxBand(bandsB);
+        check(B->engine().isReferenceCaptured() && !bandsB.empty()
+                  && mx2 == b500 && separation(bandsB, mx2) >= 12.0f,
+              "referencia entre instancias, master cerrado: cae a la propia "
+              "entrada (banda 500 Hz a " + juce::String(bandsB[b500], 1) + " dB, "
+              + juce::String(separation(bandsB, mx2), 0)
+              + " dB por encima de la siguiente; su entrada estaba a "
+              + juce::String(bRms, 1) + " dB)");
+        B.reset();
     }
 
     std::printf("\nPLUGIN: %d comprobaciones, %d fallos\n", g_checks, g_fail);

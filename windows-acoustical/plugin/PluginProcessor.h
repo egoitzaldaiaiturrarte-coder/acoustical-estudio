@@ -19,6 +19,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <AcousticalEngine.h>
+#include "InstanceLink.h"
 
 #include <algorithm>
 #include <array>
@@ -55,6 +56,13 @@ public:
 
     acoustical::AcousticalEngine& engine() { return engine_; }
     juce::AudioProcessorValueTreeState& parameters() { return apvts; }
+
+    // === v1.11.0 (lote 2): referencia entre instancias VST ===
+    // Número de instancia de 4 cifras (se guarda en el estado del proyecto:
+    // estable entre recargas). Las demás instancias lo ven en su baliza y
+    // pueden elegirla como fuente de referencia (parámetro refMaster).
+    int instanceId() const { return instanceId_; }
+    InstanceLink& instanceLink() { return link_; }
 
     // === Acciones desde la ventana (hilo de mensajes) ===
     // Referencia = espectro ANTES de salir: FFT del anillo pre-EQ.
@@ -218,6 +226,16 @@ private:
     std::atomic<float>* pSpatialY_ = nullptr;
     std::atomic<float>* pSpatialZ_ = nullptr;
     std::atomic<float>* pSpatialSize_ = nullptr;
+    // v1.11.0 (lote 2): 0 = referencia de la propia entrada; >0 = el número
+    // de instancia del master cuya salida post-fader captura la referencia.
+    std::atomic<float>* pRefMaster_ = nullptr;
+
+    // v1.11.0 (lote 2): el enlace entre instancias (anillo de memoria
+    // compartida propio + baliza UDP local). El hilo de la baliza se
+    // para en stop() (el destructor del link, que se llama al destruir el
+    // procesador — el engine ya se detuvo antes, en el cuerpo del dtor).
+    InstanceLink link_;
+    int instanceId_ = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcousticalAudioProcessor)
 };
