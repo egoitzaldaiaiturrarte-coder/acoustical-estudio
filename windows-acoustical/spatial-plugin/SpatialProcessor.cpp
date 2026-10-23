@@ -132,3 +132,10 @@ void AcousticalSpatialProcessor::setStateInformation(const void* data,
 juce::AudioProcessorEditor* AcousticalSpatialProcessor::createEditor() {
     return new AcousticalSpatialEditor(*this);
 }
+
+// Punto de entrada de los wrappers VST3/VST2 generados por juce_add_plugin
+// (misma firma que la del VST principal, en PluginProcessor.cpp): sin esta
+// función los dll del complementario no enlazan (error LNK2001 en la CI).
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() {
+    return new AcousticalSpatialProcessor();
+}

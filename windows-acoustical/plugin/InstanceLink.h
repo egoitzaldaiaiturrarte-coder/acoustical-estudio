@@ -217,7 +217,7 @@ inline void InstanceLink::closeRing(void* map, std::size_t size) const {
 inline void* InstanceLink::openRing(const juce::String& name, std::size_t& size) const {
     size = 0;
 #if JUCE_WINDOWS
-    HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name.toWideCharNative());
+    HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name.toWideCharPointer());
     if (h == nullptr) return nullptr;
     auto* m = (void*)MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0);
     CloseHandle(h);
@@ -244,7 +244,7 @@ inline void* InstanceLink::createRing(const juce::String& name, std::size_t& siz
 #if JUCE_WINDOWS
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
                                   (DWORD)(total >> 32), (DWORD)(total & 0xFFFFFFFF),
-                                  name.toWideCharNative());
+                                  name.toWideCharPointer());
     if (h == nullptr) return nullptr;
     if (GetLastError() == ERROR_ALREADY_EXISTS) { CloseHandle(h); return nullptr; }
     auto* m = (void*)MapViewOfFile(h, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, total);
@@ -310,7 +310,7 @@ inline void InstanceLink::start(int id) {
         sockaddr_in a {};
         a.sin_family = AF_INET;
         a.sin_addr.s_addr = htonl(INADDR_ANY);
-        a.sin_port = htons((u_int16_t)kBeaconPort);
+        a.sin_port = htons((uint16_t)kBeaconPort);
         bind(sock_, (sockaddr*)&a, sizeof a);
     }
     thread_ = std::thread([this] { run(); });
@@ -482,11 +482,11 @@ inline void InstanceLink::sendBeacon() {
     sockaddr_in bcast {};
     bcast.sin_family = AF_INET;
     bcast.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-    bcast.sin_port = htons((u_int16_t)kBeaconPort);
+    bcast.sin_port = htons((uint16_t)kBeaconPort);
     sockaddr_in loop {};
     loop.sin_family = AF_INET;
     loop.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    loop.sin_port = htons((u_int16_t)kBeaconPort);
+    loop.sin_port = htons((uint16_t)kBeaconPort);
     sendto(sock_, raw, len, 0, (sockaddr*)&bcast, sizeof bcast);
     sendto(sock_, raw, len, 0, (sockaddr*)&loop, sizeof loop);
 }
@@ -501,7 +501,7 @@ inline void InstanceLink::run() {
         // La recepción tiene un timeout corto (el bucle re-encadena la baliza
         // cada pasada): el thread se para sin bloquear nada al detenerlo.
 #if JUCE_WINDOWS
-        u_int t = 500;
+        int t = 500;
         setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (const char*)&t, sizeof t);
 #else
         struct timeval tv { 0, 500 * 1000 };

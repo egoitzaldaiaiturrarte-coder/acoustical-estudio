@@ -67,6 +67,12 @@ MODULE_OBJS=()
 for m in "${MODULES[@]}"; do MODULE_OBJS+=("$OBJ/$m.o"); done
 
 echo "Compilando el test del plugin…"
+# v1.11.0: el VST principal y el complementario "Acoustical Spatial" definen
+# CADA UNO su punto de entrada createPluginFilter() (así debe ser: cada
+# wrapper VST/VST3 lo referencia). En el build real son DLLs separadas (no hay
+# colisión); aqui el test enlaza ambos .cpp en un solo binario, asi que el
+# linker permite la duplicacion (el test no llama a ninguno: no hay wrapper
+# en el binario de prueba).
 gcc -std=c11 -O1 -fPIC -I"$REPO/dsp" -c "$REPO/dsp/acoustical_dsp.c" -o "$OBJ/acoustical_dsp_core.o"
 g++ "${FLAGS[@]}" \
     -I"$ROOT/plugin" -I"$ROOT/spatial-plugin" -I"$ROOT/engine" -I"$ROOT/app" -I"$REPO/dsp" \
@@ -81,6 +87,7 @@ g++ "${FLAGS[@]}" \
     "$OBJ/acoustical_dsp_core.o" \
     "${MODULE_OBJS[@]}" \
     -lfreetype -lpthread -ldl -lrt \
+    -Wl,--allow-multiple-definition \
     -o "$OUT"
 echo "Compilado: $OUT"
 
