@@ -51,6 +51,11 @@ target_compile_definitions(AcousticalSpatial PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
+    # Mismo motivo que en el VST principal (plugin/CMakeLists.txt): en Windows
+    # el SDK define las macros min/max via pngpriv.h -> windows.h (sin
+    # NOMINMAX); la definicion las desactiva para que std::min/std::max
+    # compilen en cualquier header que use.
+    NOMINMAX
 )
 
 if(MSVC)

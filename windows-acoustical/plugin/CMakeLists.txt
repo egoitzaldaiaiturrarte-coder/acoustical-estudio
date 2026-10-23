@@ -48,6 +48,13 @@ target_compile_definitions(AcousticalDynamicEq PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
+    # En Windows, pngpriv.h (el PNG de juce_graphics, que entra en la cadena
+    # de includes de este target) arrastra <windows.h> SIN NOMINMAX: el SDK
+    # define entonces las macros min/max, que rompen el std::min/std::max de
+    # los headers (InstanceLink.h, PluginProcessor.h y los de la app que
+    # reutiliza el editor). La app lleva esta definicion desde antes; aqui se
+    # anade para que el VST compile igual que la app.
+    NOMINMAX
 )
 
 if(MSVC)
