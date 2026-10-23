@@ -823,13 +823,16 @@ jobs:
           New-Item -ItemType Directory -Force -Path "dist\asan" | Out-Null
           $log = "dist\asan-plugin-build.log"
           $out = @()
-          $out += "=== cmake build (plugin VST3 + VST2) ==="
-          $out += (cmake --build build-asan --config Release --target AcousticalDynamicEq_VST3 AcousticalDynamicEq_VST --parallel 2>&1 | ForEach-Object { "$_" })
+          $out += "=== cmake build (plugin VST3 + VST2, principal y complementario) ==="
+          $out += (cmake --build build-asan --config Release --target AcousticalDynamicEq_VST3 AcousticalDynamicEq_VST AcousticalSpatial_VST3 AcousticalSpatial_VST --parallel 2>&1 | ForEach-Object { "$_" })
           if ($LASTEXITCODE -ne 0) {
               $out | Set-Content $log -Encoding utf8
               throw "Fallo la compilacion del plugin con ASan (detalle en el artefacto asan-build-log)"
           }
           $dlls = @(Get-ChildItem "build-asan" -Recurse -Filter "Acoustical*Dynamic*EQ*.dll" `
+              | Where-Object { $_.FullName -match "Release" })
+          # v1.11.0: el complementario "Acoustical Spatial" también instrumentado
+          $dlls += @(Get-ChildItem "build-asan" -Recurse -Filter "Acoustical*Spatial*.dll" `
               | Where-Object { $_.FullName -match "Release" })
           if ($dlls.Count -eq 0) {
               $out += "=== listado de .dll en build-asan ==="

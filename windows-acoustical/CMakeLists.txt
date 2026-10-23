@@ -37,5 +37,9 @@ add_subdirectory(engine)
 # Plugin VST3 + VST2.4 (x64 para Cubase 15 y Win32 para Cubase 5 de 32 bits)
 add_subdirectory(plugin)
 
+# VST complementario "Acoustical Spatial" (v1.11.0): panel grande de la
+# posición espacial (joystick + faders + entorno).
+add_subdirectory(spatial-plugin)
+
 # App de escritorio
 add_subdirectory(app)

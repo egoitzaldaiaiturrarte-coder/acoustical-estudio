@@ -7,11 +7,15 @@
 //  - EQ grande con las bandas y los highlights de los tres barridos.
 //  - Por ecu dinámico: tarjeta en vivo + panel (activo, arranque, intervalo,
 //    ganancia, mezclador, velocidad, extras y 4 bandas de apoyo).
+//  - v1.11.0: joystick espacial (x izquierda/derecha, y frente/detrás) en
+//    lugar de los dos sliders — el mismo componente de la app Windows — y
+//    los faders de distancia/tamaño quedan a la derecha.
 #pragma once
 
 #include "PluginProcessor.h"
 #include "EqCanvas.h"
 #include "DynamicEqCard.h"
+#include "SpatialJoystick.h"
 #include "Theme.h"
 
 namespace {
@@ -238,10 +242,18 @@ public:
                      {utf8("Silencio"), utf8("Apagado"), utf8("Ruido rosa"),
                       utf8("Ruido blanco"), "Barrido", "Seno"}),
           modo_(p.parameters(), "mode", utf8("Modo de trabajo"), modeItems()),
-          espX_(p.parameters(), "spatialX", utf8("Esp. X")),
-          espY_(p.parameters(), "spatialY", utf8("Esp. Y")),
           espZ_(p.parameters(), "spatialZ", utf8("Esp. Z")),
-          espSize_(p.parameters(), "spatialSize", utf8("Tamaño")) {
+          espSize_(p.parameters(), "spatialSize", utf8("Tamaño")),
+          joy_(std::make_unique<SpatialJoystick>([this](float x, float y) {
+              // El joystick escribe en el APVTS: el estado árbol (y el recall
+              // del DAW) se actualizan y el audio thread sigue leyendo los
+              // atómicos que el APVTS mantiene (misma vía que el setParam de
+              // la app de modos).
+              if (auto* px = processor_.parameters().getParameter("spatialX"))
+                  px->setValueNotifyingHost(px->convertTo0to1(x));
+              if (auto* py = processor_.parameters().getParameter("spatialY"))
+                  py->setValueNotifyingHost(py->convertTo0to1(y));
+          })) {
         theme::apply(*this);
 
         addAndMakeVisible(correccion_);
@@ -280,14 +292,18 @@ public:
         for (auto* combo : { &intervaloAnalisis_, &bandas_, &fft_, &generador_ })
             addAndMakeVisible(*combo);
 
-        // v1.8: modo de trabajo (catálogo del core C) + fila de posición
-        // espacial con la compensación resultante (misma ley que app/móvil).
+        // v1.8: modo de trabajo (catálogo del core C) + posición espacial.
+        // v1.11.0: los sliders x/y se sustituyen por el joystick (arriba, a la
+        // izquierda); aquí quedan solo los faders de distancia y tamaño.
+        // La compensación resultante (misma ley que app/móvil) la lee la
+        // lectura junto al joystick.
         modo_.setLabelWidth(110);
-        for (auto* row : { &espX_, &espY_, &espZ_, &espSize_ })
+        for (auto* row : { &espZ_, &espSize_ })
             addAndMakeVisible(*row);
+        addAndMakeVisible(*joy_);
         spatialReadout_.setFont(juce::Font(11.0f));
         spatialReadout_.setColour(juce::Label::textColourId, theme::textDim);
-        spatialReadout_.setJustificationType(juce::Justification::centredLeft);
+        spatialReadout_.setJustificationType(juce::Justification::topLeft);
         addAndMakeVisible(spatialReadout_);
 
         eqCanvas_ = std::make_unique<EqCanvas>([this](int band, float gain) {
@@ -321,7 +337,7 @@ public:
     void resized() override {
         auto bounds = getLocalBounds();
 
-        auto top = bounds.removeFromTop(154).reduced(8, 3);
+        auto top = bounds.removeFromTop(332).reduced(8, 3);
         auto rowA = top.removeFromTop(26);
         correccion_.setBounds(rowA.removeFromLeft(104));
         link_.setBounds(rowA.removeFromLeft(84));
@@ -352,16 +368,18 @@ public:
         auto rowD = top.removeFromTop(24);
         estado_.setBounds(rowD);
 
-        // v1.8: modo de trabajo (catálogo) + posición espacial (la ganancia y
-        // el retardo resultantes los lee la lectura de abajo; el audio los
-        // aplica en processBlock con la misma ley que la app y el móvil).
+        // v1.8: modo de trabajo (catálogo) + posición espacial.
+        // v1.11.0: fila compacta (modo + faders z/tamaño) y debajo una fila
+        // de 200 px con el joystick espacial (x/y) y la lectura de
+        // compensación a su derecha.
         auto rowE = top.removeFromTop(24);
         modo_.setBounds(rowE.removeFromLeft(230));
-        for (auto* row : { &espX_, &espY_, &espZ_, &espSize_ })
-            row->setBounds(rowE.removeFromLeft(218).reduced(2, 0));
+        espZ_.setBounds(rowE.removeFromLeft(218).reduced(2, 0));
+        espSize_.setBounds(rowE.removeFromLeft(218).reduced(2, 0));
 
-        auto rowF = top.removeFromTop(24);
-        spatialReadout_.setBounds(rowF.reduced(0, 2));
+        auto rowG = top.removeFromTop(200);
+        joy_->setBounds(rowG.removeFromLeft(190).reduced(2, 2));
+        spatialReadout_.setBounds(rowG.removeFromLeft(240).reduced(4, 2));
 
         // Fila inferior: tarjeta + panel de controles por ecu dinámico.
         auto bottom = bounds.removeFromBottom(376);
@@ -445,6 +463,10 @@ private:
             const float y = P.getRawParameterValue("spatialY")->load();
             const float z = P.getRawParameterValue("spatialZ")->load();
             const float size = P.getRawParameterValue("spatialSize")->load();
+            // v1.11.0: el joystick sigue a los parámetros cuando no lo está
+            // arrastrando el usuario (app de modo, recall del DAW, automatismo).
+            if (!joy_->isDragging())
+                joy_->setPositionFromOutside(x, y);
             float g = 0.0f, d = 0.0f;
             acoustical_spatial_compensate(x, y, z, size, &g, &d);
             // JUCE 7: el constructor String(valor, places, padWithZeros) de
@@ -466,9 +488,12 @@ private:
     ParamToggle correccion_, link_, ruido_;
     ParamRow maxGain_, suavizado_, splObjetivo_, retardo_, calib_, nivelGen_, freqGen_;
     ParamCombo intervaloAnalisis_, bandas_, fft_, generador_;
-    // v1.8: modo de trabajo del catálogo + fila de posición espacial.
+    // v1.8: modo de trabajo del catálogo. v1.11.0: el joystick x/y sustituye
+    // a los dos primeros sliders (misma pareja de parámetros spatialX/Y);
+    // distancia y tamaño siguen en su fila de faders.
     ParamCombo modo_;
-    ParamRow espX_, espY_, espZ_, espSize_;
+    ParamRow espZ_, espSize_;
+    std::unique_ptr<SpatialJoystick> joy_;
     juce::Label spatialReadout_;
     juce::TextButton referencia_, borrarRef_, capturarRuido_, cancelarRuido_, borrarRuido_;
     juce::Label estado_{"estado", juce::String()};

@@ -44,7 +44,7 @@ Write-Host "== App + plugin (Win32) ==" -ForegroundColor Yellow
 if (-not (Test-Path "build-plugin32\CMakeCache.txt")) {
     cmake -S . -B build-plugin32 -A Win32
 }
-cmake --build build-plugin32 --config Release --target AcousticalDynamicEq_VST AcousticalDynamicEq_VST3 --parallel
+cmake --build build-plugin32 --config Release --target AcousticalDynamicEq_VST AcousticalDynamicEq_VST3 AcousticalSpatial_VST AcousticalSpatial_VST3 --parallel
 if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el plugin Win32" }
 
 # 4. Driver ASIO Win32 (Cubase 5 de 32 bits)
@@ -73,21 +73,30 @@ if (Test-Path $appPdb) { Copy-Item $appPdb "$dist\app\" -Force }
 # adb incluido (si está en tools\adb, se copia con todo)
 if (Test-Path "tools\adb") { Copy-Item "tools\adb" "$dist\app\adb" -Recurse -Force }
 
-# Plugin VST3 (carpeta-bundle) y VST2 (dll), si se compiló
-$vst3 = Get-ChildItem "build" -Recurse -Directory -Filter "*.vst3" -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
-if ($vst3) { Copy-Item $vst3.FullName "$dist\plugin\" -Recurse -Force }
+# Plugin VST3 (carpeta-bundle) y VST2 (dll), si se compiló.
+# v1.11.0: dos plugins — el principal "Acoustical Dynamic EQ" y el
+# complementario "Acoustical Spatial" (el panel grande de la posición
+# espacial). Cada uno se reconoce por el nombre del bundle/dll.
+$vst3s = Get-ChildItem "build" -Recurse -Directory -Filter "*.vst3" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release" }
+foreach ($v in $vst3s) { Copy-Item $v.FullName "$dist\plugin\" -Recurse -Force }
 $vst2 = Get-ChildItem "build" -Recurse -Filter "Acoustical*Dynamic*EQ*.dll" -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
 if ($vst2) { Copy-Item $vst2.FullName "$dist\plugin\" -Force }
+$vst2s = Get-ChildItem "build" -Recurse -Filter "Acoustical*Spatial*.dll" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
+if ($vst2s) { Copy-Item $vst2s.FullName "$dist\plugin\" -Force }
 
 # Plugin Win32 (Cubase 5 de 32 bits): VST2.4 dll + VST3 bundle
-$vst32 = Get-ChildItem "build-plugin32" -Recurse -Directory -Filter "*.vst3" -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
-if ($vst32) { Copy-Item $vst32.FullName "$dist\plugin32\" -Recurse -Force }
+$vst32s = Get-ChildItem "build-plugin32" -Recurse -Directory -Filter "*.vst3" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release" }
+foreach ($v in $vst32s) { Copy-Item $v.FullName "$dist\plugin32\" -Recurse -Force }
 $vst2_32 = Get-ChildItem "build-plugin32" -Recurse -Filter "Acoustical*Dynamic*EQ*.dll" -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match "Release\\VST\\" } | Select-Object -First 1
 if ($vst2_32) { Copy-Item $vst2_32.FullName "$dist\plugin32\" -Force }
+$vst2s_32 = Get-ChildItem "build-plugin32" -Recurse -Filter "Acoustical*Spatial*.dll" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "Release\\VST\\" } | Select-Object -First 1
+if ($vst2s_32) { Copy-Item $vst2s_32.FullName "$dist\plugin32\" -Force }
 
 $bridge64 = Get-ChildItem "build-bridge64" -Recurse -Filter "AcousticalBridge.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
 $bridge32 = Get-ChildItem "build-bridge32" -Recurse -Filter "AcousticalBridge.dll" -ErrorAction SilentlyContinue | Select-Object -First 1

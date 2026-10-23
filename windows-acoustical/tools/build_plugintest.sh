@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Compila (y opcionalmente ejecuta) el test del procesador VST
-# (tools/test_plugin.cpp): el PluginProcessor.cpp REAL + el motor + el core C,
+# (tools/test_plugin.cpp): el PluginProcessor.cpp REAL + el procesador del
+# VST complementario "Acoustical Spatial" (v1.11.0) + el motor + el core C,
 # enlazados contra los módulos JUCE reales, sin host y sin CMake (en Linux el
 # CMake de JUCE obliga a construir juceaide con X11/freetype instalados).
 #
@@ -68,9 +69,10 @@ for m in "${MODULES[@]}"; do MODULE_OBJS+=("$OBJ/$m.o"); done
 echo "Compilando el test del plugin…"
 gcc -std=c11 -O1 -fPIC -I"$REPO/dsp" -c "$REPO/dsp/acoustical_dsp.c" -o "$OBJ/acoustical_dsp_core.o"
 g++ "${FLAGS[@]}" \
-    -I"$ROOT/plugin" -I"$ROOT/engine" -I"$ROOT/app" -I"$REPO/dsp" \
+    -I"$ROOT/plugin" -I"$ROOT/spatial-plugin" -I"$ROOT/engine" -I"$ROOT/app" -I"$REPO/dsp" \
     "$ROOT/tools/test_plugin.cpp" \
     "$ROOT/plugin/PluginProcessor.cpp" \
+    "$ROOT/spatial-plugin/SpatialProcessor.cpp" \
     "$ROOT/engine/FftProcessor.cpp" \
     "$ROOT/engine/SweeperProcessor.cpp" \
     "$ROOT/engine/EqDsp.cpp" \

@@ -21,9 +21,14 @@
 //   7. Bucle cerrado con una sala simulada: un modo del catálogo corrige y
 //      se mantiene estable (v1.10.0-v1.10.1: con 124 bandas y el Q fijo de
 //      1.41 el bucle se disparaba hasta ~36.000 veces el fondo de escala).
+//   8. "Acoustical Spatial" (el VST complementario, v1.11.0): passthrough
+//      exacto en la posición neutra; la ley del core C se aplica a la
+//      salida (a 15 m: +6 dB y el pulso llega ~21,9 ms después); el estado
+//      guardado conserva la posición y el entorno.
 //
 // Compila con tools/build_plugintest.sh (Linux, sin CMake ni X11 en runtime).
 #include "PluginProcessor.h"
+#include "SpatialProcessor.h"
 
 #include <chrono>
 #include <cmath>
@@ -77,14 +82,14 @@ constexpr int kBlock = 512;
 
 // Lo que hace el wrapper del host antes de procesar: fija tasa y bloque
 // (getSampleRate() los lee de ahí) y llama a prepareToPlay.
-void prepare(AcousticalAudioProcessor& p) {
+void prepare(juce::AudioProcessor& p) {
     p.setRateAndBufferSizeDetails(kRate, kBlock);
     p.prepareToPlay(kRate, kBlock);
 }
 
 // Procesa `blocks` bloques con un seno de 1 kHz (o silencio si amp = 0) y
 // devuelve el RMS (dB) de la salida del canal L en el último bloque.
-float runBlocks(AcousticalAudioProcessor& p, int blocks, float amp, double& phase,
+float runBlocks(juce::AudioProcessor& p, int blocks, float amp, double& phase,
                 float* maxAbsOut = nullptr) {
     juce::AudioBuffer<float> buf(2, kBlock);
     juce::MidiBuffer midi;
@@ -445,6 +450,93 @@ int main() {
         check(finite && peak < 2.0f, "bucle cerrado, modo Estudio-Esc1: estable (pico " + juce::String(peak, 2) + ")");
         check(rout < rin + 0.25, "bucle cerrado, modo Estudio-Esc1: no empeora la sala (picos/valles " + juce::String(rin, 2)
                                    + " dB -> " + juce::String(rout, 2) + " dB)");
+    }
+
+    // ---- 8. "Acoustical Spatial" (v1.11.0): el VST complementario ----
+    //   8a. Instancia nueva (posición neutra): passthrough exacto — igual
+    //       contrato que el VST principal: insertarlo no cambia la pista.
+    //   8b. La ley del core C se aplica a la salida: a 15 m el pulso sale
+    //       desplazado ~21,9 ms y amplificado +6 dB (2×), como la ley.
+    //   8c. El estado guardado conserva la posición y el entorno.
+    {
+        auto rawS = [](juce::AudioProcessorValueTreeState& a, const char* id) {
+            return a.getRawParameterValue(id)->load();
+        };
+        auto setS = [](juce::AudioProcessorValueTreeState& a, const char* id, float v) {
+            auto* prm = a.getParameter(id);
+            prm->setValueNotifyingHost(prm->convertTo0to1(v));
+        };
+
+        // 8a: passthrough en la posición neutra (arranque).
+        {
+            AcousticalSpatialProcessor s;
+            prepare(s);
+            double phase = 0.0;
+            const float inDb = 20.0f * std::log10(0.25f / std::sqrt(2.0f));
+            const float outDb = runBlocks(s, 20, 0.25f, phase);
+            check(std::fabs(outDb - inDb) < 1.0f,
+                  "spatial, instancia nueva (posicion neutra): passthrough (entrada "
+                      + juce::String(inDb, 1) + " dB, salida " + juce::String(outDb, 1) + " dB)");
+            s.releaseResources();
+        }
+
+        // 8b: pulso con z = 1 (15 m, tamaño neutro): la ley dice
+        // +20·log10(15/7,5) = +6,02 dB (×2) y (15 − 7,5)/343 s ≈ 21,9 ms
+        // de retardo. El pulso debe llegar exactamente entonces: dos bloques
+        // (1024 muestras) en silencio y el pulso en el tercero.
+        {
+            AcousticalSpatialProcessor s;
+            setS(s.parameters(), "spatialZ", 1.0f);
+            float g = 0.0f, d = 0.0f;
+            acoustical_spatial_compensate(0.0f, 0.0f, 1.0f, 0.5f, &g, &d);
+            pump();
+            prepare(s);
+            juce::AudioBuffer<float> buf(2, kBlock);
+            juce::MidiBuffer midi;
+            const int blocks = 6;
+            int silentBefore = 0, pulseAt = -1;
+            float pulsePeak = 0.0f;
+            for (int b = 0; b < blocks; ++b) {
+                buf.clear();
+                if (b == 0) buf.setSample(0, 0, 1.0f);
+                s.processBlock(buf, midi);
+                const float m = buf.getMagnitude(0, 0, kBlock);
+                if (pulseAt < 0 && m > 1e-3f) pulseAt = b;
+                if (pulseAt < 0) ++silentBefore;
+                pulsePeak = std::max(pulsePeak, m);
+            }
+            s.releaseResources();
+            check(pulseAt == 2 && silentBefore == 2,
+                  "spatial, 15 m: el pulso llega tras " + juce::String(d, 1) + " ms (bloques en "
+                      "silencio antes: " + juce::String(silentBefore) + ", pulso en el bloque "
+                      + juce::String(pulseAt) + ")");
+            check(std::fabs(pulsePeak - 2.0f) < 0.05f,
+                  "spatial, 15 m: la ganancia de la ley se aplica a la salida (+6 dB = ×2, pico "
+                      + juce::String(pulsePeak, 2) + ")");
+        }
+
+        // 8c: guardado/carga de la posición y el entorno.
+        {
+            AcousticalSpatialProcessor s;
+            setS(s.parameters(), "spatialX", -0.4f);
+            setS(s.parameters(), "spatialY", 0.7f);
+            setS(s.parameters(), "spatialZ", 0.8f);
+            setS(s.parameters(), "spatialSize", 0.3f);
+            setS(s.parameters(), "environment", 2.0f);
+            pump();
+            juce::MemoryBlock blob;
+            s.getStateInformation(blob);
+            AcousticalSpatialProcessor t;
+            t.setStateInformation(blob.getData(), blob.getSize());
+            pump();
+            check(nearF(rawS(t.parameters(), "spatialX"), -0.4f)
+                      && nearF(rawS(t.parameters(), "spatialY"), 0.7f)
+                      && nearF(rawS(t.parameters(), "spatialZ"), 0.8f)
+                      && nearF(rawS(t.parameters(), "spatialSize"), 0.3f)
+                      && nearF(rawS(t.parameters(), "environment"), 2.0f),
+                  "spatial, estado guardado: conserva la posicion y el entorno");
+            t.releaseResources();
+        }
     }
 
     std::printf("\nPLUGIN: %d comprobaciones, %d fallos\n", g_checks, g_fail);

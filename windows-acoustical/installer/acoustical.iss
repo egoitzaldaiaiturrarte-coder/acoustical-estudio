@@ -51,6 +51,16 @@ Source: "..\dist\plugin\Acoustical Dynamic EQ.dll"; DestDir: "{cf}\Steinberg\Vst
 ; Plugin VST2.4 Win32 (Cubase 5 de 32 bits loads it from {cf32}\Vstplugins)
 Source: "..\dist\plugin32\Acoustical Dynamic EQ.dll"; DestDir: "{cf32}\Vstplugins"; \
   Flags: ignoreversion skipifsourcedoesntexist
+; VST complementario "Acoustical Spatial" (v1.11.0): panel grande de la
+; posición espacial. Mismas ubicaciones que el principal.
+Source: "..\dist\plugin\Acoustical Spatial.vst3"; DestDir: "{cf}\VST3"; \
+  Flags: recursesubdirs ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
+Source: "..\dist\plugin32\Acoustical Spatial.vst3"; DestDir: "{cf32}\VST3"; \
+  Flags: recursesubdirs ignoreversion skipifsourcedoesntexist
+Source: "..\dist\plugin\Acoustical Spatial.dll"; DestDir: "{cf}\Steinberg\VstPlugins"; \
+  Flags: ignoreversion skipifsourcedoesntexist; Check: Is64BitInstallMode
+Source: "..\dist\plugin32\Acoustical Spatial.dll"; DestDir: "{cf32}\Vstplugins"; \
+  Flags: ignoreversion skipifsourcedoesntexist
 ; Driver ASIO x64 y x86 (Cubase 5 de 32 y 64 bits)
 Source: "..\dist\bridge\x64\AcousticalBridge.dll"; DestDir: "{app}\bridge\x64"; Flags: ignoreversion
 Source: "..\dist\bridge\x86\AcousticalBridge.dll"; DestDir: "{app}\bridge\x86"; Flags: ignoreversion
