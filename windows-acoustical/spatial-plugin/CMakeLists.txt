@@ -29,7 +29,7 @@ endif()
 juce_add_plugin(AcousticalSpatial
     PLUGIN_MANUFACTURER_CODE Acos
     PLUGIN_CODE Asp1
-    VERSION 1.11.0
+    VERSION 1.11.1
     FORMATS ${FORMATS}
     PRODUCT_NAME "Acoustical Spatial"
     COMPANY_NAME "Acoustical"

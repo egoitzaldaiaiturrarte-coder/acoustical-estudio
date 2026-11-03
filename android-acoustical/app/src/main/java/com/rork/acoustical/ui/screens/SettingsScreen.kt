@@ -382,6 +382,68 @@ fun SettingsScreen(
                 }
             }
 
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // v1.11.1: Enlace VST — el móvil como extensión del VST: el móvil
+            // envía su propio análisis (bandas medidas, SPL, RT60) al VST que
+            // corre en el DAW del PC, que lo usa como segunda captura.
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                "Enlace VST",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                "El móvil se convierte en extensión del VST del DAW: le manda su análisis (bandas, SPL, RT60) y el VST lo usa como segunda captura.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = viewModel.vstExtEnabled(),
+                            onCheckedChange = { viewModel.setVstExtEnabled(it) }
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Código (parámetro \"Código móvil\" del VST)",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = CyanGlow
+                    )
+                    val vstCode = viewModel.vstExtCode()
+                    Text(
+                        if (vstCode.isEmpty()) "Sin código asignado" else vstCode,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (vstCode.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else LimeActive
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    val vstIp by remember { mutableStateOf(viewModel.vstExtTarget()) }
+                    OutlinedTextField(
+                        value = vstIp,
+                        onValueChange = {
+                            vstIp = it
+                            viewModel.setVstExtTarget(it)
+                        },
+                        label = { Text("IP del PC con el DAW (opcional: se autodetecta por baliza del VST)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        viewModel.vstExtStatus(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CyanGlow
+                    )
+                }
+            }
+
             // v1.10.0: las tarjetas "PC / Windows" y "Hub del PC" se
             // retiran con la geolocalización y el hub del PC.
 

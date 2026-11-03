@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "ExtLink.h"
 
 #include "plugin_genmap.h"
 
@@ -62,6 +63,21 @@ AcousticalAudioProcessor::createParameterLayout() {
     layout.add(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID{"refMaster", 1}, utf8("Referencia (instancia master)"),
         juce::NormalisableRange<float>(0.0f, 9999.0f, 1.0f), 0.0f));
+
+    // --- Enlace móvil (v1.11.1): el móvil como extensión del VST ---
+    // Código de emparejamiento de 6 cifras (el MISMO código que Ajustes >
+    // PC/Windows en el móvil). 0 = enlace desactivado (el VST no arranca
+    // ningún hilo de red: cero huella en el DAW hasta que se usa). Con el
+    // código puesto, el VST escucha en UDP 41047 y cada análisis que le
+    // envía el móvil (sus bandas medidas, SPL, RT60 — el motor que corre
+    // dentro del móvil es el MISMO core C del plugin) se alimenta al motor
+    // como segunda captura (setSecondaryCaptureLevels: cada banda toma el
+    // nivel más fuerte entre la captura local del VST y la del móvil).
+    // El hilo receptor vive en contexto de mensajes y solo toca el motor
+    // por esa API: el hilo de audio del DAW nunca ve el enlace.
+    layout.add(std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID{"extCode", 1}, utf8("Código móvil (enlace VST)"),
+        0, 999999, 0));
 
     // --- Modo de trabajo (v1.8): perfil completo del catálogo compartido ---
     // 0 = "Actual" (ajustes libres, sin modo); 1..6 = los perfiles del core
@@ -191,6 +207,17 @@ AcousticalAudioProcessor::AcousticalAudioProcessor()
     // así un slave que apunta a un master por su número lo sigue apuntando.
     instanceId_ = 1000 + (int)(juce::Random::getSystemRandom().nextInt(9000));
     link_.start(instanceId_);
+    // v1.11.1: enlace móvil — cada análisis válido que llegue (con el code
+    // del parámetro "extCode") se convierte en la segunda captura del motor,
+    // como ya lo es la captura local: el mix por banda (el más fuerte de las
+    // dos) lo hace el motor en su tick. El callback corre en el hilo del
+    // receptor (contexto de mensajes), nunca en el de audio.
+    extLink_.onAnalysis = [this](const acoustical::ExtAnalysis& a) {
+        engine_.setSecondaryCaptureLevels(a.bands);
+    };
+    // La arrancada real del hilo de red la hace applyParameters() cuando el
+    // usuario pone el código (arrancar un socket de recepción en cada
+    // instancia del plugin — incluido la de scan — sería ruido innecesario).
     engine_.onSweep = [this](acoustical::SweepProcess p, const acoustical::SweepStep& s) {
         std::lock_guard<std::mutex> lock(mutex_);
         sweepSteps_[static_cast<int>(p)] = s;
@@ -206,6 +233,7 @@ AcousticalAudioProcessor::AcousticalAudioProcessor()
 AcousticalAudioProcessor::~AcousticalAudioProcessor() {
     cancelPendingUpdate();
     for (auto* param : getParameters()) param->removeListener(this);
+    extLink_.stop();  // (v1.11.1) primero el receptor: deja de llamar al motor
     engine_.stop();
 }
 
@@ -321,6 +349,18 @@ void AcousticalAudioProcessor::applyParameters() {
             setParam("spatialSize", m->spatialSize);
         }
     }
+
+    // === Enlace móvil (v1.11.1) ===
+    // El código es el de emparejamiento del móvil (Ajustes > PC/Windows): el
+    // receptor solo acepta datagramas que lo lleven. 0 = desactivado: el
+    // hilo de red se para (si corría) y no se vuelve a arrancar hasta que el
+    // usuario ponga un código. Solo contexto de mensajes (esto corre desde
+    // applyParameters / handleAsyncUpdate): ni el socket ni el callback del
+    // receptor tocan el hilo de audio.
+    const std::uint32_t extCode =
+        static_cast<std::uint32_t>(std::lround(l("extCode")));
+    extLink_.setCode(extCode);
+    if (extCode != 0) extLink_.start();
 }
 
 void AcousticalAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {

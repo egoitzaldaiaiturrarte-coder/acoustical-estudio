@@ -20,6 +20,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <AcousticalEngine.h>
 #include "InstanceLink.h"
+#include "ExtLink.h"
 
 #include <algorithm>
 #include <array>
@@ -63,6 +64,7 @@ public:
     // pueden elegirla como fuente de referencia (parámetro refMaster).
     int instanceId() const { return instanceId_; }
     InstanceLink& instanceLink() { return link_; }
+    acoustical::ExtLink& extLink() { return extLink_; }
 
     // === Acciones desde la ventana (hilo de mensajes) ===
     // Referencia = espectro ANTES de salir: FFT del anillo pre-EQ.
@@ -236,6 +238,11 @@ private:
     // procesador — el engine ya se detuvo antes, en el cuerpo del dtor).
     InstanceLink link_;
     int instanceId_ = 0;
+
+    // v1.11.1: enlace móvil (el móvil como extensión del VST): receptor UDP
+    // de los análisis que envía la app del móvil (mismo core C) — se
+    // alimentan al motor como segunda captura. Ver ExtLink.h.
+    acoustical::ExtLink extLink_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcousticalAudioProcessor)
 };

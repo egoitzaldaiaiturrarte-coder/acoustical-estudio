@@ -323,6 +323,10 @@ public:
         refStatus_.setFont(juce::Font(11.0f));
         refStatus_.setColour(juce::Label::textColourId, theme::textDim);
         addAndMakeVisible(refStatus_);
+        // v1.11.1: estado del enlace móvil (el móvil como extensión del VST).
+        extStatus_.setFont(juce::Font(11.0f));
+        extStatus_.setColour(juce::Label::textColourId, theme::textDim);
+        addAndMakeVisible(extStatus_);
 
         eqCanvas_ = std::make_unique<EqCanvas>([this](int band, float gain) {
             processor_.engine().setBandGain(band, gain);
@@ -403,6 +407,9 @@ public:
         instanceLabel_.setBounds(refBlock.removeFromTop(20).reduced(4, 2));
         refCombo_.setBounds(refBlock.removeFromTop(26).reduced(4, 2));
         refStatus_.setBounds(refBlock.removeFromTop(20).reduced(4, 2));
+        // v1.11.1: estado del enlace móvil (cuarta fila del bloque; el bloque
+        // tiene 200 px de alto y estas cuatro filas suman ~86).
+        extStatus_.setBounds(refBlock.removeFromTop(20).reduced(4, 2));
 
         // Fila inferior: tarjeta + panel de controles por ecu dinámico.
         auto bottom = bounds.removeFromBottom(376);
@@ -562,6 +569,37 @@ private:
             }
             refStatus_.setText(st, juce::dontSendNotification);
         }
+
+        // v1.11.1: estado del enlace móvil. El parámetro "extCode" (código
+        // de emparejamiento del móvil) desactiva/activa el receptor; con el
+        // receptor activo, cada análisis recibido del móvil se muestra aquí
+        // (cuándo llegó, SPL y RT60 medidos allá, número de bandas).
+        {
+            const auto& P = processor_.parameters();
+            const auto* codeP = P.getRawParameterValue("extCode");
+            const std::uint32_t code = codeP != nullptr
+                ? static_cast<std::uint32_t>(std::lround(codeP->load())) : 0;
+            juce::String st;
+            if (code == 0) {
+                st = utf8("Enlace móvil: desactivado (pon su código de 6 cifras)");
+            } else {
+                const auto s = processor_.extLink().status();
+                const bool fresh = s.lastRxMs > 0 && s.lastCode == code && (
+                    juce::Time::getMillisecondCounter() - s.lastRxMs) < 10 * 1000;
+                if (s.lastRxMs == 0)
+                    st = juce::String::formatted(
+                        utf8("Enlace móvil: %06u (esperando al móvil)"), code);
+                else if (fresh)
+                    st = juce::String::formatted(
+                        utf8("Enlace móvil: %06u (recibiendo: %d bandas, SPL %.1f, RT60 %.2f s)"),
+                        code, s.bandsCount, s.spl, s.rt60Ms / 1000.0f);
+                else
+                    st = juce::String::formatted(
+                        utf8("Enlace móvil: %06u (último análisis hace %d s)"),
+                        code, static_cast<int>((juce::Time::getMillisecondCounter() - s.lastRxMs) / 1000));
+            }
+            extStatus_.setText(st, juce::dontSendNotification);
+        }
     }
 
     AcousticalAudioProcessor& processor_;
@@ -581,6 +619,7 @@ private:
     ComboRef refWatch_;
     juce::ComboBox refCombo_;
     juce::Label instanceLabel_, refStatus_;
+    juce::Label extStatus_;  // v1.11.1: estado del enlace móvil
     ParamToggle correccion_, link_, ruido_;
     ParamRow maxGain_, suavizado_, splObjetivo_, retardo_, calib_, nivelGen_, freqGen_;
     ParamCombo intervaloAnalisis_, bandas_, fft_, generador_;

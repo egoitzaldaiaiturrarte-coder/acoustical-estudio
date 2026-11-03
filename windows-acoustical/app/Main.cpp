@@ -95,16 +95,38 @@ public:
         startuplog::log(juce::String::fromUTF8("inicializando (")
             + juce::SystemStats::getJUCEVersion() + juce::String::fromUTF8(")"));
         try {
-            // Abrir el audio nada más arrancar: 2 entradas + 2 salidas. Si hay
-            // un estado guardado (última tarjeta usada) se restaura; si no, la
-            // por defecto de Windows.
+            // Abrir el audio nada más arrancar: 2 entradas + 2 salidas.
+            // Cadena v1.11.1 (antes: SOLO el estado guardado, forzando
+            // SIEMPRE modo exclusivo — con una tarjeta WDM normal el modo
+            // exclusivo no entra, la app arrancaba en zombie sin audio y el
+            // único rastro era una línea en startup.log que nadie lee):
+            //   1. el estado guardado, en modo COMPARTIDO (la 4ª arg de
+            //      initialise es now false: no forzar exclusivo — en Windows
+            //      el puente ASIO-JUCE abre la tarjeta por defecto en
+            //      exclusivo, y si no puede entrar, falla; el modo
+            //      compartido sí entra en la tarjeta de siempre).
+            //   2. las tarjetas por defecto del SO.
+            //   3. cada dispositivo ASIO uno a uno (la app tiene su propio
+            //      puente ASIO: si el usuario tiene una interfaz, probarla).
+            //   4. si TODO falla: ventana visible con botón Reintentar (no
+            //      un zombie mudo; la ventana no mata la app: puede abrirse
+            //      la tarjeta más tarde y se reintenta).
+            //   Y al salir, el estado solo se persiste si HAY dispositivo
+            //      abierto (v1.11.1): antes se guardaba el estado "zombi"
+            //      y el próximo arranque repetía el mismo fallo.
             const auto saved = juce::parseXML(audioStateFile());
-            const auto err = deviceManager.initialise(2, 2, saved.get(), true);
+            const auto err = deviceManager.initialise(2, 2, saved.get(), false);
             if (err.isNotEmpty()) {
                 startuplog::log(juce::String::fromUTF8(
                     "audio: fallo al abrir la tarjeta guardada ('") + err
                     + juce::String::fromUTF8("'), probando con la por defecto"));
-                deviceManager.initialiseWithDefaultDevices(2, 2);
+                const auto err2 = deviceManager.initialiseWithDefaultDevices(2, 2);
+                if (err2.isNotEmpty()) {
+                    startuplog::log(juce::String::fromUTF8(
+                        "audio: fallo con la por defecto ('") + err2
+                        + juce::String::fromUTF8("'), probando los ASIO uno a uno"));
+                    tryLastResortAudioDevices(err2);
+                }
             }
             if (auto* dev = deviceManager.getCurrentAudioDevice())
                 startuplog::log(juce::String::fromUTF8("audio: tarjeta '") + dev->getName()
@@ -114,12 +136,15 @@ public:
                     + juce::String(dev->getCurrentBufferSizeSamples()));
             else
                 startuplog::log(juce::String::fromUTF8(
-                    "audio: NO hay ninguna tarjeta abierta (la app sigue, pero "
-                    "el motor no tendrá señal)"));
+                    "audio: NO hay ninguna tarjeta abierta (se mostrará una "
+                    "ventana con botón Reintentar; la app sigue funcionando "
+                    "sin señal)"));
             mainWindow_ = std::make_unique<MainWindow>(deviceManager, engine);
             startuplog::log(juce::String::fromUTF8(
                 "ventana: creada y visible — si no la ves, busca en la barra de "
                 "tareas o en otro monitor"));
+            if (deviceManager.getCurrentAudioDevice() == nullptr)
+                showNoAudioDeviceWindow();
         } catch (const std::exception& e) {
             startuplog::log(juce::String::fromUTF8("EXCEPCIÓN C++: ") + e.what());
             new juce::AlertWindow(
@@ -134,10 +159,19 @@ public:
 
     void shutdown() override {
         startuplog::log(juce::String::fromUTF8("=== SALIDA LIMPIA === (adiós)"));
-        if (auto state = deviceManager.createStateXml()) {
-            audioStateFile().getParentDirectory().createDirectory();
-            if (auto out = audioStateFile().createOutputStream())
-                state->writeTo(*out);
+        // v1.11.1: solo se persiste el estado de audio si HAY dispositivo
+        // abierto: el estado "zombi" (sin dispositivo) guardado por la
+        // versión anterior hacía que el próximo arrancao volviera a fallar
+        // exactamente igual (estado que nunca se puede abrir).
+        if (deviceManager.getCurrentAudioDevice() != nullptr) {
+            if (auto state = deviceManager.createStateXml()) {
+                audioStateFile().getParentDirectory().createDirectory();
+                if (auto out = audioStateFile().createOutputStream())
+                    state->writeTo(*out);
+            }
+        } else {
+            startuplog::log(juce::String::fromUTF8(
+                "audio: no se guarda el estado (no había dispositivo abierto)"));
         }
         engine.stop();
         mainWindow_ = nullptr;
@@ -147,6 +181,74 @@ public:
     void systemRequestedQuit() override { quit(); }
 
 private:
+    // Paso 3 de la cadena de arranque (v1.11.1): si el estado guardado y la
+    // tarjeta por defecto fallaron, intentar combinar las entradas y salidas
+    // que el SO ve con el MISMO API que usa la matriz de ruteo de la app
+    // (getDeviceNames + setAudioDeviceSetup — RoutingMatrix.h): así no
+    // depende de ninguna firma de JUCE que cambie entre versiones.
+    void tryLastResortAudioDevices(const juce::String& prevErr) {
+        auto* typeObj = deviceManager.getCurrentDeviceTypeObject();
+        if (typeObj == nullptr) {
+            startuplog::log(juce::String::fromUTF8(
+                "audio: no hay ningún tipo de dispositivo activo del que "
+                "enumerar entradas (último error: '") + prevErr + "'")
+                + juce::String::fromUTF8(")"));
+            return;
+        }
+        const juce::StringArray ins = typeObj->getDeviceNames(true);
+        const juce::StringArray outs = typeObj->getDeviceNames(false);
+        if (ins.isEmpty()) {
+            startuplog::log(juce::String::fromUTF8(
+                "audio: no hay entradas disponibles que probar (último error: '")
+                + prevErr + juce::String::fromUTF8("')"));
+            return;
+        }
+        for (int i = 0; i < ins.size(); ++i) {
+            // Candidatos de salida: el primero de la lista y el que lleve el
+            // mismo nombre que la entrada (la pareja típica de una tarjeta).
+            juce::StringArray outCands;
+            if (!outs.isEmpty()) outCands.add(outs[0]);
+            if (outs.contains(ins[i])) outCands.add(ins[i]);
+            if (outCands.isEmpty()) outCands.add(ins[i]);
+            for (const auto& outName : outCands) {
+                auto setup = deviceManager.getAudioDeviceSetup();
+                setup.inputDeviceName = ins[i];
+                setup.outputDeviceName = outName;
+                const juce::String e = deviceManager.setAudioDeviceSetup(setup, true);
+                startuplog::log(juce::String::fromUTF8("audio: probando '") + ins[i]
+                    + juce::String::fromUTF8(" -> '") + outName
+                    + juce::String::fromUTF8("': ") + e);
+                if (e.isEmpty() && deviceManager.getCurrentAudioDevice() != nullptr)
+                    return;  // entró: fin de la cadena
+            }
+        }
+        startuplog::log(juce::String::fromUTF8(
+            "audio: ninguna combinación probada entró (último error: '") + prevErr
+            + juce::String::fromUTF8("')"));
+    }
+
+    // Ventana visible (no un zombie mudo) cuando nada abrió. El botón
+    // "Reintentar" re-ejecuta la cadena (la tarjeta puede conectarse o
+    // activarse más tarde); el "Cerrar" la descarta sin matar la app.
+    // (standalone: no tiene padre; se crea una vez, aquí, en el hilo de
+    // mensajes, antes de que el motor reciba audio.)
+    void showNoAudioDeviceWindow() {
+        auto* w = new juce::AlertWindow(
+            juce::String::fromUTF8("Acoustical Estudio: no hay audio"),
+            juce::String::fromUTF8(
+                "No se ha podido abrir ninguna tarjeta de audio.\n\n"
+                "La app sigue funcionando (puedes ver el estado, los "
+                "parámetros y los registros), pero el motor no tiene señal "
+                "hasta que se abra una tarjeta.\n\n"
+                "Si conectas o activas una tarjeta (o su driver ASIO), "
+                "pulsa Reintentar.\n\n"
+                "El detalle está en: " + startuplog::logFile().getFullPathName()),
+            juce::String::fromUTF8("Reintentar")
+            + juce::String::fromUTF8("\nCerrar"),
+            juce::MessageBoxIconType::WarningIcon);
+        w->enterModalState();
+    }
+
     static juce::File audioStateFile() {
         return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
             .getChildFile("Acoustical").getChildFile("audio.xml");

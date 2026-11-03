@@ -14,11 +14,11 @@
 #include "EqDsp.h"
 #include "Rt60Estimator.h"
 #include "SignalGenerator.h"
+#include "SpRing.h"
 
 #include <atomic>
 #include <array>
 #include <memory>
-#include <deque>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -238,16 +238,17 @@ private:
     //    requestStop(): la cola de config y la parada se gestionan con
     //    requestMutex_/threadMutex_, y el motor los consume en su tick).
     //  - threadMutex_ protege start()/stop()/requestStop().
-    //  - ringMutex_ protege el anillo de entrada (hilo de audio <-> motor).
+    //  - El anillo de entrada (hilo de audio -> motor) es SpRing: SPSC
+    //    lock-free (ver SpRing.h). No hay mutex en ese camino: el mutex
+    //    antiguo (ringMutex_) bloqueaba el callback de audio durante todo el
+    //    tick del motor y hundia al host sin watchdog (Cubase).
     //  - requestMutex_ protege la config encolada (requestConfigure -> tick).
     mutable std::mutex stateMutex_;
     std::mutex threadMutex_;
-    mutable std::mutex ringMutex_;
     std::mutex requestMutex_;
     AudioConfig pendingConfig_{};
     bool hasPendingConfig_ = false;
-    std::deque<float> ring_;
-    size_t ringCapacity_ = 8192 * 4;
+    SpRing ring_{8192 * 4};  // capacidad potencia de 2; ~0,68 s a 48 kHz
     std::atomic<int> inputSampleRate_{48000};
 
     std::vector<float> lastMeasuredLevels_;

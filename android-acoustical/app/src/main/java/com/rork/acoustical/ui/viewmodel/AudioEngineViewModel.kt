@@ -69,6 +69,7 @@ import com.rork.acoustical.domain.model.DeviceType
 import com.rork.acoustical.service.AudioAnalysisService
 import com.rork.acoustical.service.InternalCaptureService
 import com.rork.acoustical.service.PhoneSyncManager
+import com.rork.acoustical.service.VstExtSender
 import com.rork.acoustical.service.ProfileStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -239,6 +240,17 @@ class AudioEngineViewModel(
     // encontrando al móvil y la sincronización siga funcionando;
     // MainActivity.onDestroy / este onCleared lo detienen.
     private val phoneSync by lazy { PhoneSyncManager.get(getApplication()) }
+    // v1.11.1: Enlace VST — el móvil como extensión del VST (ver
+    // VstExtSender): el motor del móvil envía su análisis (bandas, SPL,
+    // RT60) al VST del DAW, que lo consume como segunda captura. El código
+    // de emparejamiento es el MISMO del link PC/Windows (pairCode).
+    private val vstExt by lazy {
+        VstExtSender(
+            codeProvider = { phoneSync.pairCode() },
+            prefs = getApplication().getSharedPreferences("vst_ext", android.content.Context.MODE_PRIVATE)
+        )
+    }
+    @Volatile private var vstExtOn = false
     private var focusModeManager: FocusModeManager? = null
     private var walkieManager: WalkieTalkieManager? = null
     private var profileStore: ProfileStore? = null
@@ -299,6 +311,11 @@ class AudioEngineViewModel(
                     }
                 }
                 rt60?.feedFrame(result.measuredLevels)
+                // v1.11.1: Enlace VST — cada análisis, el móvil manda el suyo
+                // al VST (bandas medidas + SPL + RT60) si el enlace está
+                // activado y hay destino conocido: una write UDP no bloqueante
+                // sobre un socket persistente; si el VST no está, no pasa nada.
+                vstExt.onAnalysis(result, rt60?.currentRt60Ms ?: 0f)
                 _uiState.update { state ->
                     val maxHistorySize = (30000L / state.config.analysisInterval.ms).toInt().coerceAtLeast(30)
                     val avgBandGain = if (result.bands.isNotEmpty()) {
@@ -2182,8 +2199,22 @@ class AudioEngineViewModel(
 
     // === Internal ===
 
+    // === v1.11.1: Enlace VST (el móvil como extensión del VST del DAW) ===
+    fun vstExtEnabled(): Boolean = vstExtOn
+    fun setVstExtEnabled(on: Boolean) {
+        vstExtOn = on
+        vstExt.setEnabled(on)
+    }
+    fun setVstExtTarget(ip: String) = vstExt.setTargetIp(ip)
+    fun vstExtCode(): String = vstExt.currentCode()
+    fun vstExtStatus(): String = vstExt.status()
+    fun vstExtTarget(): String = vstExt.targetIp()
+
     override fun onCleared() {
         super.onCleared()
+        // v1.11.1: el enlace VST no sigue vivo sin el ViewModel (el motor que
+        // alimenta vstExt.onAnalysis es del ViewModel; los sockets se cierran).
+        vstExt.dispose()
         // Si el motor sigue corriendo, el FGS quedaría huérfano en primer
         // plano (notificación + micro reservado). Antes de anular las
         // referencias, se manda la acción de parada: el servicio retira la

@@ -169,11 +169,12 @@ void AcousticalEngine::resetBands() {
 
 void AcousticalEngine::pushSamples(const float* samples, int count, int sampleRate) {
     inputSampleRate_.store(sampleRate, std::memory_order_relaxed);
-    std::lock_guard<std::mutex> lock(ringMutex_);
-    for (int i = 0; i < count; ++i) {
-        ring_.push_back(samples[i]);
-        if (ring_.size() > ringCapacity_) ring_.pop_front();
-    }
+    // v1.11.1: anillo SPSC sin locks (SpRing). El deque + ringMutex_ viejo
+    // mantenía BLOQUEADO el callback de audio (el hilo que llama a esto)
+    // durante todo el tick del motor — FFT de hasta 8192 muestras incluida —
+    // y un host sin watchdog de hilo de audio (Cubase) se queda congelado y
+    // muere. El camino de audio ahora: un memcpy y un store release.
+    ring_.push(samples, count);
 }
 
 void AcousticalEngine::setSecondaryCaptureLevels(const std::vector<float>& levels) {
@@ -273,12 +274,11 @@ void AcousticalEngine::engineLoop() {
                 }
                 bool haveBlock = false;
                 if (fftN > 0) {
-                    std::lock_guard<std::mutex> rlock(ringMutex_);
-                    if (static_cast<int>(ring_.size()) >= fftN) {
-                        const int start = static_cast<int>(ring_.size()) - fftN;
-                        std::copy_n(std::next(ring_.begin(), start), fftN, block.begin());
+                    // Sin locks: SpRing es SPSC lock-free. El hilo de audio
+                    // publica con un store release y nosotros solo leemos la
+                    // cola de las últimas fftN muestras.
+                    if (ring_.copyLatest(block.data(), fftN) == fftN)
                         haveBlock = true;
-                    }
                 }
                 if (haveBlock) {
                     analyzeFrameLocked(block, inputSampleRate_.load(), ev);
@@ -305,11 +305,9 @@ void AcousticalEngine::engineLoop() {
                     std::vector<float> pblock;
                     const int need = probeFftSize_;  // (probeFft_ ya existe: la creó ensure)
                     if (need > 0) {
-                        std::lock_guard<std::mutex> rlock(ringMutex_);
-                        if (static_cast<int>(ring_.size()) >= need) {
-                            const int start = static_cast<int>(ring_.size()) - need;
-                            pblock.assign(std::next(ring_.begin(), start), ring_.end());
-                        }
+                        pblock.resize(need);
+                        const int got = ring_.copyLatest(pblock.data(), need);
+                        pblock.resize(got);
                     }
                     if (!pblock.empty()) {
                         ProbeResult pr;

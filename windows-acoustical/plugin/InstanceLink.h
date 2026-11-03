@@ -151,6 +151,7 @@ private:
     void* openRing(const juce::String& name, std::size_t& size) const;
     void* createRing(const juce::String& name, std::size_t& size);
     void closeRing(void* map, std::size_t size) const;
+    void parkView(void* v, std::size_t size);  // v1.11.1: fosa anti-unmap en caliente
 
     std::atomic<int> id_{0};
 
@@ -163,8 +164,19 @@ private:
     // En POSIX se hace shm_unlink al parar (el mapping de los lectores vivos
     // sigue válido: el archivo tmpfs no se destruye hasta soltar todos los
     // mappings, no solo el último handle).
-    mutable std::mutex mapMtx_;
-    void* map_ = nullptr;
+    //
+    // v1.11.1 — DOS CAMBIOS que arreglan el crash del plugin en el DAW:
+    //  1) `map_` es un ATOMICO, no un plain void* tras un mutex: el hilo de
+    //     audio (publish) lo carga con un load y NUNCA toma la mutex (antes
+    //     tomaba mapMtx_ en CADA block de audio; con el DAW cerrándose y el
+    //     hilo de mensajes dentro de reid()/stop(), el callback se bloqueaba
+    //     en la mutex y un host sin watchdog — Cubase — se quedaba congelado
+    //     entero y moría).
+    //  2) Las vistas retiradas (reid/stop) NUNCA se unmappean en caliente:
+    //     van a la fosa (parkView) y se dejan hasta que muere el proceso.
+    //     la otra mitad del crash (reid() al restaurar estado / stop() al
+    //     cerrar, con el callback aún en vuelo).
+    std::atomic<void*> map_{nullptr};
     std::size_t mapSize_ = 0;
 
     std::atomic<bool> running_{false};
@@ -211,6 +223,42 @@ inline void InstanceLink::closeRing(void* map, std::size_t size) const {
     UnmapViewOfFile(map);
 #else
     if (size > 0) munmap(map, size);
+#endif
+}
+
+#if JUCE_WINDOWS
+namespace {
+// === La fosa (v1.11.1) ======================================================
+// Vistas del anillo PROPIO que reid()/stop() han retirado en caliente.
+// NO se unmappean: el hilo de audio puede tener la vista en vuelo (en medio
+// de un write de publish) en el mismo instante exacto; unmunmap eso =
+// access violation dentro del proceso del DAW. Se aparcan aqui, mapeadas,
+// hasta que muere el proceso (el SO libera todo; coste: ~128 KB cada una,
+// y reid/stop son operaciones de mensaje raras: carga de proyecto, cambio
+// manual de número, cierre). La sección sigue siendo válida para el SO; el
+// único que escribe en ella ya no somos nosotros (map_ apunta a la nueva).
+std::mutex gGraveyardMtx;
+std::vector<void*> gGraveyard;
+}
+#endif
+
+inline void InstanceLink::parkView(void* v, std::size_t) {
+    if (v == nullptr) return;
+#if JUCE_WINDOWS
+    std::lock_guard<std::mutex> lock(gGraveyardMtx);
+    gGraveyard.push_back(v);
+    // (En Windows: no se unmappea — ver la nota de arriba. En POSIX: ver
+    // abajo: aquí tampoco se munmappea, por la misma razón del writer vivo;
+    // el munmap "seguro" del mapping propio no existe en caliente.)
+#else
+    // POSIX: el SO no tiene la noción de "vista aparcada" con el mismo
+    // coste que en Windows, pero se aplica el mismo criterio conservador:
+    // la vista se deja mapeada hasta el final del proceso. El NOMBRE del
+    // objeto se suelta con shm_unlink en stop()/reid() (el mapping de los
+    // lectores vivos sigue vivo: el tmpfs no se destruye hasta soltar todos
+    // los mappings). No munmapear la vista propia no consume tmpfs extra:
+    // son páginas ya faulteadas por el writer.
+    (void)v;
 #endif
 }
 
@@ -279,20 +327,26 @@ inline void* InstanceLink::createRing(const juce::String& name, std::size_t& siz
 inline void InstanceLink::start(int id) {
     id_.store(id, std::memory_order_relaxed);
     {
-        std::lock_guard<std::mutex> lock(mapMtx_);
-        if (map_ == nullptr) {
+        // El swap del mapping se hace solo desde el hilo de mensajes (esta
+        // función, reid, stop): el hilo de audio solo hace un load atómico en
+        // publish(), así no se necesita ninguna mutex en el camino de audio.
+        if (map_.load(std::memory_order_relaxed) == nullptr) {
             for (int t = 0; t < 8; ++t) {
                 const juce::String name = ringNameFor(juce::String(id_.load()));
                 std::size_t size = 0;
                 void* m = createRing(name, size);
                 if (m != nullptr) {
-                    map_ = m;
+                    map_.store(m, std::memory_order_release);
                     mapSize_ = size;
                     break;
                 }
                 // Colisión de id (otra instancia con el mismo número): se
                 // cambia a uno nuevo y se reintenta (el editor lo verá).
-                id_.store(1000 + (int)(std::rand() % 9000), std::memory_order_relaxed);
+                // (juce::Random en lugar de std::rand: el rand() global del
+                // proceso del DAW no es thread-safe y comparten estado con
+                // cualquier otro uso del host.)
+                id_.store(1000 + juce::Random::getSystemRandom().nextInt(8999),
+                         std::memory_order_relaxed);
             }
         }
     }
@@ -328,16 +382,16 @@ inline void InstanceLink::stop() {
         sock_ = -1;
     }
     {
-        std::lock_guard<std::mutex> lock(mapMtx_);
-        if (map_ != nullptr) {
+        // v1.11.1: la vista propia NO se unmappea en caliente (el writer
+        // puede estar en vuelo): se aparca en la fosa y vive hasta el final
+        // del proceso. En POSIX además se suelta el NOMBRE (shm_unlink), que
+        // es lo que define "el master se fue" para los lectores.
+        void* old = map_.exchange(nullptr, std::memory_order_acq_rel);
+        if (old != nullptr) {
 #if JUCE_LINUX
-            munmap(map_, mapSize_);
             shm_unlink(ringNameFor(juce::String(id_.load())).toRawUTF8());
 #endif
-#if JUCE_WINDOWS
-            UnmapViewOfFile(map_);  // (el handle no se cierra: ver la nota)
-#endif
-            map_ = nullptr;
+            parkView(old, mapSize_);
         }
     }
 }
@@ -345,35 +399,34 @@ inline void InstanceLink::stop() {
 inline void InstanceLink::reid(int newId) {
     if (newId < 1000 || newId > 9999) return;
     // El nombre del anillo viejo se captura ANTES de cambiar id_: lo que se
-    // suelta es el mapping EN USO; el archivo nuevo se crea más abajo.
+    // retira es el mapping EN USO; el archivo nuevo se crea más abajo.
     // (Unlinkar el nombre nuevo aquí lo dejaría huérfano en /dev/shm.)
     const juce::String oldName = ringNameFor(juce::String(id_.load(std::memory_order_relaxed)));
     id_.store(newId, std::memory_order_relaxed);
-    std::lock_guard<std::mutex> lock(mapMtx_);
-    if (map_ != nullptr) {
+    {
+        // v1.11.1: la vista en uso va a la fosa (nunca munmap en caliente:
+        // un publish del hilo de audio puede estar escribiendo EN ESTE
+        // INSTANTE en esa vista — y esto corre dentro del proceso del DAW).
+        void* old = map_.exchange(nullptr, std::memory_order_acq_rel);
+        if (old != nullptr) {
 #if JUCE_LINUX
-        munmap(map_, mapSize_);
-        shm_unlink(oldName.toRawUTF8());
+            shm_unlink(oldName.toRawUTF8());
 #endif
-#if JUCE_WINDOWS
-        UnmapViewOfFile(map_);
-#endif
-        map_ = nullptr;
-    }
-    std::size_t size = 0;
-    void* m = createRing(ringNameFor(juce::String(newId)), size);
-    if (m != nullptr) {
-        map_ = m;
-        mapSize_ = size;
+            parkView(old, mapSize_);
+        }
+        std::size_t size = 0;
+        void* m = createRing(ringNameFor(juce::String(newId)), size);
+        if (m != nullptr) {
+            map_.store(m, std::memory_order_release);
+            mapSize_ = size;
+        }
     }
 }
 
 inline void InstanceLink::publish(const float* mono, int n, double rate) {
-    void* m = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(mapMtx_);
-        m = map_;
-    }
+    // v1.11.1: load atómico sin mutex — el único punto de este class que
+    // toca el hilo de audio (cada block del DAW).
+    void* m = map_.load(std::memory_order_acquire);
     if (m == nullptr || n <= 0) return;
     auto* hdr = (instlink::RingHeader*)m;
     if (hdr->magic != instlink::kMagic) return;

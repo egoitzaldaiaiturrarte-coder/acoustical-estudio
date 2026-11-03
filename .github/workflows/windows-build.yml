@@ -206,6 +206,30 @@ jobs:
             -o /tmp/test_engine_race -lm -pthread
           /tmp/test_engine_race
 
+      # v1.11.1: ExtLink (el enlace móvil del VST: el receptor UDP que
+      # alimenta el motor con el análisis que envía el móvil). Parser del
+      # datagrama + end-to-end en loopback con un "móvil falso" (code
+      # equivocado ignorado, code correcto dispara el callback y el status).
+      # ExtLink.h es C++17 puro (sin JUCE): corre en Linux con el MISMO
+      # código que compila el build de Windows (el camino _WIN32 se
+      # syntax-checkea justo debajo contra las firmas reales del SDK).
+      - name: Compilar y testear el enlace móvil del VST (ExtLink)
+        run: |
+          g++ -std=c++17 -O2 -pthread \
+            -Iwindows-acoustical/plugin \
+            dsp/test_extlink.cpp -o /tmp/test_extlink
+          /tmp/test_extlink
+
+      # El camino #if _WIN32 de ExtLink.h (socket winsock) solo compila en
+      # MSVC: se valida aquí contra las firmas REALES del SDK (fakewin),
+      # mismo criterio que el syntax-check del driver ASIO.
+      - name: Syntax-check del enlace móvil del VST (Win32)
+        run: |
+          g++ -std=c++17 -fsyntax-only -D_WIN32 \
+            -Iwindows-acoustical/tools/fakewin \
+            -Iwindows-acoustical/plugin \
+            windows-acoustical/tools/test_extlink_syntax.cpp
+
       # Vector dorado del contrato de agregación de bandas (fija el
       # comportamiento del core C frente a la copia Kotlin de Android).
       - name: Compilar y testear el vector dorado de agregación (golden)
